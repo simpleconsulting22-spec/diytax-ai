@@ -34,6 +34,12 @@ export interface EntityTotal {
   total: number;
 }
 
+export interface ScheduleEProperty {
+  entityId: string | null;
+  entityName: string;
+  netIncome: number;
+}
+
 export interface DashboardData {
   total: number;
   categorized: number;
@@ -48,6 +54,10 @@ export interface DashboardData {
   scheduleA: ScheduleARow[];             // sorted DESC by amount
   entityTotals: EntityTotal[];           // expenses grouped by entity, Unassigned last
   hasUnassigned: boolean;                // true if any categorized expense lacks entityId
+  scheduleE: {
+    properties: ScheduleEProperty[];     // per-property net income, sorted DESC
+    totalNetIncome: number;
+  };
 }
 
 // ─── Aggregation ──────────────────────────────────────────────────────────────
@@ -64,6 +74,9 @@ function aggregate(txns: TxnRecord[]): DashboardData {
 
   // entityKey → { name, categories, total }
   const entityMap = new Map<string, { name: string; categories: Map<string, number>; total: number }>();
+
+  // Schedule E — per-property income/expense tracking
+  const scheduleEMap = new Map<string, { name: string; income: number; expenses: number }>();
 
   for (const txn of txns) {
     const absAmount = Math.abs(txn.amount);
@@ -96,6 +109,19 @@ function aggregate(txns: TxnRecord[]): DashboardData {
         txn.taxCategory,
         (scheduleAMap.get(txn.taxCategory) ?? 0) + absAmount
       );
+    }
+
+    // Schedule E — per-property income/expenses for rental summary
+    if (txn.taxSchedule === "Schedule E") {
+      const key = txn.entityId ?? "__unassigned__";
+      const name = key === "__unassigned__" ? "Unassigned" : (txn.entityName ?? key);
+      const entry = scheduleEMap.get(key) ?? { name, income: 0, expenses: 0 };
+      if (txn.type === "income") {
+        entry.income += txn.amount > 0 ? txn.amount : absAmount;
+      } else {
+        entry.expenses += absAmount;
+      }
+      scheduleEMap.set(key, entry);
     }
 
     // Entity totals — expense transactions grouped by entityId → category
@@ -141,6 +167,22 @@ function aggregate(txns: TxnRecord[]): DashboardData {
 
   const hasUnassigned = entityMap.has("__unassigned__");
 
+  const scheduleEProperties: ScheduleEProperty[] = [...scheduleEMap.entries()]
+    .map(([key, { name, income, expenses }]) => ({
+      entityId: key === "__unassigned__" ? null : key,
+      entityName: name,
+      netIncome: Math.round((income - expenses) * 100) / 100,
+    }))
+    .sort((a, b) => {
+      if (a.entityId === null) return 1;
+      if (b.entityId === null) return -1;
+      return b.netIncome - a.netIncome;
+    });
+
+  const scheduleETotalNetIncome = Math.round(
+    scheduleEProperties.reduce((s, p) => s + p.netIncome, 0) * 100
+  ) / 100;
+
   return {
     total: txns.length,
     categorized,
@@ -155,6 +197,10 @@ function aggregate(txns: TxnRecord[]): DashboardData {
     scheduleA,
     entityTotals,
     hasUnassigned,
+    scheduleE: {
+      properties: scheduleEProperties,
+      totalNetIncome: scheduleETotalNetIncome,
+    },
   };
 }
 
@@ -170,6 +216,7 @@ const EMPTY_DATA: DashboardData = {
   scheduleA: [],
   entityTotals: [],
   hasUnassigned: false,
+  scheduleE: { properties: [], totalNetIncome: 0 },
 };
 
 export function useDashboardData() {

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
-import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal } from "./useDashboardData";
+import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEProperty } from "./useDashboardData";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -165,6 +165,24 @@ function EntitySection({
   );
 }
 
+function RentalPropertyRow({
+  property,
+  onClick,
+}: {
+  property: ScheduleEProperty;
+  onClick: () => void;
+}) {
+  const netColor = property.netIncome >= 0 ? "#16A34A" : "#dc2626";
+  return (
+    <div style={{ ...rowBase, cursor: "pointer" }} onClick={onClick}>
+      <span style={{ color: "#374151" }}>{property.entityName}</span>
+      <span style={{ fontWeight: 600, color: netColor, fontVariantNumeric: "tabular-nums" }}>
+        {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(property.netIncome)}
+      </span>
+    </div>
+  );
+}
+
 function ScheduleCSection({
   income,
   expenses,
@@ -245,6 +263,7 @@ export default function DashboardPage() {
     data.scheduleC.income > 0 || data.scheduleC.expenses > 0;
   const hasScheduleA = data.scheduleA.length > 0;
   const hasEntityTotals = data.entityTotals.length > 0;
+  const hasRentalProperties = data.scheduleE.properties.filter((p) => p.entityId !== null).length > 0;
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
@@ -272,6 +291,7 @@ export default function DashboardPage() {
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
           <button style={navLink} onClick={() => navigate("/tax-summary")}>Tax Summary</button>
+          <button style={navLink} onClick={() => navigate("/schedule-e")}>Schedule E</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
@@ -460,6 +480,39 @@ export default function DashboardPage() {
             >
               Review transactions →
             </button>
+          </div>
+        )}
+
+        {/* ── Section 3b: Rental Properties (Schedule E) ───────────────────── */}
+        {!loading && hasRentalProperties && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={sectionTitle}>Rental Properties</div>
+              <button
+                onClick={() => navigate("/schedule-e")}
+                style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, fontSize: "13px", cursor: "pointer", fontFamily: font }}
+              >
+                View Schedule E →
+              </button>
+            </div>
+            {data.scheduleE.properties
+              .filter((p) => p.entityId !== null)
+              .map((prop) => (
+                <RentalPropertyRow
+                  key={prop.entityId}
+                  property={prop}
+                  onClick={() => navigate("/schedule-e")}
+                />
+              ))}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "14px", fontWeight: 700, fontSize: "14px", color: "#111827" }}>
+              <span>Total Net Income</span>
+              <span style={{
+                fontVariantNumeric: "tabular-nums",
+                color: data.scheduleE.totalNetIncome >= 0 ? "#16A34A" : "#dc2626",
+              }}>
+                {fmt(data.scheduleE.totalNetIncome)}
+              </span>
+            </div>
           </div>
         )}
 

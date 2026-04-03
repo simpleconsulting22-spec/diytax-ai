@@ -65,14 +65,7 @@
         { "fieldPath": "uid", "order": "ASCENDING" },
         { "fieldPath": "vendorName", "order": "ASCENDING" }
       ]
-    },
-    {
-      "collectionGroup": "entities",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" }
-      ]
     }
-  ],
+     ],
   "fieldOverrides": []
 }

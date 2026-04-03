@@ -17,6 +17,7 @@ import SummaryPage from "./pages/SummaryPage";
 import ImportCSVPage from "./modules/import/ImportCSVPage";
 import ReviewPage from "./modules/review/ReviewPage";
 import TaxSummaryPage from "./modules/tax/TaxSummaryPage";
+import ScheduleEPage from "./modules/tax/ScheduleEPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified } = useAuth();
@@ -38,7 +39,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <MfaModal onVerified={() => setMfaVerified(true)} />;
   }
 
-  if (userDoc && userDoc.onboardingComplete === false && location.pathname !== "/onboarding") {
+  if ((!userDoc || userDoc.onboardingComplete === false) && location.pathname !== "/onboarding") {
     return <Navigate to="/onboarding" replace />;
   }
 
@@ -75,11 +76,7 @@ function AppRoutes() {
       />
       <Route
         path="/tax-flow"
-        element={
-          <AuthGuard>
-            <TaxFlowPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/tax-summary" replace />}
       />
       <Route
         path="/summary"
@@ -110,6 +107,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <TaxSummaryPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/schedule-e"
+        element={
+          <AuthGuard>
+            <ScheduleEPage />
           </AuthGuard>
         }
       />
