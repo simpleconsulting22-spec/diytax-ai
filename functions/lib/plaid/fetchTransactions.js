@@ -105,7 +105,7 @@ async function fetchTransactionsForAccount(uid, accountId, accessToken) {
     }
     return imported;
 }
-exports.fetchTransactions = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.fetchTransactions = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
     if (!data.accountId) {

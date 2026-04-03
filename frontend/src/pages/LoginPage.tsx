@@ -111,6 +111,18 @@ export default function LoginPage() {
           {loading ? "Signing in..." : "Sign in with Google"}
         </button>
 
+        <p style={{ fontSize: "12px", color: "#9ca3af", marginTop: "20px", lineHeight: 1.6 }}>
+          By signing in, you acknowledge our{" "}
+          <a href="/privacy-policy" style={{ color: "#16A34A", textDecoration: "none", fontWeight: 600 }}>
+            Privacy Policy
+          </a>{" "}
+          and{" "}
+          <a href="/terms-of-service" style={{ color: "#16A34A", textDecoration: "none", fontWeight: 600 }}>
+            Terms of Service
+          </a>
+          . You will be asked to provide explicit consent during setup.
+        </p>
+
         {error && <div style={errorStyle}>{error}</div>}
       </div>
     </div>

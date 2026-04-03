@@ -37,7 +37,7 @@ exports.updateTransactionCategory = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const auth_1 = require("../middleware/auth");
-exports.updateTransactionCategory = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.updateTransactionCategory = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
     if (!data.transactionId || !data.category) {
@@ -55,6 +55,7 @@ exports.updateTransactionCategory = (0, https_1.onCall)({ cors: true }, async (r
     await db.collection("transactions").doc(data.transactionId).update({
         category: data.category,
         status: "categorized",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     // Upsert category rule
     const merchantName = txn.merchantName ?? "";

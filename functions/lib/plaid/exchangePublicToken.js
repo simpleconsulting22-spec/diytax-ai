@@ -39,7 +39,7 @@ const admin = __importStar(require("firebase-admin"));
 const plaid_1 = require("plaid");
 const auth_1 = require("../middleware/auth");
 const fetchTransactions_1 = require("./fetchTransactions");
-exports.exchangePublicToken = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.exchangePublicToken = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
     if (!data.publicToken) {

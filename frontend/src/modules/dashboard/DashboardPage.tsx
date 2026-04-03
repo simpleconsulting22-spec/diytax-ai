@@ -294,6 +294,7 @@ export default function DashboardPage() {
           <button style={navLink} onClick={() => navigate("/schedule-e")}>Schedule E</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
             onClick={() => signOut(auth).then(() => navigate("/login"))}

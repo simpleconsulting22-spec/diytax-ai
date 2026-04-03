@@ -45,5 +45,7 @@ __exportStar(require("./plaid/exchangePublicToken"), exports);
 __exportStar(require("./plaid/fetchTransactions"), exports);
 __exportStar(require("./categorization/categorizeTransaction"), exports);
 __exportStar(require("./categorization/updateTransactionCategory"), exports);
+__exportStar(require("./categorization/categorizeBatch"), exports);
+__exportStar(require("./categorization/backfillTransactions"), exports);
 __exportStar(require("./tax/generateTaxSummary"), exports);
 //# sourceMappingURL=index.js.map

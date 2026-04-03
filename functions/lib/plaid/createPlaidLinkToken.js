@@ -4,7 +4,7 @@ exports.createPlaidLinkToken = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const plaid_1 = require("plaid");
 const auth_1 = require("../middleware/auth");
-exports.createPlaidLinkToken = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.createPlaidLinkToken = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const clientId = process.env.PLAID_CLIENT_ID;
     const secret = process.env.PLAID_SECRET;

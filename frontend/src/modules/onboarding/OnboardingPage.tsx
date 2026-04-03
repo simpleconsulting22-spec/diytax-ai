@@ -114,23 +114,38 @@ export default function OnboardingPage() {
     state,
     toggleIncomeSource,
     toggleExpenseType,
-    setBusinessName,
-    setRentalName,
+    updateBusinessName,
+    addBusinessName,
+    removeBusinessName,
+    updateRentalName,
+    addRentalName,
+    removeRentalName,
     setDataSourcePreference,
+    setConsented,
     goNext,
     goBack,
     handleSubmit,
     needsStep3,
+    isEditing,
+    loadingProfile,
   } = useOnboarding();
 
-  const { step, incomeSources, businessName, rentalName, expenseTypes, dataSourcePreference, saving, error } = state;
+  const { step, incomeSources, businessNames, rentalNames, expenseTypes, dataSourcePreference, consented, saving, error } = state;
+
+  if (loadingProfile) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: font }}>
+        Loading...
+      </div>
+    );
+  }
 
   // Progress segment: map logical step to visual progress
   // Steps: 1=welcome, 2=income, 3=entities(conditional), 4=expenses, 5=data source
   // Visual progress always reflects the 5-segment bar; skipped step 3 shows as completed
   const visualStep = step === 4 && !needsStep3 ? 4 : step === 5 && !needsStep3 ? 5 : step;
 
-  // Screen 1: Welcome
+  // Screen 1: Welcome + consent
   if (step === 1) {
     return (
       <div style={pageStyle}>
@@ -143,7 +158,57 @@ export default function OnboardingPage() {
           <div style={{ ...subtitleStyle, textAlign: "center" }}>
             It only takes a couple of minutes to set up your tax profile.
           </div>
-          <button style={{ ...btnPrimary, marginTop: "8px" }} onClick={goNext}>
+
+          {/* Consent checkbox */}
+          <div
+            style={{
+              backgroundColor: "#f9fafb",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px",
+              padding: "16px",
+              marginBottom: "4px",
+            }}
+          >
+            <label style={{ display: "flex", alignItems: "flex-start", gap: "12px", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={consented}
+                onChange={(e) => setConsented(e.target.checked)}
+                style={{ marginTop: "3px", width: "16px", height: "16px", flexShrink: 0, cursor: "pointer", accentColor: "#16A34A" }}
+              />
+              <span style={{ fontSize: "13px", color: "#374151", lineHeight: 1.6 }}>
+                I have read and agree to the{" "}
+                <a
+                  href="/privacy-policy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}
+                >
+                  Privacy Policy
+                </a>{" "}
+                and{" "}
+                <a
+                  href="/terms-of-service"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}
+                >
+                  Terms of Service
+                </a>
+                . I consent to the collection and processing of my financial data to provide tax
+                organization services.
+              </span>
+            </label>
+          </div>
+          <div style={{ fontSize: "11px", color: "#9ca3af", marginBottom: "8px", paddingLeft: "4px" }}>
+            You can withdraw consent at any time by deleting your account.
+          </div>
+
+          <button
+            style={{ ...btnPrimary, marginTop: "8px", opacity: consented ? 1 : 0.4 }}
+            disabled={!consented}
+            onClick={goNext}
+          >
             Let's start
           </button>
         </div>
@@ -184,14 +249,41 @@ export default function OnboardingPage() {
     );
   }
 
-  // Screen 3: Conditional entity info (business name and/or rental name)
+  // Screen 3: Conditional entity info (businesses and/or rentals)
   if (step === 3) {
     const hasBusinessSelected = incomeSources.includes("business");
     const hasRentalSelected = incomeSources.includes("rental");
 
+    const validBusinessNames = businessNames.filter((n) => n.trim().length > 0);
+    const validRentalNames = rentalNames.filter((n) => n.trim().length > 0);
     const canContinue =
-      (!hasBusinessSelected || businessName.trim().length > 0) &&
-      (!hasRentalSelected || rentalName.trim().length > 0);
+      (!hasBusinessSelected || validBusinessNames.length > 0) &&
+      (!hasRentalSelected || validRentalNames.length > 0);
+
+    const addBtnStyle: React.CSSProperties = {
+      background: "none",
+      border: "1px dashed #16A34A",
+      borderRadius: "8px",
+      color: "#16A34A",
+      fontSize: "13px",
+      fontWeight: 600,
+      cursor: "pointer",
+      padding: "8px 14px",
+      marginTop: "8px",
+      fontFamily: font,
+      width: "100%",
+    };
+
+    const removeBtnStyle: React.CSSProperties = {
+      background: "none",
+      border: "none",
+      color: "#9ca3af",
+      cursor: "pointer",
+      fontSize: "18px",
+      lineHeight: 1,
+      padding: "0 0 0 8px",
+      flexShrink: 0,
+    };
 
     return (
       <div style={pageStyle}>
@@ -201,39 +293,62 @@ export default function OnboardingPage() {
           <div style={subtitleStyle}>We'll use this to set up your tax schedules</div>
 
           {hasBusinessSelected && (
-            <div style={{ marginBottom: "24px" }}>
-              <label
-                style={{ fontSize: "15px", fontWeight: 600, color: "#111827", display: "block" }}
-              >
-                What's the name of your business?
-              </label>
-              <input
-                style={inputStyle}
-                type="text"
-                placeholder="e.g. Acme Consulting LLC"
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-              />
+            <div style={{ marginBottom: "28px" }}>
+              <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
+                Business name(s) — Schedule C
+              </div>
+              <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
+                Add one entry per business or side hustle
+              </div>
+              {businessNames.map((name, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+                  <input
+                    style={{ ...inputStyle, marginTop: 0 }}
+                    type="text"
+                    placeholder="e.g. Acme Consulting LLC"
+                    value={name}
+                    onChange={(e) => updateBusinessName(i, e.target.value)}
+                  />
+                  {businessNames.length > 1 && (
+                    <button style={removeBtnStyle} onClick={() => removeBusinessName(i)} title="Remove">
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button style={addBtnStyle} onClick={addBusinessName}>
+                + Add another business
+              </button>
             </div>
           )}
 
           {hasRentalSelected && (
             <div style={{ marginBottom: "8px" }}>
-              <label
-                style={{ fontSize: "15px", fontWeight: 600, color: "#111827", display: "block" }}
-              >
-                Do you have rental property?
-              </label>
-              <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>
-                Enter the name or address of your rental property
+              <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
+                Rental property address(es) — Schedule E
               </div>
-              <input
-                style={inputStyle}
-                type="text"
-                placeholder="e.g. 123 Oak St, Unit 2"
-                value={rentalName}
-                onChange={(e) => setRentalName(e.target.value)}
-              />
+              <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
+                Add one entry per property
+              </div>
+              {rentalNames.map((name, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+                  <input
+                    style={{ ...inputStyle, marginTop: 0 }}
+                    type="text"
+                    placeholder="e.g. 123 Oak St, Unit 2"
+                    value={name}
+                    onChange={(e) => updateRentalName(i, e.target.value)}
+                  />
+                  {rentalNames.length > 1 && (
+                    <button style={removeBtnStyle} onClick={() => removeRentalName(i)} title="Remove">
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button style={addBtnStyle} onClick={addRentalName}>
+                + Add another property
+              </button>
             </div>
           )}
 
@@ -336,7 +451,7 @@ export default function OnboardingPage() {
           disabled={!dataSourcePreference || saving}
           onClick={handleSubmit}
         >
-          {saving ? "Saving..." : "Finish Setup"}
+          {saving ? "Saving..." : isEditing ? "Save Changes" : "Finish Setup"}
         </button>
         <button style={btnSecondary} disabled={saving} onClick={goBack}>
           Back

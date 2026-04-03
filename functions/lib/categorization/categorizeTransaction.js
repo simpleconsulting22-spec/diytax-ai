@@ -91,7 +91,7 @@ async function categorizeTransactionLogic(uid, transactionId, merchantName, desc
         return { category: "", status: "needs_review" };
     }
 }
-exports.categorizeTransaction = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.categorizeTransaction = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
     if (!data.transactionId) {

@@ -37,7 +37,7 @@ exports.generateTaxSummary = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const auth_1 = require("../middleware/auth");
-exports.generateTaxSummary = (0, https_1.onCall)({ cors: true }, async (request) => {
+exports.generateTaxSummary = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
     const taxYear = data.taxYear ?? 2025;
