@@ -18,6 +18,8 @@ import ImportCSVPage from "./modules/import/ImportCSVPage";
 import ReviewPage from "./modules/review/ReviewPage";
 import TaxSummaryPage from "./modules/tax/TaxSummaryPage";
 import ScheduleEPage from "./modules/tax/ScheduleEPage";
+import ScheduleAPage from "./modules/tax/ScheduleAPage";
+import DeductionsPage from "./modules/deductions/DeductionsPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 
@@ -120,6 +122,22 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <ScheduleEPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/schedule-a"
+        element={
+          <AuthGuard>
+            <ScheduleAPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/deductions"
+        element={
+          <AuthGuard>
+            <DeductionsPage />
           </AuthGuard>
         }
       />

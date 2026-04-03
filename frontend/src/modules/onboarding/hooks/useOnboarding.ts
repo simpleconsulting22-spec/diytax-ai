@@ -38,6 +38,13 @@ export type FilingStatus =
   | "married_separately"
   | "head_of_household";
 
+export type EntityOwner = "primary" | "spouse" | "both";
+
+export interface EntityEntry {
+  name: string;
+  owner: EntityOwner;
+}
+
 export interface OnboardingState {
   step: number;
   // Step 2 — owner info
@@ -47,8 +54,8 @@ export interface OnboardingState {
   // Step 3 — income sources
   incomeSources: IncomeSource[];
   // Step 4 — entity names (conditional)
-  businessNames: string[];
-  rentalNames: string[];
+  businesses: EntityEntry[];
+  rentals: EntityEntry[];
   // Step 5 — expense types
   expenseTypes: ExpenseType[];
   // Step 6 — data source
@@ -83,8 +90,8 @@ export function useOnboarding() {
     filingStatus: null,
     spouseName: "",
     incomeSources: [],
-    businessNames: [""],
-    rentalNames: [""],
+    businesses: [{ name: "", owner: "primary" }],
+    rentals: [{ name: "", owner: "primary" }],
     expenseTypes: [],
     dataSourcePreference: null,
     consented: false,
@@ -114,12 +121,13 @@ export function useOnboarding() {
         }
 
         const profile = profileSnap.data();
-        const businessNames: string[] = [];
-        const rentalNames: string[] = [];
+        const businesses: EntityEntry[] = [];
+        const rentals: EntityEntry[] = [];
         entitiesSnap.forEach((d) => {
           const e = d.data();
-          if (e.type === "business") businessNames.push(e.name);
-          if (e.type === "rental") rentalNames.push(e.name);
+          const entry: EntityEntry = { name: e.name, owner: (e.owner as EntityOwner) ?? "primary" };
+          if (e.type === "business") businesses.push(entry);
+          if (e.type === "rental") rentals.push(entry);
         });
 
         setState((prev) => ({
@@ -130,8 +138,8 @@ export function useOnboarding() {
           incomeSources: (profile.incomeSources as IncomeSource[]) ?? [],
           expenseTypes: (profile.expenseTypes as ExpenseType[]) ?? [],
           dataSourcePreference: (profile.dataSourcePreference as DataSourcePreference) ?? null,
-          businessNames: businessNames.length > 0 ? businessNames : [""],
-          rentalNames: rentalNames.length > 0 ? rentalNames : [""],
+          businesses: businesses.length > 0 ? businesses : [{ name: "", owner: "primary" }],
+          rentals: rentals.length > 0 ? rentals : [{ name: "", owner: "primary" }],
           consented: true,
           isEditing: true,
           loadingProfile: false,
@@ -184,42 +192,36 @@ export function useOnboarding() {
     }));
   }
 
-  function updateBusinessName(index: number, name: string) {
+  function updateBusiness(index: number, patch: Partial<EntityEntry>) {
     setState((prev) => {
-      const updated = [...prev.businessNames];
-      updated[index] = name;
-      return { ...prev, businessNames: updated };
+      const updated = [...prev.businesses];
+      updated[index] = { ...updated[index], ...patch };
+      return { ...prev, businesses: updated };
     });
   }
 
-  function addBusinessName() {
-    setState((prev) => ({ ...prev, businessNames: [...prev.businessNames, ""] }));
+  function addBusiness() {
+    setState((prev) => ({ ...prev, businesses: [...prev.businesses, { name: "", owner: "primary" }] }));
   }
 
-  function removeBusinessName(index: number) {
-    setState((prev) => ({
-      ...prev,
-      businessNames: prev.businessNames.filter((_, i) => i !== index),
-    }));
+  function removeBusiness(index: number) {
+    setState((prev) => ({ ...prev, businesses: prev.businesses.filter((_, i) => i !== index) }));
   }
 
-  function updateRentalName(index: number, name: string) {
+  function updateRental(index: number, patch: Partial<EntityEntry>) {
     setState((prev) => {
-      const updated = [...prev.rentalNames];
-      updated[index] = name;
-      return { ...prev, rentalNames: updated };
+      const updated = [...prev.rentals];
+      updated[index] = { ...updated[index], ...patch };
+      return { ...prev, rentals: updated };
     });
   }
 
-  function addRentalName() {
-    setState((prev) => ({ ...prev, rentalNames: [...prev.rentalNames, ""] }));
+  function addRental() {
+    setState((prev) => ({ ...prev, rentals: [...prev.rentals, { name: "", owner: "primary" }] }));
   }
 
-  function removeRentalName(index: number) {
-    setState((prev) => ({
-      ...prev,
-      rentalNames: prev.rentalNames.filter((_, i) => i !== index),
-    }));
+  function removeRental(index: number) {
+    setState((prev) => ({ ...prev, rentals: prev.rentals.filter((_, i) => i !== index) }));
   }
 
   function setDataSourcePreference(pref: DataSourcePreference) {
@@ -273,21 +275,23 @@ export function useOnboarding() {
 
       // Create entity documents for business and/or rental
       if (state.incomeSources.includes("business")) {
-        for (const name of state.businessNames.filter((n) => n.trim())) {
+        for (const entry of state.businesses.filter((e) => e.name.trim())) {
           await addDoc(collection(db, "entities"), {
             userId: user.uid,
             type: "business",
-            name: name.trim(),
+            name: entry.name.trim(),
+            owner: entry.owner,
             createdAt: serverTimestamp(),
           });
         }
       }
       if (state.incomeSources.includes("rental")) {
-        for (const name of state.rentalNames.filter((n) => n.trim())) {
+        for (const entry of state.rentals.filter((e) => e.name.trim())) {
           await addDoc(collection(db, "entities"), {
             userId: user.uid,
             type: "rental",
-            name: name.trim(),
+            name: entry.name.trim(),
+            owner: entry.owner,
             createdAt: serverTimestamp(),
           });
         }
@@ -339,12 +343,12 @@ export function useOnboarding() {
     setSpouseName,
     toggleIncomeSource,
     toggleExpenseType,
-    updateBusinessName,
-    addBusinessName,
-    removeBusinessName,
-    updateRentalName,
-    addRentalName,
-    removeRentalName,
+    updateBusiness,
+    addBusiness,
+    removeBusiness,
+    updateRental,
+    addRental,
+    removeRental,
     setDataSourcePreference,
     setConsented,
     goNext,

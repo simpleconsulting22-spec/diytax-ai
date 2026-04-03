@@ -4,6 +4,7 @@ import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEProperty } from "./useDashboardData";
+import { useScheduleA } from "../tax/hooks/useScheduleA";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -239,6 +240,7 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { data, loading, error, reload } = useDashboardData();
+  const { data: scheduleAData, loading: scheduleALoading } = useScheduleA();
 
   const progress =
     data.total > 0 ? Math.round((data.categorized / data.total) * 100) : 0;
@@ -292,6 +294,7 @@ export default function DashboardPage() {
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
           <button style={navLink} onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
           <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
+          <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
@@ -541,6 +544,45 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* ── Section 5: Deductions (Schedule A) ───────────────────────────── */}
+        {!scheduleALoading && scheduleAData.totalDeductions > 0 && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={sectionTitle}>Itemized Deductions (Sch. A)</div>
+              <button
+                onClick={() => navigate("/schedule-a")}
+                style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, fontSize: "13px", cursor: "pointer", fontFamily: font }}
+              >
+                View Schedule A →
+              </button>
+            </div>
+            {[
+              { label: "Medical Expenses", amount: scheduleAData.medicalTotal },
+              { label: "Taxes Paid (SALT)", amount: scheduleAData.taxesTotal, cap: scheduleAData.saltCapApplied },
+              { label: "Mortgage Interest", amount: scheduleAData.mortgageTotal },
+              { label: "Charitable Contributions", amount: scheduleAData.charityTotal },
+            ]
+              .filter((r) => r.amount > 0)
+              .map((row) => (
+                <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f3f4f6", fontSize: "14px" }}>
+                  <span style={{ color: "#374151" }}>
+                    {row.label}
+                    {row.cap && <span style={{ marginLeft: "6px", fontSize: "11px", color: "#d97706", fontWeight: 500 }}>SALT cap applied</span>}
+                  </span>
+                  <span style={{ fontWeight: 600, color: "#16A34A", fontVariantNumeric: "tabular-nums" }}>
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(row.amount)}
+                  </span>
+                </div>
+              ))}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "14px", fontWeight: 700, fontSize: "15px", color: "#111827" }}>
+              <span>Total Deductions</span>
+              <span style={{ color: "#16A34A", fontVariantNumeric: "tabular-nums" }}>
+                {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(scheduleAData.totalDeductions)}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Quick actions */}
         <div style={{ display: "flex", gap: "12px", marginTop: "8px" }}>
           <button
@@ -548,6 +590,12 @@ export default function DashboardPage() {
             style={{ padding: "12px 28px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "8px", fontSize: "15px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
           >
             Business Income & Expenses (Sch. C)
+          </button>
+          <button
+            onClick={() => navigate("/deductions")}
+            style={{ padding: "12px 28px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "15px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+          >
+            Deductions (Sch. A)
           </button>
           <button
             onClick={() => navigate("/transactions")}

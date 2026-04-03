@@ -7,6 +7,7 @@ import {
   ExpenseType,
   DataSourcePreference,
   FilingStatus,
+  EntityOwner,
 } from "./hooks/useOnboarding";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -133,12 +134,12 @@ export default function OnboardingPage() {
     setSpouseName,
     toggleIncomeSource,
     toggleExpenseType,
-    updateBusinessName,
-    addBusinessName,
-    removeBusinessName,
-    updateRentalName,
-    addRentalName,
-    removeRentalName,
+    updateBusiness,
+    addBusiness,
+    removeBusiness,
+    updateRental,
+    addRental,
+    removeRental,
     setDataSourcePreference,
     setConsented,
     goNext,
@@ -155,8 +156,8 @@ export default function OnboardingPage() {
     filingStatus,
     spouseName,
     incomeSources,
-    businessNames,
-    rentalNames,
+    businesses,
+    rentals,
     expenseTypes,
     dataSourcePreference,
     consented,
@@ -356,12 +357,13 @@ export default function OnboardingPage() {
   if (step === 4) {
     const hasBusinessSelected = incomeSources.includes("business");
     const hasRentalSelected = incomeSources.includes("rental");
+    const isMarried = filingStatus === "married_jointly" || filingStatus === "married_separately";
 
-    const validBusinessNames = businessNames.filter((n) => n.trim().length > 0);
-    const validRentalNames = rentalNames.filter((n) => n.trim().length > 0);
+    const validBusinesses = businesses.filter((e) => e.name.trim().length > 0);
+    const validRentals = rentals.filter((e) => e.name.trim().length > 0);
     const canContinue =
-      (!hasBusinessSelected || validBusinessNames.length > 0) &&
-      (!hasRentalSelected || validRentalNames.length > 0);
+      (!hasBusinessSelected || validBusinesses.length > 0) &&
+      (!hasRentalSelected || validRentals.length > 0);
 
     const addBtnStyle: React.CSSProperties = {
       background: "none",
@@ -388,6 +390,47 @@ export default function OnboardingPage() {
       flexShrink: 0,
     };
 
+    function OwnerSelector({
+      value,
+      onChange,
+    }: {
+      value: EntityOwner;
+      onChange: (v: EntityOwner) => void;
+    }) {
+      const ownerOptions: { value: EntityOwner; label: string }[] = [
+        { value: "primary", label: ownerName || "Me" },
+        { value: "spouse", label: spouseName || "Spouse" },
+        { value: "both", label: "Both" },
+      ];
+      return (
+        <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
+          {ownerOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => onChange(opt.value)}
+              style={{
+                flex: 1,
+                padding: "6px 8px",
+                fontSize: "12px",
+                fontWeight: value === opt.value ? 600 : 400,
+                border: `1.5px solid ${value === opt.value ? "#16A34A" : "#d1d5db"}`,
+                borderRadius: "6px",
+                backgroundColor: value === opt.value ? "#DCFCE7" : "#fff",
+                color: value === opt.value ? "#166534" : "#6b7280",
+                cursor: "pointer",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
     return (
       <div style={pageStyle}>
         <ProgressBar step={4} totalSteps={6} />
@@ -401,21 +444,29 @@ export default function OnboardingPage() {
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
                 Add one entry per business or side hustle
               </div>
-              {businessNames.map((name, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
-                  <input
-                    style={{ ...inputStyle, marginTop: 0 }}
-                    type="text"
-                    placeholder="e.g. Acme Consulting LLC"
-                    value={name}
-                    onChange={(e) => updateBusinessName(i, e.target.value)}
-                  />
-                  {businessNames.length > 1 && (
-                    <button style={removeBtnStyle} onClick={() => removeBusinessName(i)} title="Remove">×</button>
+              {businesses.map((entry, i) => (
+                <div key={i} style={{ marginBottom: "14px" }}>
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <input
+                      style={{ ...inputStyle, marginTop: 0 }}
+                      type="text"
+                      placeholder="e.g. Acme Consulting LLC"
+                      value={entry.name}
+                      onChange={(e) => updateBusiness(i, { name: e.target.value })}
+                    />
+                    {businesses.length > 1 && (
+                      <button style={removeBtnStyle} onClick={() => removeBusiness(i)} title="Remove">×</button>
+                    )}
+                  </div>
+                  {isMarried && (
+                    <OwnerSelector
+                      value={entry.owner}
+                      onChange={(v) => updateBusiness(i, { owner: v })}
+                    />
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addBusinessName}>+ Add another business</button>
+              <button style={addBtnStyle} onClick={addBusiness}>+ Add another business</button>
             </div>
           )}
 
@@ -425,21 +476,29 @@ export default function OnboardingPage() {
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
                 Add one entry per property
               </div>
-              {rentalNames.map((name, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
-                  <input
-                    style={{ ...inputStyle, marginTop: 0 }}
-                    type="text"
-                    placeholder="e.g. 123 Oak St, Unit 2"
-                    value={name}
-                    onChange={(e) => updateRentalName(i, e.target.value)}
-                  />
-                  {rentalNames.length > 1 && (
-                    <button style={removeBtnStyle} onClick={() => removeRentalName(i)} title="Remove">×</button>
+              {rentals.map((entry, i) => (
+                <div key={i} style={{ marginBottom: "14px" }}>
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <input
+                      style={{ ...inputStyle, marginTop: 0 }}
+                      type="text"
+                      placeholder="e.g. 123 Oak St, Unit 2"
+                      value={entry.name}
+                      onChange={(e) => updateRental(i, { name: e.target.value })}
+                    />
+                    {rentals.length > 1 && (
+                      <button style={removeBtnStyle} onClick={() => removeRental(i)} title="Remove">×</button>
+                    )}
+                  </div>
+                  {isMarried && (
+                    <OwnerSelector
+                      value={entry.owner}
+                      onChange={(v) => updateRental(i, { owner: v })}
+                    />
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addRentalName}>+ Add another property</button>
+              <button style={addBtnStyle} onClick={addRental}>+ Add another property</button>
             </div>
           )}
 

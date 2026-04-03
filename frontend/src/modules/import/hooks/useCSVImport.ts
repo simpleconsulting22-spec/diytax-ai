@@ -334,17 +334,25 @@ async function writeTransactions(
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
+export interface ImportResult {
+  importId: string;
+  importedCount: number;
+  skippedCount: number;
+  duplicateCount: number;
+  fileName: string;
+}
+
 interface ImportState {
   fileName: string;
   parseError: string;
   rows: NormalizedRow[];
   importing: boolean;
   importError: string;
+  importResult: ImportResult | null;
 }
 
 export function useCSVImport() {
   const { user } = useAuth();
-  const navigate = useNavigate();
 
   const [state, setState] = useState<ImportState>({
     fileName: "",
@@ -352,11 +360,12 @@ export function useCSVImport() {
     rows: [],
     importing: false,
     importError: "",
+    importResult: null,
   });
 
   async function handleFileChange(file: File | null) {
     if (!file) return;
-    setState((prev) => ({ ...prev, fileName: file.name, parseError: "", rows: [] }));
+    setState((prev) => ({ ...prev, fileName: file.name, parseError: "", rows: [], importResult: null }));
     try {
       const rows = await parseCSVFile(file);
       setState((prev) => ({ ...prev, rows }));
@@ -372,8 +381,13 @@ export function useCSVImport() {
     if (!user || state.rows.length === 0) return;
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      await writeTransactions(user.uid, state.rows, state.fileName);
-      navigate("/transactions");
+      const result = await writeTransactions(user.uid, state.rows, state.fileName);
+      setState((prev) => ({
+        ...prev,
+        importing: false,
+        rows: [],
+        importResult: { ...result, fileName: prev.fileName },
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -383,5 +397,16 @@ export function useCSVImport() {
     }
   }
 
-  return { state, handleFileChange, handleImport };
+  function resetImport() {
+    setState({
+      fileName: "",
+      parseError: "",
+      rows: [],
+      importing: false,
+      importError: "",
+      importResult: null,
+    });
+  }
+
+  return { state, handleFileChange, handleImport, resetImport };
 }
