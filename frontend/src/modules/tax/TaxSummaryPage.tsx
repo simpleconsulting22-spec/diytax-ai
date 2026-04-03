@@ -4,6 +4,9 @@ import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleC, EntityScheduleC, ScheduleCLine } from "./hooks/useScheduleC";
+import { useScheduleE } from "./hooks/useScheduleE";
+import { useSSAData } from "../income/hooks/useSSAData";
+import { useRetirementData } from "../income/hooks/useRetirementData";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -232,6 +235,9 @@ export default function TaxSummaryPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { entities, loading, error, reload } = useScheduleC();
+  const { properties } = useScheduleE();
+  const { ssaTotal } = useSSAData();
+  const { retirementTotal } = useRetirementData();
 
   const navLink: React.CSSProperties = {
     background: "none",
@@ -255,6 +261,15 @@ export default function TaxSummaryPage() {
   const grandProfit = grandIncome - grandExpenses;
 
   const hasUnassigned = entities.some((e) => e.entityId === null);
+
+  // Schedule E net income (assigned properties only)
+  const scheduleENet = properties
+    .filter((p) => p.entityId !== null)
+    .reduce((s, p) => s + p.scheduleE.netIncome, 0);
+
+  // Total income across all sources
+  const totalIncome = grandProfit + scheduleENet + ssaTotal + retirementTotal;
+  const hasOtherIncome = scheduleENet !== 0 || ssaTotal > 0 || retirementTotal > 0;
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
@@ -281,9 +296,14 @@ export default function TaxSummaryPage() {
           <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
-          <button style={navLinkActive}>Tax Summary</button>
+          <button style={navLink} onClick={() => navigate("/income/ssa")}>Social Security</button>
+          <button style={navLink} onClick={() => navigate("/income/retirement")}>Retirement Income</button>
+          <button style={navLinkActive}>Business Income & Expenses (Sch. C)</button>
+          <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
+          <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
             onClick={() => signOut(auth).then(() => navigate("/login"))}
@@ -327,6 +347,43 @@ export default function TaxSummaryPage() {
         {error && (
           <div style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "24px" }}>
             {error}
+          </div>
+        )}
+
+        {/* ── Total Income Summary ─────────────────────────────────────────── */}
+        {(hasOtherIncome || (!loading && entities.length > 0)) && (
+          <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", overflow: "hidden", marginBottom: "32px" }}>
+            <div style={{ padding: "16px 28px", borderBottom: "1px solid #e5e7eb", backgroundColor: "#f9fafb", fontWeight: 700, fontSize: "15px", color: "#111827" }}>
+              Total Income Summary
+            </div>
+            {[
+              { label: "Business Income (Sch. C Net)", amount: grandProfit, link: null },
+              { label: "Rental Income (Sch. E Net)", amount: scheduleENet, link: "/schedule-e" },
+              { label: "Social Security (SSA-1099)", amount: ssaTotal, link: "/income/ssa" },
+              { label: "Retirement / Pension (1099-R)", amount: retirementTotal, link: "/income/retirement" },
+            ]
+              .filter((row) => row.amount !== 0)
+              .map((row) => (
+                <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 28px", borderBottom: "1px solid #f3f4f6", fontSize: "14px" }}>
+                  <span style={{ color: "#374151" }}>{row.label}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                    <span style={{ fontWeight: 600, color: row.amount >= 0 ? "#16A34A" : "#dc2626", fontVariantNumeric: "tabular-nums" }}>
+                      {fmt(row.amount)}
+                    </span>
+                    {row.link && (
+                      <button onClick={() => navigate(row.link!)} style={{ background: "none", border: "none", color: "#16A34A", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}>
+                        Edit →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 28px", backgroundColor: "#f0fdf4" }}>
+              <span style={{ fontWeight: 700, fontSize: "15px", color: "#111827" }}>Estimated Total Income</span>
+              <span style={{ fontWeight: 700, fontSize: "20px", color: totalIncome >= 0 ? "#16A34A" : "#dc2626", fontVariantNumeric: "tabular-nums" }}>
+                {fmt(totalIncome)}
+              </span>
+            </div>
           </div>
         )}
 

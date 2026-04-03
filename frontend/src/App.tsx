@@ -20,6 +20,8 @@ import TaxSummaryPage from "./modules/tax/TaxSummaryPage";
 import ScheduleEPage from "./modules/tax/ScheduleEPage";
 import ScheduleAPage from "./modules/tax/ScheduleAPage";
 import DeductionsPage from "./modules/deductions/DeductionsPage";
+import SSAPage from "./modules/income/SSAPage";
+import RetirementPage from "./modules/income/RetirementPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 
@@ -138,6 +140,22 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <DeductionsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/income/ssa"
+        element={
+          <AuthGuard>
+            <SSAPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/income/retirement"
+        element={
+          <AuthGuard>
+            <RetirementPage />
           </AuthGuard>
         }
       />

@@ -6,6 +6,7 @@ import {
   where,
   getDocs,
   addDoc,
+  deleteDoc,
   writeBatch,
   doc,
   serverTimestamp,
@@ -21,9 +22,27 @@ export interface NormalizedRow {
   date: string;
   description: string;
   amount: number;           // NaN = unparseable/missing
-  type: "income" | "expense";
+  type: "income" | "expense" | "transfer";
+  isTransfer: boolean;
   accountIdentifier: string | null;
   rawData: Record<string, string>;
+}
+
+// ─── Transfer detection ───────────────────────────────────────────────────────
+
+const TRANSFER_PATTERNS = [
+  /\btransfer\b/i,
+  /\bxfer\b/i,
+  /\bmobile transfer\b/i,
+  /\bonline transfer\b/i,
+  /\baccount transfer\b/i,
+  /\bbetween accounts\b/i,
+  /^from\s+(checking|savings|account)/i,
+  /^to\s+(checking|savings|account)/i,
+];
+
+function detectTransfer(description: string): boolean {
+  return TRANSFER_PATTERNS.some((re) => re.test(description));
 }
 
 interface PreparedRow {
@@ -130,11 +149,17 @@ export function parseCSVFile(file: File): Promise<NormalizedRow[]> {
         const rows: NormalizedRow[] = results.data
           .map((row) => {
             const amount = parseAmount(row[amtCol] ?? "");
+            const description = (row[descCol] ?? "").trim();
+            const isTransfer = detectTransfer(description);
+            const type: NormalizedRow["type"] = isTransfer
+              ? "transfer"
+              : (!isNaN(amount) && amount >= 0 ? "income" : "expense");
             return {
               date: parseDate(row[dateCol] ?? ""),
-              description: (row[descCol] ?? "").trim(),
+              description,
               amount,
-              type: (!isNaN(amount) && amount >= 0 ? "income" : "expense") as "income" | "expense",
+              type,
+              isTransfer,
               accountIdentifier: acctCol ? (row[acctCol] ?? "").trim() || null : null,
               rawData: row,
             };
@@ -218,6 +243,7 @@ interface WriteResult {
   importedCount: number;
   skippedCount: number;
   duplicateCount: number;
+  transferCount: number;
 }
 
 async function writeTransactions(
@@ -276,6 +302,7 @@ async function writeTransactions(
   const existingKeys = await findExistingImportKeys(userId, allKeys);
 
   let duplicateCount = 0;
+  let transferCount = 0;
   const rowsToWrite = prepared.filter(({ importKey }) => {
     if (existingKeys.has(importKey)) {
       duplicateCount++;
@@ -305,6 +332,7 @@ async function writeTransactions(
 
     for (const { row, accountId, normalizedDescription, importKey } of chunk) {
       const ref = doc(collection(db, "transactions"));
+      if (row.isTransfer) transferCount++;
       batch.set(ref, {
         uid: userId,
         accountId,
@@ -314,14 +342,14 @@ async function writeTransactions(
         vendor: extractVendor(normalizedDescription),
         amount: row.amount,
         type: row.type,
-        status: "needs_review",
+        status: row.isTransfer ? "transfer" : "needs_review",
         source: "csv",
         importId,
         importKey,
         rawData: row.rawData,
-        entityId: defaultEntity?.id ?? null,
-        entityType: defaultEntity?.type ?? "personal",
-        entityName: defaultEntity?.name ?? null,
+        entityId: row.isTransfer ? null : (defaultEntity?.id ?? null),
+        entityType: row.isTransfer ? null : (defaultEntity?.type ?? "personal"),
+        entityName: row.isTransfer ? null : (defaultEntity?.name ?? null),
         createdAt: serverTimestamp(),
       });
     }
@@ -329,7 +357,7 @@ async function writeTransactions(
     await batch.commit();
   }
 
-  return { importId, importedCount: rowsToWrite.length, skippedCount, duplicateCount };
+  return { importId, importedCount: rowsToWrite.length, skippedCount, duplicateCount, transferCount };
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -339,6 +367,7 @@ export interface ImportResult {
   importedCount: number;
   skippedCount: number;
   duplicateCount: number;
+  transferCount: number;
   fileName: string;
 }
 
@@ -386,7 +415,7 @@ export function useCSVImport() {
         ...prev,
         importing: false,
         rows: [],
-        importResult: { ...result, fileName: prev.fileName },
+        importResult: { ...result, transferCount: result.transferCount, fileName: prev.fileName },
       }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -408,5 +437,24 @@ export function useCSVImport() {
     });
   }
 
-  return { state, handleFileChange, handleImport, resetImport };
+  async function deleteImport(importId: string): Promise<void> {
+    if (!user) return;
+    // Delete all transactions belonging to this import in batches
+    const txnSnap = await getDocs(
+      query(
+        collection(db, "transactions"),
+        where("uid", "==", user.uid),
+        where("importId", "==", importId)
+      )
+    );
+    for (let i = 0; i < txnSnap.docs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      txnSnap.docs.slice(i, i + BATCH_SIZE).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    // Delete the import record itself
+    await deleteDoc(doc(db, "imports", importId));
+  }
+
+  return { state, handleFileChange, handleImport, resetImport, deleteImport };
 }

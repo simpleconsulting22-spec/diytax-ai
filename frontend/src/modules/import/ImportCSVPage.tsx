@@ -84,7 +84,8 @@ export default function ImportCSVPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { state, handleFileChange, handleImport, resetImport } = useCSVImport();
+  const { state, handleFileChange, handleImport, resetImport, deleteImport } = useCSVImport();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const { fileName, parseError, rows, importing, importError, importResult } = state;
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -168,6 +169,7 @@ export default function ImportCSVPage() {
             <div style={{ display: "flex", gap: "24px", marginBottom: "20px" }}>
               {[
                 { label: "Imported", value: importResult.importedCount, color: "#16A34A" },
+                { label: "Transfers (excluded)", value: importResult.transferCount, color: "#6b7280" },
                 { label: "Duplicates skipped", value: importResult.duplicateCount, color: "#6b7280" },
                 { label: "Rows with errors", value: importResult.skippedCount, color: importResult.skippedCount > 0 ? "#d97706" : "#6b7280" },
               ].map((stat) => (
@@ -292,10 +294,40 @@ export default function ImportCSVPage() {
                   <div style={{ fontWeight: 500, color: "#111827" }}>{record.fileName}</div>
                   <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px" }}>{fmtDate(record)}</div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <span style={{ fontWeight: 600, color: "#16A34A" }}>{record.importedCount} imported</span>
-                  {record.skippedCount > 0 && (
-                    <span style={{ color: "#9ca3af", marginLeft: "10px" }}>{record.skippedCount} skipped</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontWeight: 600, color: "#16A34A" }}>{record.importedCount} imported</span>
+                    {record.skippedCount > 0 && (
+                      <span style={{ color: "#9ca3af", marginLeft: "10px" }}>{record.skippedCount} skipped</span>
+                    )}
+                  </div>
+                  {deletingId === record.id ? (
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <button
+                        onClick={async () => {
+                          await deleteImport(record.id);
+                          setDeletingId(null);
+                          setHistoryRefreshKey((k) => k + 1);
+                        }}
+                        style={{ padding: "5px 12px", backgroundColor: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                      >
+                        Confirm Delete
+                      </button>
+                      <button
+                        onClick={() => setDeletingId(null)}
+                        style={{ padding: "5px 10px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setDeletingId(record.id)}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px 8px", borderRadius: "4px" }}
+                      title="Delete import"
+                    >
+                      🗑 Delete
+                    </button>
                   )}
                 </div>
               </div>
