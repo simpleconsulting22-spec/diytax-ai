@@ -68,7 +68,7 @@ export async function categorizeTransactionLogic(
   }
 }
 
-export const categorizeTransaction = onCall({ cors: true }, async (request) => {
+export const categorizeTransaction = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as { transactionId?: string };

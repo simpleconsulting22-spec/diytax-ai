@@ -4,7 +4,7 @@ import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { requireAuth } from "../middleware/auth";
 import { fetchTransactionsForAccount } from "./fetchTransactions";
 
-export const exchangePublicToken = onCall({ cors: true }, async (request) => {
+export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as {

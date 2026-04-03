@@ -1,8 +1,9 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import * as nodemailer from "nodemailer";
 import { requireAuth } from "../middleware/auth";
 
-export const sendMfaCode = onCall({ cors: true }, async (request) => {
+export const sendMfaCode = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as { email?: string };
@@ -21,12 +22,27 @@ export const sendMfaCode = onCall({ cors: true }, async (request) => {
     mfaVerified: false,
   });
 
-  await db.collection("mail").add({
-    to: data.email,
-    message: {
-      subject: "DIYTax AI Verification Code",
-      text: `Your DIYTax AI verification code is: ${code}\n\nThis code expires in 10 minutes.\n\nIf you did not request this code, please ignore this email.`,
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    auth: {
+      user: gmailUser,
+      pass: gmailPass,
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  });
+
+  await transporter.sendMail({
+    from: `"DIYTax AI" <${gmailUser}>`,
+    to: data.email,
+    subject: "DIYTax AI - Your Verification Code",
+    text: `Your DIYTax AI verification code is: ${code}\n\nThis code expires in 10 minutes.\n\nIf you did not request this code, please ignore this email.`,
   });
 
   return { sent: true };

@@ -8,7 +8,7 @@ import {
 } from "plaid";
 import { requireAuth } from "../middleware/auth";
 
-export const createPlaidLinkToken = onCall({ cors: true }, async (request) => {
+export const createPlaidLinkToken = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const clientId = process.env.PLAID_CLIENT_ID;

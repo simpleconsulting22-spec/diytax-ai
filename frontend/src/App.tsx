@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   BrowserRouter,
   Routes,
@@ -16,9 +16,8 @@ import TaxFlowPage from "./pages/TaxFlowPage";
 import SummaryPage from "./pages/SummaryPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, userDoc, loading } = useAuth();
+  const { user, userDoc, loading, mfaVerified, setMfaVerified } = useAuth();
   const location = useLocation();
-  const [mfaVerified, setMfaVerified] = useState(false);
 
   if (loading) {
     return (

@@ -88,7 +88,7 @@ export async function fetchTransactionsForAccount(
   return imported;
 }
 
-export const fetchTransactions = onCall({ cors: true }, async (request) => {
+export const fetchTransactions = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as { accountId?: string };

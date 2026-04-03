@@ -14,7 +14,7 @@ interface PlaidMetadata {
 }
 
 export default function OnboardingPage() {
-  const { user } = useAuth();
+  const { user, refreshUserDoc } = useAuth();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [filingType, setFilingType] = useState<FilingType | null>(null);
@@ -70,6 +70,7 @@ export default function OnboardingPage() {
         createdAt: serverTimestamp(),
       });
       await updateDoc(doc(db, "users", user.uid), { onboardingComplete: true });
+      await refreshUserDoc();
       navigate("/dashboard");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to save profile.");

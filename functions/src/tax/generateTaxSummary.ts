@@ -2,7 +2,7 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { requireAuth } from "../middleware/auth";
 
-export const generateTaxSummary = onCall({ cors: true }, async (request) => {
+export const generateTaxSummary = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as { taxYear?: number };
