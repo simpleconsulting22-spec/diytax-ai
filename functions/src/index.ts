@@ -9,4 +9,6 @@ export * from "./plaid/exchangePublicToken";
 export * from "./plaid/fetchTransactions";
 export * from "./categorization/categorizeTransaction";
 export * from "./categorization/updateTransactionCategory";
+export * from "./categorization/categorizeBatch";
+export * from "./categorization/backfillTransactions";
 export * from "./tax/generateTaxSummary";

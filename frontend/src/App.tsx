@@ -9,11 +9,14 @@ import {
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import MfaModal from "./components/MfaModal";
 import LoginPage from "./pages/LoginPage";
-import OnboardingPage from "./pages/OnboardingPage";
-import DashboardPage from "./pages/DashboardPage";
+import OnboardingPage from "./modules/onboarding/OnboardingPage";
+import DashboardPage from "./modules/dashboard/DashboardPage";
 import TransactionsPage from "./pages/TransactionsPage";
 import TaxFlowPage from "./pages/TaxFlowPage";
 import SummaryPage from "./pages/SummaryPage";
+import ImportCSVPage from "./modules/import/ImportCSVPage";
+import ReviewPage from "./modules/review/ReviewPage";
+import TaxSummaryPage from "./modules/tax/TaxSummaryPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified } = useAuth();
@@ -83,6 +86,30 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <SummaryPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/import-csv"
+        element={
+          <AuthGuard>
+            <ImportCSVPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/review"
+        element={
+          <AuthGuard>
+            <ReviewPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/tax-summary"
+        element={
+          <AuthGuard>
+            <TaxSummaryPage />
           </AuthGuard>
         }
       />

@@ -25,6 +25,7 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
   await db.collection("transactions").doc(data.transactionId).update({
     category: data.category,
     status: "categorized",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
   // Upsert category rule
