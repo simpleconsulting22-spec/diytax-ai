@@ -1,0 +1,34 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    match /taxProfiles/{doc} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+    }
+    match /accounts/{doc} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+    }
+    match /transactions/{doc} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+    }
+    match /categoryRules/{doc} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+    }
+    match /taxSessions/{doc} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+    }
+    match /userSecurity/{uid} {
+      allow read, write: if false;
+    }
+    match /mail/{doc} {
+      allow read, write: if false;
+    }
+  }
+}
