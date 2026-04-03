@@ -32,13 +32,28 @@ export type ExpenseType =
 
 export type DataSourcePreference = "csv" | "bank_future" | "manual";
 
+export type FilingStatus =
+  | "single"
+  | "married_jointly"
+  | "married_separately"
+  | "head_of_household";
+
 export interface OnboardingState {
   step: number;
+  // Step 2 — owner info
+  ownerName: string;
+  filingStatus: FilingStatus | null;
+  spouseName: string;
+  // Step 3 — income sources
   incomeSources: IncomeSource[];
+  // Step 4 — entity names (conditional)
   businessNames: string[];
   rentalNames: string[];
+  // Step 5 — expense types
   expenseTypes: ExpenseType[];
+  // Step 6 — data source
   dataSourcePreference: DataSourcePreference | null;
+  // Meta
   consented: boolean;
   saving: boolean;
   error: string;
@@ -64,6 +79,9 @@ export function useOnboarding() {
 
   const [state, setState] = useState<OnboardingState>({
     step: 1,
+    ownerName: "",
+    filingStatus: null,
+    spouseName: "",
     incomeSources: [],
     businessNames: [""],
     rentalNames: [""],
@@ -106,6 +124,9 @@ export function useOnboarding() {
 
         setState((prev) => ({
           ...prev,
+          ownerName: profile.ownerName ?? "",
+          filingStatus: (profile.filingStatus as FilingStatus) ?? null,
+          spouseName: profile.spouseName ?? "",
           incomeSources: (profile.incomeSources as IncomeSource[]) ?? [],
           expenseTypes: (profile.expenseTypes as ExpenseType[]) ?? [],
           dataSourcePreference: (profile.dataSourcePreference as DataSourcePreference) ?? null,
@@ -123,8 +144,26 @@ export function useOnboarding() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid]);
 
-  function needsStep3(sources: IncomeSource[]) {
+  function needsEntityStep(sources: IncomeSource[]) {
     return sources.includes("business") || sources.includes("rental");
+  }
+
+  // ── Setters ──────────────────────────────────────────────────────────────────
+
+  function setOwnerName(name: string) {
+    setState((prev) => ({ ...prev, ownerName: name }));
+  }
+
+  function setFilingStatus(status: FilingStatus) {
+    setState((prev) => ({
+      ...prev,
+      filingStatus: status,
+      spouseName: status === "single" || status === "head_of_household" ? "" : prev.spouseName,
+    }));
+  }
+
+  function setSpouseName(name: string) {
+    setState((prev) => ({ ...prev, spouseName: name }));
   }
 
   function toggleIncomeSource(source: IncomeSource) {
@@ -191,10 +230,14 @@ export function useOnboarding() {
     setState((prev) => ({ ...prev, consented: value }));
   }
 
+  // ── Navigation ────────────────────────────────────────────────────────────────
+  // Steps: 1=welcome, 2=owner info, 3=income sources, 4=entities(conditional), 5=expenses, 6=data source
+
   function goNext() {
     setState((prev) => {
-      if (prev.step === 2 && !needsStep3(prev.incomeSources)) {
-        return { ...prev, step: 4 };
+      // Skip entity step (4) if no business/rental selected
+      if (prev.step === 3 && !needsEntityStep(prev.incomeSources)) {
+        return { ...prev, step: 5 };
       }
       return { ...prev, step: prev.step + 1 };
     });
@@ -202,12 +245,15 @@ export function useOnboarding() {
 
   function goBack() {
     setState((prev) => {
-      if (prev.step === 4 && !needsStep3(prev.incomeSources)) {
-        return { ...prev, step: 2 };
+      // Skip back over entity step (4) if it wasn't needed
+      if (prev.step === 5 && !needsEntityStep(prev.incomeSources)) {
+        return { ...prev, step: 3 };
       }
       return { ...prev, step: prev.step - 1 };
     });
   }
+
+  // ── Submit ────────────────────────────────────────────────────────────────────
 
   async function handleSubmit() {
     if (!user || !state.dataSourcePreference) return;
@@ -247,9 +293,16 @@ export function useOnboarding() {
         }
       }
 
-      // Create userProfiles document
+      const isMarried =
+        state.filingStatus === "married_jointly" ||
+        state.filingStatus === "married_separately";
+
+      // Save userProfiles document
       await setDoc(doc(db, "userProfiles", user.uid), {
         userId: user.uid,
+        ownerName: state.ownerName.trim(),
+        filingStatus: state.filingStatus,
+        ...(isMarried && state.spouseName.trim() ? { spouseName: state.spouseName.trim() } : {}),
         incomeSources: state.incomeSources,
         expenseTypes: state.expenseTypes,
         dataSourcePreference: state.dataSourcePreference,
@@ -281,6 +334,9 @@ export function useOnboarding() {
 
   return {
     state,
+    setOwnerName,
+    setFilingStatus,
+    setSpouseName,
     toggleIncomeSource,
     toggleExpenseType,
     updateBusinessName,
@@ -294,7 +350,7 @@ export function useOnboarding() {
     goNext,
     goBack,
     handleSubmit,
-    needsStep3: needsStep3(state.incomeSources),
+    needsEntityStep: needsEntityStep(state.incomeSources),
     isEditing: state.isEditing,
     loadingProfile: state.loadingProfile,
   };

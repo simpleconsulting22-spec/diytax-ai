@@ -6,6 +6,7 @@ import {
   IncomeSource,
   ExpenseType,
   DataSourcePreference,
+  FilingStatus,
 } from "./hooks/useOnboarding";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -87,6 +88,14 @@ const inputStyle: React.CSSProperties = {
   marginTop: "8px",
 };
 
+const labelStyle: React.CSSProperties = {
+  fontSize: "15px",
+  fontWeight: 600,
+  color: "#111827",
+  display: "block",
+  marginBottom: "4px",
+};
+
 const INCOME_OPTIONS: { value: IncomeSource; label: string }[] = [
   { value: "job", label: "I have a job" },
   { value: "business", label: "I run a business or side hustle" },
@@ -109,9 +118,19 @@ const DATA_SOURCE_OPTIONS: { value: DataSourcePreference; label: string; sublabe
   { value: "manual", label: "Enter manually" },
 ];
 
+const FILING_STATUS_OPTIONS: { value: FilingStatus; label: string; sublabel?: string }[] = [
+  { value: "single", label: "Single" },
+  { value: "married_jointly", label: "Married Filing Jointly", sublabel: "Both spouses on one return" },
+  { value: "married_separately", label: "Married Filing Separately", sublabel: "Each spouse files their own return" },
+  { value: "head_of_household", label: "Head of Household" },
+];
+
 export default function OnboardingPage() {
   const {
     state,
+    setOwnerName,
+    setFilingStatus,
+    setSpouseName,
     toggleIncomeSource,
     toggleExpenseType,
     updateBusinessName,
@@ -125,12 +144,25 @@ export default function OnboardingPage() {
     goNext,
     goBack,
     handleSubmit,
-    needsStep3,
+    needsEntityStep,
     isEditing,
     loadingProfile,
   } = useOnboarding();
 
-  const { step, incomeSources, businessNames, rentalNames, expenseTypes, dataSourcePreference, consented, saving, error } = state;
+  const {
+    step,
+    ownerName,
+    filingStatus,
+    spouseName,
+    incomeSources,
+    businessNames,
+    rentalNames,
+    expenseTypes,
+    dataSourcePreference,
+    consented,
+    saving,
+    error,
+  } = state;
 
   if (loadingProfile) {
     return (
@@ -140,26 +172,22 @@ export default function OnboardingPage() {
     );
   }
 
-  // Progress segment: map logical step to visual progress
-  // Steps: 1=welcome, 2=income, 3=entities(conditional), 4=expenses, 5=data source
-  // Visual progress always reflects the 5-segment bar; skipped step 3 shows as completed
-  const visualStep = step === 4 && !needsStep3 ? 4 : step === 5 && !needsStep3 ? 5 : step;
+  // Steps: 1=welcome, 2=owner info, 3=income sources, 4=entities(conditional), 5=expenses, 6=data source
+  // When entity step is skipped, visual progress still advances correctly
+  const visualStep = step === 5 && !needsEntityStep ? 5 : step === 6 && !needsEntityStep ? 6 : step;
 
-  // Screen 1: Welcome + consent
+  // ── Screen 1: Welcome + consent ───────────────────────────────────────────────
   if (step === 1) {
     return (
       <div style={pageStyle}>
-        <ProgressBar step={1} />
+        <ProgressBar step={1} totalSteps={6} />
         <div style={cardStyle}>
           <div style={{ fontSize: "48px", textAlign: "center", marginBottom: "16px" }}>👍</div>
-          <div style={{ ...titleStyle, textAlign: "center" }}>
-            Let's get to know you
-          </div>
+          <div style={{ ...titleStyle, textAlign: "center" }}>Let's get to know you</div>
           <div style={{ ...subtitleStyle, textAlign: "center" }}>
             It only takes a couple of minutes to set up your tax profile.
           </div>
 
-          {/* Consent checkbox */}
           <div
             style={{
               backgroundColor: "#f9fafb",
@@ -178,21 +206,11 @@ export default function OnboardingPage() {
               />
               <span style={{ fontSize: "13px", color: "#374151", lineHeight: 1.6 }}>
                 I have read and agree to the{" "}
-                <a
-                  href="/privacy-policy"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}
-                >
+                <a href="/privacy-policy" target="_blank" rel="noopener noreferrer" style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}>
                   Privacy Policy
                 </a>{" "}
                 and{" "}
-                <a
-                  href="/terms-of-service"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}
-                >
+                <a href="/terms-of-service" target="_blank" rel="noopener noreferrer" style={{ color: "#16A34A", fontWeight: 600, textDecoration: "none" }}>
                   Terms of Service
                 </a>
                 . I consent to the collection and processing of my financial data to provide tax
@@ -216,11 +234,96 @@ export default function OnboardingPage() {
     );
   }
 
-  // Screen 2: Income sources
+  // ── Screen 2: Owner info ──────────────────────────────────────────────────────
   if (step === 2) {
+    const isMarried = filingStatus === "married_jointly" || filingStatus === "married_separately";
+    const canContinue =
+      ownerName.trim().length > 0 &&
+      filingStatus !== null &&
+      (!isMarried || spouseName.trim().length > 0);
+
     return (
       <div style={pageStyle}>
-        <ProgressBar step={2} />
+        <ProgressBar step={2} totalSteps={6} />
+        <div style={cardStyle}>
+          <div style={titleStyle}>About your tax return</div>
+          <div style={subtitleStyle}>This helps us correctly label your tax documents</div>
+
+          {/* Owner name */}
+          <div style={{ marginBottom: "24px" }}>
+            <label style={labelStyle}>Your full legal name</label>
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="e.g. Jane Smith"
+              value={ownerName}
+              onChange={(e) => setOwnerName(e.target.value)}
+            />
+          </div>
+
+          {/* Filing status */}
+          <div style={{ marginBottom: isMarried ? "24px" : "0" }}>
+            <div style={labelStyle}>Filing status</div>
+            {FILING_STATUS_OPTIONS.map(({ value, label, sublabel }) => (
+              <div
+                key={value}
+                onClick={() => setFilingStatus(value)}
+                style={{
+                  border: `2px solid ${filingStatus === value ? "#16A34A" : "#e5e7eb"}`,
+                  borderRadius: "10px",
+                  padding: "12px 16px",
+                  cursor: "pointer",
+                  marginTop: "8px",
+                  backgroundColor: filingStatus === value ? "#DCFCE7" : "#fff",
+                  transition: "border-color 0.15s, background-color 0.15s",
+                }}
+              >
+                <span style={{ fontWeight: filingStatus === value ? 600 : 500, fontSize: "14px", color: filingStatus === value ? "#166534" : "#374151" }}>
+                  {label}
+                </span>
+                {sublabel && (
+                  <span style={{ marginLeft: "8px", fontSize: "12px", color: "#9ca3af" }}>
+                    {sublabel}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Spouse name — shown only when married */}
+          {isMarried && (
+            <div style={{ marginTop: "24px" }}>
+              <label style={labelStyle}>Spouse's full legal name</label>
+              <input
+                style={inputStyle}
+                type="text"
+                placeholder="e.g. John Smith"
+                value={spouseName}
+                onChange={(e) => setSpouseName(e.target.value)}
+              />
+            </div>
+          )}
+
+          <button
+            style={{ ...btnPrimary, opacity: canContinue ? 1 : 0.5 }}
+            disabled={!canContinue}
+            onClick={goNext}
+          >
+            Next
+          </button>
+          <button style={btnSecondary} onClick={goBack}>
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Screen 3: Income sources ──────────────────────────────────────────────────
+  if (step === 3) {
+    return (
+      <div style={pageStyle}>
+        <ProgressBar step={3} totalSteps={6} />
         <div style={cardStyle}>
           <div style={titleStyle}>How do you make money?</div>
           <div style={subtitleStyle}>Select all that apply</div>
@@ -249,8 +352,8 @@ export default function OnboardingPage() {
     );
   }
 
-  // Screen 3: Conditional entity info (businesses and/or rentals)
-  if (step === 3) {
+  // ── Screen 4: Entity names (conditional — business and/or rental) ─────────────
+  if (step === 4) {
     const hasBusinessSelected = incomeSources.includes("business");
     const hasRentalSelected = incomeSources.includes("rental");
 
@@ -287,16 +390,14 @@ export default function OnboardingPage() {
 
     return (
       <div style={pageStyle}>
-        <ProgressBar step={3} />
+        <ProgressBar step={4} totalSteps={6} />
         <div style={cardStyle}>
           <div style={titleStyle}>Tell us more</div>
           <div style={subtitleStyle}>We'll use this to set up your tax schedules</div>
 
           {hasBusinessSelected && (
             <div style={{ marginBottom: "28px" }}>
-              <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
-                Business name(s) — Schedule C
-              </div>
+              <div style={labelStyle}>Business name(s) — Schedule C</div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
                 Add one entry per business or side hustle
               </div>
@@ -310,23 +411,17 @@ export default function OnboardingPage() {
                     onChange={(e) => updateBusinessName(i, e.target.value)}
                   />
                   {businessNames.length > 1 && (
-                    <button style={removeBtnStyle} onClick={() => removeBusinessName(i)} title="Remove">
-                      ×
-                    </button>
+                    <button style={removeBtnStyle} onClick={() => removeBusinessName(i)} title="Remove">×</button>
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addBusinessName}>
-                + Add another business
-              </button>
+              <button style={addBtnStyle} onClick={addBusinessName}>+ Add another business</button>
             </div>
           )}
 
           {hasRentalSelected && (
             <div style={{ marginBottom: "8px" }}>
-              <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
-                Rental property address(es) — Schedule E
-              </div>
+              <div style={labelStyle}>Rental property address(es) — Schedule E</div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
                 Add one entry per property
               </div>
@@ -340,15 +435,11 @@ export default function OnboardingPage() {
                     onChange={(e) => updateRentalName(i, e.target.value)}
                   />
                   {rentalNames.length > 1 && (
-                    <button style={removeBtnStyle} onClick={() => removeRentalName(i)} title="Remove">
-                      ×
-                    </button>
+                    <button style={removeBtnStyle} onClick={() => removeRentalName(i)} title="Remove">×</button>
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addRentalName}>
-                + Add another property
-              </button>
+              <button style={addBtnStyle} onClick={addRentalName}>+ Add another property</button>
             </div>
           )}
 
@@ -359,19 +450,17 @@ export default function OnboardingPage() {
           >
             Next
           </button>
-          <button style={btnSecondary} onClick={goBack}>
-            Back
-          </button>
+          <button style={btnSecondary} onClick={goBack}>Back</button>
         </div>
       </div>
     );
   }
 
-  // Screen 4: Expense types
-  if (step === 4) {
+  // ── Screen 5: Expense types ───────────────────────────────────────────────────
+  if (step === 5) {
     return (
       <div style={pageStyle}>
-        <ProgressBar step={visualStep} />
+        <ProgressBar step={visualStep} totalSteps={6} />
         <div style={cardStyle}>
           <div style={titleStyle}>What kinds of things do you usually spend money on?</div>
           <div style={subtitleStyle}>Select all that apply</div>
@@ -392,18 +481,16 @@ export default function OnboardingPage() {
           >
             Next
           </button>
-          <button style={btnSecondary} onClick={goBack}>
-            Back
-          </button>
+          <button style={btnSecondary} onClick={goBack}>Back</button>
         </div>
       </div>
     );
   }
 
-  // Screen 5: Data source preference
+  // ── Screen 6: Data source preference ─────────────────────────────────────────
   return (
     <div style={pageStyle}>
-      <ProgressBar step={5} />
+      <ProgressBar step={6} totalSteps={6} />
       <div style={cardStyle}>
         <div style={titleStyle}>How would you like to bring in your data?</div>
         <div style={subtitleStyle}>You can change this later</div>
@@ -422,24 +509,11 @@ export default function OnboardingPage() {
               transition: "border-color 0.15s, background-color 0.15s",
             }}
           >
-            <span
-              style={{
-                fontWeight: dataSourcePreference === value ? 600 : 500,
-                fontSize: "15px",
-                color: dataSourcePreference === value ? "#166534" : "#374151",
-              }}
-            >
+            <span style={{ fontWeight: dataSourcePreference === value ? 600 : 500, fontSize: "15px", color: dataSourcePreference === value ? "#166534" : "#374151" }}>
               {label}
             </span>
             {sublabel && (
-              <span
-                style={{
-                  marginLeft: "8px",
-                  fontSize: "12px",
-                  color: "#9ca3af",
-                  fontStyle: "italic",
-                }}
-              >
+              <span style={{ marginLeft: "8px", fontSize: "12px", color: "#9ca3af", fontStyle: "italic" }}>
                 {sublabel}
               </span>
             )}
@@ -453,9 +527,7 @@ export default function OnboardingPage() {
         >
           {saving ? "Saving..." : isEditing ? "Save Changes" : "Finish Setup"}
         </button>
-        <button style={btnSecondary} disabled={saving} onClick={goBack}>
-          Back
-        </button>
+        <button style={btnSecondary} disabled={saving} onClick={goBack}>Back</button>
 
         {error && <div style={errorStyle}>{error}</div>}
       </div>

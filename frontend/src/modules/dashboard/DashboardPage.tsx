@@ -290,8 +290,8 @@ export default function DashboardPage() {
           <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
-          <button style={navLink} onClick={() => navigate("/tax-summary")}>Tax Summary</button>
-          <button style={navLink} onClick={() => navigate("/schedule-e")}>Schedule E</button>
+          <button style={navLink} onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
+          <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
@@ -493,7 +493,7 @@ export default function DashboardPage() {
                 onClick={() => navigate("/schedule-e")}
                 style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, fontSize: "13px", cursor: "pointer", fontFamily: font }}
               >
-                View Schedule E →
+                View Rental Properties (Sch. E) →
               </button>
             </div>
             {data.scheduleE.properties
@@ -547,7 +547,7 @@ export default function DashboardPage() {
             onClick={() => navigate("/tax-summary")}
             style={{ padding: "12px 28px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "8px", fontSize: "15px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
           >
-            View Tax Summary
+            Business Income & Expenses (Sch. C)
           </button>
           <button
             onClick={() => navigate("/transactions")}
