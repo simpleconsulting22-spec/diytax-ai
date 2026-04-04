@@ -43,10 +43,9 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // MFA temporarily disabled for testing
-  // if (!mfaVerified) {
-  //   return <MfaModal onVerified={() => setMfaVerified(true)} />;
-  // }
+  if (!mfaVerified) {
+    return <MfaModal onVerified={() => setMfaVerified(true)} />;
+  }
 
   if ((!userDoc || userDoc.onboardingComplete !== true) && location.pathname !== "/onboarding") {
     return <Navigate to="/onboarding" replace />;

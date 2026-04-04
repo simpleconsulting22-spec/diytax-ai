@@ -39,49 +39,51 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendMfaCode = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
-const mail_1 = __importDefault(require("@sendgrid/mail"));
 const dotenv = __importStar(require("dotenv"));
 const auth_1 = require("../middleware/auth");
+const twilio_1 = __importDefault(require("twilio"));
 dotenv.config();
+/**
+ * Sends a verification code via Twilio Verify (purpose-built OTP service —
+ * faster and more reliable than the generic Messages API).
+ *
+ * Required environment variables (functions/.env):
+ *   TWILIO_ACCOUNT_SID
+ *   TWILIO_AUTH_TOKEN
+ *   TWILIO_VERIFY_SERVICE_SID   — starts with "VA", from Twilio Console → Verify → Services
+ */
 exports.sendMfaCode = (0, https_1.onCall)({ cors: true, invoker: "public" }, async (request) => {
-    console.log("🚀 sendMfaCode triggered");
     const uid = await (0, auth_1.requireAuth)(request);
     const data = request.data;
-    if (!data.email) {
-        throw new https_1.HttpsError("invalid-argument", "Email is required.");
+    if (!data.phoneNumber) {
+        throw new https_1.HttpsError("invalid-argument", "Phone number is required.");
     }
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+    const phone = data.phoneNumber.trim();
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+        throw new https_1.HttpsError("invalid-argument", "Phone number must be in E.164 format (e.g. +15551234567).");
+    }
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+    if (!accountSid || !authToken || !verifyServiceSid) {
+        console.error("Missing Twilio environment variables");
+        throw new https_1.HttpsError("internal", "SMS service is not configured.");
+    }
+    // Store the phone on userSecurity so verifyMfaCode can use it
     const db = admin.firestore();
-    await db.collection("userSecurity").doc(uid).set({
-        mfaCode: code,
-        mfaCodeExpiry: expiry,
-        mfaVerified: false,
-    });
-    if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
-        console.error("❌ Missing SendGrid environment variables");
-        throw new https_1.HttpsError("internal", "SendGrid environment variables not configured.");
-    }
-    mail_1.default.setApiKey(process.env.SENDGRID_API_KEY);
-    const msg = {
-        to: data.email,
-        from: process.env.SENDGRID_FROM_EMAIL,
-        subject: "DIYTax AI - Your Verification Code",
-        text: `Your DIYTax AI verification code is: ${code}
-
-This code expires in 10 minutes.
-
-If you did not request this code, please ignore this email.`,
-    };
-    console.log("📧 Sending email via SendGrid...");
+    await db.collection("userSecurity").doc(uid).set({ mfaPhone: phone, mfaVerified: false }, { merge: true });
+    const client = (0, twilio_1.default)(accountSid, authToken);
     try {
-        const response = await mail_1.default.send(msg);
-        console.log("✅ SENDGRID RESPONSE:", response[0].statusCode);
+        await client.verify.v2
+            .services(verifyServiceSid)
+            .verifications.create({ to: phone, channel: "sms" });
+        console.log(`Verify SMS dispatched to ${phone.slice(0, 6)}****`);
         return { sent: true };
     }
     catch (error) {
-        console.error("❌ SENDGRID ERROR:", error.response?.body || error.message);
-        throw new https_1.HttpsError("internal", "Failed to send verification email.");
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        console.error("Twilio Verify error:", msg);
+        throw new https_1.HttpsError("internal", "Failed to send SMS verification code.");
     }
 });
 //# sourceMappingURL=sendMfaCode.js.map
