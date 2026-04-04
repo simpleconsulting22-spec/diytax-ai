@@ -6,6 +6,7 @@ import {
   where,
   getDocs,
   addDoc,
+  updateDoc,
   deleteDoc,
   writeBatch,
   doc,
@@ -18,19 +19,23 @@ import { getUserEntities, UserEntity } from "../../../services/entityService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type TransactionType = "income" | "expense" | "transfer" | "refund";
+
 export interface NormalizedRow {
   date: string;
   description: string;
   amount: number;           // NaN = unparseable/missing
-  type: "income" | "expense" | "transfer";
+  type: TransactionType;
   isTransfer: boolean;
   accountIdentifier: string | null;
+  accountType: "bank" | "credit_card";
   rawData: Record<string, string>;
 }
 
 // ─── Transfer detection ───────────────────────────────────────────────────────
 
-const TRANSFER_PATTERNS = [
+// Bank-account transfer patterns (funds moving between your own accounts)
+const BANK_TRANSFER_PATTERNS = [
   /\btransfer\b/i,
   /\bxfer\b/i,
   /\bmobile transfer\b/i,
@@ -41,8 +46,48 @@ const TRANSFER_PATTERNS = [
   /^to\s+(checking|savings|account)/i,
 ];
 
-function detectTransfer(description: string): boolean {
-  return TRANSFER_PATTERNS.some((re) => re.test(description));
+// Credit-card "payment" patterns — these are payments TO the card (not purchases)
+const CREDIT_CARD_PAYMENT_PATTERNS = [
+  /\bpayment\b/i,
+  /\bautopay\b/i,
+  /\bthank\s+you\b/i,
+  /\bcredit\s+card\s+payment\b/i,
+  /\bweb\s+payment\b/i,
+  /\bmobile\s+payment\b/i,
+];
+
+function detectBankTransfer(description: string): boolean {
+  return BANK_TRANSFER_PATTERNS.some((re) => re.test(description));
+}
+
+function detectCreditCardPayment(description: string): boolean {
+  return CREDIT_CARD_PAYMENT_PATTERNS.some((re) => re.test(description));
+}
+
+/** Derive transaction type based on account type, amount, and description. */
+function deriveType(
+  description: string,
+  amount: number,
+  accountType: "bank" | "credit_card"
+): { type: TransactionType; isTransfer: boolean } {
+  if (accountType === "credit_card") {
+    // Credit card payment/autopay rows are not purchases — treat as transfer
+    if (detectCreditCardPayment(description)) {
+      return { type: "transfer", isTransfer: true };
+    }
+    // Negative = charge (expense); positive = credit/refund
+    if (amount < 0) return { type: "expense", isTransfer: false };
+    return { type: "refund", isTransfer: false };
+  }
+
+  // Bank account: generic transfer detection, then sign-based
+  if (detectBankTransfer(description)) {
+    return { type: "transfer", isTransfer: true };
+  }
+  return {
+    type: !isNaN(amount) && amount >= 0 ? "income" : "expense",
+    isTransfer: false,
+  };
 }
 
 interface PreparedRow {
@@ -279,14 +324,17 @@ export function detectSignIssue(rows: NormalizedRow[]): boolean {
  *  1. Single Amount column (positive or negative)
  *  2. Separate Debit / Credit columns (both positive, opposite conventions)
  *
- * @param flipSign  When true, negate all parsed amounts before deriving type.
- *                  Use this for AmEx-style exports where charges are positive.
+ * @param flipSign    When true, negate all parsed amounts before deriving type.
+ *                    Use this for AmEx-style exports where charges are positive.
+ * @param accountType Controls type derivation logic. "credit_card" uses payment
+ *                    pattern detection; "bank" uses amount sign. Default: "bank".
  */
 export function parseCSVFile(
   file: File,
-  options?: { flipSign?: boolean }
+  options?: { flipSign?: boolean; accountType?: "bank" | "credit_card" }
 ): Promise<NormalizedRow[]> {
   const flipSign = options?.flipSign ?? false;
+  const accountType = options?.accountType ?? "bank";
 
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(file, {
@@ -348,10 +396,7 @@ export function parseCSVFile(
             }
 
             const description = (row[descCol] ?? "").trim();
-            const isTransfer  = detectTransfer(description);
-            const type: NormalizedRow["type"] = isTransfer
-              ? "transfer"
-              : (!isNaN(amount) && amount >= 0 ? "income" : "expense");
+            const { type, isTransfer } = deriveType(description, amount, accountType);
 
             return {
               date: parseDate(row[dateCol] ?? ""),
@@ -360,6 +405,7 @@ export function parseCSVFile(
               type,
               isTransfer,
               accountIdentifier: acctCol ? (row[acctCol] ?? "").trim() || null : null,
+              accountType,
               rawData: row,
             };
           })
@@ -375,8 +421,12 @@ export function parseCSVFile(
 // ─── Account resolution ───────────────────────────────────────────────────────
 
 // Look up an existing account by name or last4; create one if not found.
-// Uses "uid" field to match the existing Firestore security rules.
-async function resolveAccount(userId: string, identifier: string): Promise<string> {
+// Stores accountType ("bank" | "credit_card") on the account document.
+async function resolveAccount(
+  userId: string,
+  identifier: string,
+  accountType: "bank" | "credit_card"
+): Promise<string> {
   const snap = await getDocs(
     query(collection(db, "accounts"), where("uid", "==", userId))
   );
@@ -390,6 +440,10 @@ async function resolveAccount(userId: string, identifier: string): Promise<strin
       (data.name ?? "").toLowerCase() === identLower ||
       (data.last4 && data.last4 === possibleLast4)
     ) {
+      // Update accountType if it changed or was never set
+      if (data.accountType !== accountType) {
+        await updateDoc(d.ref, { accountType });
+      }
       return d.id;
     }
   }
@@ -398,6 +452,7 @@ async function resolveAccount(userId: string, identifier: string): Promise<strin
     uid: userId,
     name: identifier,
     last4: possibleLast4.length === 4 ? possibleLast4 : null,
+    accountType,
     createdAt: serverTimestamp(),
   });
   return newDoc.id;
@@ -445,7 +500,8 @@ interface WriteResult {
 async function writeTransactions(
   userId: string,
   rows: NormalizedRow[],
-  fileName: string
+  fileName: string,
+  accountType: "bank" | "credit_card"
 ): Promise<WriteResult> {
   // ── 0. Resolve default entity (auto-assign if exactly one entity) ──────────
   const entities = await getUserEntities(userId);
@@ -480,7 +536,7 @@ async function writeTransactions(
     ),
   ];
   for (const ident of uniqueIdentifiers) {
-    accountMap.set(ident, await resolveAccount(userId, ident));
+    accountMap.set(ident, await resolveAccount(userId, ident, accountType));
   }
 
   // ── 3. Build importKeys ────────────────────────────────────────────────────
@@ -546,12 +602,14 @@ async function writeTransactions(
       batch.set(ref, {
         uid: userId,
         accountId,
+        accountType: row.accountType,
         date: row.date,
         description: row.description,
         normalizedDescription,
         vendor,
         amount: row.amount,
         type: row.type,
+        originalType: row.type,
         status: row.isTransfer ? "transfer" : "needs_review",
         source: "csv",
         importId,
@@ -592,6 +650,7 @@ interface ImportState {
   importResult: ImportResult | null;
   flipSign: boolean;
   signWarning: boolean;
+  accountType: "bank" | "credit_card";
 }
 
 export function useCSVImport() {
@@ -607,6 +666,7 @@ export function useCSVImport() {
     importResult: null,
     flipSign: false,
     signWarning: false,
+    accountType: "bank",
   });
 
   async function handleFileChange(file: File | null) {
@@ -622,8 +682,8 @@ export function useCSVImport() {
       signWarning: false,
     }));
     try {
-      const rows = await parseCSVFile(file);
-      const signWarning = detectSignIssue(rows);
+      const rows = await parseCSVFile(file, { accountType: state.accountType });
+      const signWarning = state.accountType === "bank" && detectSignIssue(rows);
       setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -638,8 +698,29 @@ export function useCSVImport() {
     const nextFlip = !state.flipSign;
     setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
     try {
-      const rows = await parseCSVFile(lastFileRef.current, { flipSign: nextFlip });
+      const rows = await parseCSVFile(lastFileRef.current, {
+        flipSign: nextFlip,
+        accountType: state.accountType,
+      });
       setState((prev) => ({ ...prev, rows }));
+    } catch (e: unknown) {
+      setState((prev) => ({
+        ...prev,
+        parseError: e instanceof Error ? e.message : "Failed to re-parse CSV.",
+      }));
+    }
+  }
+
+  async function handleAccountTypeChange(accountType: "bank" | "credit_card") {
+    setState((prev) => ({ ...prev, accountType, rows: [], signWarning: false }));
+    if (!lastFileRef.current) return;
+    try {
+      const rows = await parseCSVFile(lastFileRef.current, {
+        flipSign: state.flipSign,
+        accountType,
+      });
+      const signWarning = accountType === "bank" && detectSignIssue(rows);
+      setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -652,7 +733,7 @@ export function useCSVImport() {
     if (!user || state.rows.length === 0) return;
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      const result = await writeTransactions(user.uid, state.rows, state.fileName);
+      const result = await writeTransactions(user.uid, state.rows, state.fileName, state.accountType);
       setState((prev) => ({
         ...prev,
         importing: false,
@@ -679,6 +760,7 @@ export function useCSVImport() {
       importResult: null,
       flipSign: false,
       signWarning: false,
+      accountType: "bank",
     });
   }
 
@@ -701,5 +783,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleFlipSign, handleImport, resetImport, deleteImport };
+  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport };
 }

@@ -84,9 +84,9 @@ export default function ImportCSVPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { state, handleFileChange, handleFlipSign, handleImport, resetImport, deleteImport } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning, accountType } = state;
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
@@ -199,6 +199,39 @@ export default function ImportCSVPage() {
         {/* ── Upload card ────────────────────────────────────────────────── */}
         {!importResult && (
           <div style={{ backgroundColor: "#fff", borderRadius: "16px", padding: "32px 36px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)", marginBottom: "28px" }}>
+            {/* Account type selector */}
+            <div style={{ marginBottom: "20px" }}>
+              <div style={{ fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "10px" }}>
+                Account type
+              </div>
+              <div style={{ display: "flex", gap: "10px" }}>
+                {(["bank", "credit_card"] as const).map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => handleAccountTypeChange(type)}
+                    style={{
+                      padding: "8px 18px",
+                      borderRadius: "8px",
+                      border: accountType === type ? "2px solid #16A34A" : "1.5px solid #d1d5db",
+                      backgroundColor: accountType === type ? "#f0fdf4" : "#fff",
+                      color: accountType === type ? "#166534" : "#374151",
+                      fontWeight: 600,
+                      fontSize: "13px",
+                      cursor: "pointer",
+                      fontFamily: font,
+                    }}
+                  >
+                    {type === "bank" ? "🏦 Bank / Checking / Savings" : "💳 Credit Card"}
+                  </button>
+                ))}
+              </div>
+              {accountType === "credit_card" && (
+                <div style={{ marginTop: "8px", fontSize: "12px", color: "#6b7280" }}>
+                  Credit card mode: charges are expenses, payments to the card are transfers, credits are refunds.
+                </div>
+              )}
+            </div>
+
             {/* Drop zone */}
             <div style={{ marginBottom: hasParsed ? "28px" : "0" }}>
               <div
@@ -243,9 +276,9 @@ export default function ImportCSVPage() {
               <>
                 <CSVPreviewTable rows={rows} totalCount={rows.length} />
 
-                {/* Sign-convention warning (auto-detected or manually toggled) */}
+                {/* Sign-convention warning (auto-detected, bank mode only) */}
                 <div style={{ marginTop: "16px" }}>
-                  {signWarning && !flipSign && (
+                  {accountType === "bank" && signWarning && !flipSign && (
                     <div style={{
                       padding: "12px 16px",
                       backgroundColor: "#fff7ed",
@@ -283,25 +316,27 @@ export default function ImportCSVPage() {
                     </div>
                   )}
 
-                  {/* Manual flip toggle — always available when preview is shown */}
-                  <div style={{
-                    marginTop: signWarning && !flipSign ? "8px" : "0",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                    fontSize: "12px",
-                    color: "#6b7280",
-                  }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={flipSign}
-                        onChange={handleFlipSign}
-                        style={{ cursor: "pointer" }}
-                      />
-                      Flip sign convention (credit card exports where charges are positive, e.g. AmEx)
-                    </label>
-                  </div>
+                  {/* Manual flip toggle — only for bank accounts */}
+                  {accountType === "bank" && (
+                    <div style={{
+                      marginTop: signWarning && !flipSign ? "8px" : "0",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      fontSize: "12px",
+                      color: "#6b7280",
+                    }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={flipSign}
+                          onChange={handleFlipSign}
+                          style={{ cursor: "pointer" }}
+                        />
+                        Flip sign convention (charges are positive, e.g. some bank exports)
+                      </label>
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ marginTop: "24px", display: "flex", gap: "12px" }}>
@@ -335,7 +370,8 @@ export default function ImportCSVPage() {
         {!hasParsed && !importResult && (
           <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: 1.7, marginBottom: "32px" }}>
             <strong>Expected columns:</strong> Date, Description, Amount, Account (optional).<br />
-            Amount: negative = expense, positive = income. Column names are flexible.<br />
+            <strong>Bank:</strong> negative amounts = expenses, positive = income.<br />
+            <strong>Credit card:</strong> charges are expenses, payments/autopay = transfers, credits = refunds.<br />
             Duplicate transactions are automatically detected and skipped.
           </div>
         )}
