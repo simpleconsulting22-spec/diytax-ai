@@ -20,12 +20,14 @@ import { getUserEntities, UserEntity } from "../../../services/entityService";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TransactionType = "income" | "expense" | "transfer" | "refund";
+export type TransactionSubType = "debt_payment";
 
 export interface NormalizedRow {
   date: string;
   description: string;
   amount: number;           // NaN = unparseable/missing
   type: TransactionType;
+  subType?: TransactionSubType;
   isTransfer: boolean;
   accountIdentifier: string | null;
   accountType: "bank" | "credit_card";
@@ -46,7 +48,7 @@ const BANK_TRANSFER_PATTERNS = [
   /^to\s+(checking|savings|account)/i,
 ];
 
-// Credit-card "payment" patterns — these are payments TO the card (not purchases)
+// Credit-card "payment" patterns — payments TO a card from a bank account
 const CREDIT_CARD_PAYMENT_PATTERNS = [
   /\bpayment\b/i,
   /\bautopay\b/i,
@@ -54,6 +56,25 @@ const CREDIT_CARD_PAYMENT_PATTERNS = [
   /\bcredit\s+card\s+payment\b/i,
   /\bweb\s+payment\b/i,
   /\bmobile\s+payment\b/i,
+];
+
+// Patterns that indicate a payment going OUT from a bank to a credit card
+// (more specific than generic "payment" to reduce false positives on bank imports)
+const BANK_DEBT_PAYMENT_PATTERNS = [
+  /\bcredit\s+card\b/i,
+  /\bcard\s+payment\b/i,
+  /\bcard\s+autopay\b/i,
+  /\bamex\b/i,
+  /\bamerican\s+express\b/i,
+  /\bchase\s+card\b/i,
+  /\bciti\s+card\b/i,
+  /\bcapital\s+one\b/i,
+  /\bdiscover\s+card\b/i,
+  /\bbank\s+of\s+america\s+card\b/i,
+  /\bwells\s+fargo\s+card\b/i,
+  /\bbarclays\b/i,
+  /\bsynchrony\b/i,
+  /\bpayment\s+to\s+\w*\s*(card|visa|mastercard|amex)/i,
 ];
 
 function detectBankTransfer(description: string): boolean {
@@ -64,12 +85,16 @@ function detectCreditCardPayment(description: string): boolean {
   return CREDIT_CARD_PAYMENT_PATTERNS.some((re) => re.test(description));
 }
 
+function detectBankDebtPayment(description: string): boolean {
+  return BANK_DEBT_PAYMENT_PATTERNS.some((re) => re.test(description));
+}
+
 /** Derive transaction type based on account type, amount, and description. */
 function deriveType(
   description: string,
   amount: number,
   accountType: "bank" | "credit_card"
-): { type: TransactionType; isTransfer: boolean } {
+): { type: TransactionType; subType?: TransactionSubType; isTransfer: boolean } {
   if (accountType === "credit_card") {
     // Credit card payment/autopay rows are not purchases — treat as transfer
     if (detectCreditCardPayment(description)) {
@@ -80,10 +105,16 @@ function deriveType(
     return { type: "refund", isTransfer: false };
   }
 
-  // Bank account: generic transfer detection, then sign-based
+  // Bank account: credit card debt payments → transfer tagged as debt_payment
+  if (detectBankDebtPayment(description)) {
+    return { type: "transfer", subType: "debt_payment", isTransfer: true };
+  }
+
+  // Generic account-to-account transfer
   if (detectBankTransfer(description)) {
     return { type: "transfer", isTransfer: true };
   }
+
   return {
     type: !isNaN(amount) && amount >= 0 ? "income" : "expense",
     isTransfer: false,
@@ -396,13 +427,14 @@ export function parseCSVFile(
             }
 
             const description = (row[descCol] ?? "").trim();
-            const { type, isTransfer } = deriveType(description, amount, accountType);
+            const { type, subType, isTransfer } = deriveType(description, amount, accountType);
 
             return {
               date: parseDate(row[dateCol] ?? ""),
               description,
               amount,
               type,
+              subType,
               isTransfer,
               accountIdentifier: acctCol ? (row[acctCol] ?? "").trim() || null : null,
               accountType,
@@ -609,6 +641,7 @@ async function writeTransactions(
         vendor,
         amount: row.amount,
         type: row.type,
+        ...(row.subType ? { subType: row.subType } : {}),
         originalType: row.type,
         status: row.isTransfer ? "transfer" : "needs_review",
         source: "csv",

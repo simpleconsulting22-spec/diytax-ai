@@ -134,7 +134,7 @@ export default function ReviewPage() {
         )}
 
         {/* Table card */}
-        <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)", overflow: "hidden" }}>
+        <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)" }}>
           {loading ? (
             <div style={{ padding: "60px 24px", textAlign: "center", color: "#9ca3af", fontSize: "14px" }}>
               Loading transactions…

@@ -229,7 +229,7 @@ export default function BudgetPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { state, changePeriodType, saveBudget } = useBudget();
-  const { budget, budgetStatuses, analysis, insights, currentRange, previousRange, periodType, loading, saving, error } = state;
+  const { budget, budgetStatuses, analysis, insights, debtPayments, currentRange, previousRange, periodType, loading, saving, error } = state;
 
   const [showEditor, setShowEditor] = useState(false);
 
@@ -436,6 +436,33 @@ export default function BudgetPage() {
                   </button>
                 </div>
               )
+            )}
+
+            {/* ── Debt Payments ─────────────────────────────────────────── */}
+            {debtPayments > 0 && (
+              <section style={{ marginBottom: "32px" }}>
+                <div style={{
+                  backgroundColor: "#fff",
+                  borderRadius: "12px",
+                  boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
+                  padding: "18px 24px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: "14px", color: "#111827" }}>
+                      Debt Payments
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
+                      Credit card payments this period — excluded from expense totals
+                    </div>
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: "20px", color: "#2563eb" }}>
+                    {fmt(debtPayments)}
+                  </div>
+                </div>
+              </section>
             )}
 
             {/* ── Section 2: Spending Trends ────────────────────────────── */}

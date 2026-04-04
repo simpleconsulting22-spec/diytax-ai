@@ -163,8 +163,8 @@ export default function ReviewTable({
   }
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "900px" }}>
+    <div style={{ overflowX: "auto", borderRadius: "12px" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "1000px" }}>
         <thead>
           <tr>
             {/* Checkbox */}

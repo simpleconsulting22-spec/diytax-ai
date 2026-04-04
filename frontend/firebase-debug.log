@@ -1,0 +1,107 @@
+[debug] [2026-04-04T01:58:10.098Z] ----------------------------------------------------------------------
+[debug] [2026-04-04T01:58:10.100Z] Command:       /usr/local/nvm/versions/node/v24.14.1/bin/node /usr/local/node_packages/node_modules/.bin/firebase deploy --only functions,hosting
+[debug] [2026-04-04T01:58:10.101Z] CLI Version:   15.10.1
+[debug] [2026-04-04T01:58:10.101Z] Platform:      linux
+[debug] [2026-04-04T01:58:10.101Z] Node Version:  v24.14.1
+[debug] [2026-04-04T01:58:10.101Z] Time:          Sat Apr 04 2026 01:58:10 GMT+0000 (Coordinated Universal Time)
+[debug] [2026-04-04T01:58:10.101Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-04-04T01:58:11.325Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-04T01:58:11.325Z] > authorizing via signed-in user (simpleconsulting22@gmail.com)
+[debug] [2026-04-04T01:58:11.325Z] [iam] checking project diytax-ai for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-04-04T01:58:11.327Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.327Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.328Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions [none]
+[debug] [2026-04-04T01:58:11.328Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions  x-goog-user-project=diytax-ai
+[debug] [2026-04-04T01:58:11.328Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-04-04T01:58:11.408Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions 200
+[debug] [2026-04-04T01:58:11.408Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-04-04T01:58:11.409Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.409Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.409Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/diytax-ai/serviceAccounts/diytax-ai@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2026-04-04T01:58:11.409Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/diytax-ai/serviceAccounts/diytax-ai@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-04-04T01:58:11.488Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/diytax-ai/serviceAccounts/diytax-ai@appspot.gserviceaccount.com:testIamPermissions 200
+[debug] [2026-04-04T01:58:11.488Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/diytax-ai/serviceAccounts/diytax-ai@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-04-04T01:58:11.489Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.489Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.489Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai [none]
+[debug] [2026-04-04T01:58:11.657Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai 200
+[debug] [2026-04-04T01:58:11.657Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai {"projectId":"diytax-ai","projectNumber":"1084963550598","displayName":"diytax-ai","name":"projects/diytax-ai","resources":{"hostingSite":"diytax-ai"},"state":"ACTIVE","etag":"1_3af1cedb-3520-41f9-9e5e-5db5df51ae0b"}
+[info] 
+[info] === Deploying to 'diytax-ai'...
+[info] 
+[info] i  deploying functions, hosting 
+[debug] [2026-04-04T01:58:11.662Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.662Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.662Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai [none]
+[debug] [2026-04-04T01:58:11.699Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai 200
+[debug] [2026-04-04T01:58:11.700Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai {"projectNumber":"1084963550598","projectId":"diytax-ai","lifecycleState":"ACTIVE","name":"diytax-ai","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2026-04-03T01:52:11.762Z"}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2026-04-04T01:58:11.702Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.703Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.703Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai/adminSdkConfig [none]
+[debug] [2026-04-04T01:58:11.867Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai/adminSdkConfig 200
+[debug] [2026-04-04T01:58:11.867Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/diytax-ai/adminSdkConfig {"projectId":"diytax-ai","storageBucket":"diytax-ai.firebasestorage.app"}
+[debug] [2026-04-04T01:58:11.868Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.868Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:11.868Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/diytax-ai/configs [none]
+[debug] [2026-04-04T01:58:11.942Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/diytax-ai/configs 200
+[debug] [2026-04-04T01:58:11.943Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/diytax-ai/configs {}
+[debug] [2026-04-04T01:58:11.945Z] Validating nodejs source
+[warn] ⚠  functions: package.json indicates an outdated version of firebase-functions. Please upgrade using npm install --save firebase-functions@latest in your functions directory. 
+[debug] [2026-04-04T01:58:12.491Z] > [functions] package.json contents: {
+  "name": "diytax-ai-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
+    "@types/nodemailer": "^7.0.11",
+    "dotenv": "^17.4.0",
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^7.2.2",
+    "nodemailer": "^8.0.4",
+    "openai": "^4.0.0",
+    "plaid": "^41.0.0",
+    "twilio": "^5.13.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
+[debug] [2026-04-04T01:58:12.491Z] Building nodejs source
+[info] i  functions: Loading and analyzing source code for codebase default to determine what to deploy 
+[debug] [2026-04-04T01:58:12.493Z] Could not find functions.yaml. Must use http discovery
+[debug] [2026-04-04T01:58:12.498Z] Found firebase-functions binary at '/home/simpleconsulting22/diytax-ai/functions/node_modules/.bin/firebase-functions'
+[info] Serving at port 8232
+
+[info] ◇ injecting env (9) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+
+[debug] [2026-04-04T01:58:13.037Z] Got response from /__/functions.yaml {"endpoints":{"sendMfaCode":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"sendMfaCode"},"verifyMfaCode":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"verifyMfaCode"},"createPlaidLinkToken":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"createPlaidLinkToken"},"exchangePublicToken":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"exchangePublicToken"},"fetchTransactions":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"fetchTransactions"},"categorizeTransaction":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"categorizeTransaction"},"updateTransactionCategory":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"updateTransactionCategory"},"categorizeBatch":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"categorizeBatch"},"backfillTransactions":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"backfillTransactions"},"generateTaxSummary":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"generateTaxSummary"}},"specVersion":"v1alpha1","requiredAPIs":[],"extensions":{}}
+[info] i  extensions: ensuring required API firebaseextensions.googleapis.com is enabled... 
+[debug] [2026-04-04T01:58:17.082Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-04T01:58:17.082Z] > authorizing via signed-in user (simpleconsulting22@gmail.com)
+[debug] [2026-04-04T01:58:17.082Z] [iam] checking project diytax-ai for permissions ["firebase.projects.get","firebaseextensions.instances.list"]
+[debug] [2026-04-04T01:58:17.082Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:17.083Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:17.083Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions [none]
+[debug] [2026-04-04T01:58:17.083Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions  x-goog-user-project=diytax-ai
+[debug] [2026-04-04T01:58:17.083Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2026-04-04T01:58:17.134Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions 200
+[debug] [2026-04-04T01:58:17.134Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/diytax-ai:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2026-04-04T01:58:17.134Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:17.134Z] Checked if tokens are valid: true, expires at: 1775269145403
+[debug] [2026-04-04T01:58:17.135Z] >>> [apiv2][query] GET https://firebaseextensions.googleapis.com/v1beta/projects/diytax-ai/instances pageSize=100&pageToken=
+[debug] [2026-04-04T01:58:17.284Z] <<< [apiv2][status] GET https://firebaseextensions.googleapis.com/v1beta/projects/diytax-ai/instances 200
+[debug] [2026-04-04T01:58:17.284Z] <<< [apiv2][body] GET https://firebaseextensions.googleapis.com/v1beta/projects/diytax-ai/instances {}
+[error] Error: Failed to load environment variables from .env.:
+[error] - FirebaseError Invalid dotenv file, error on lines: EOF

@@ -28,6 +28,7 @@ import {
   computeBudgetStatus,
   analyzeSpending,
   generateInsights,
+  sumDebtPayments,
 } from "../utils/spendingAnalysis";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ interface BudgetState {
   budgetStatuses: BudgetStatus[];
   analysis: CategoryAnalysis[];
   insights: Insight[];
+  debtPayments: number;
   currentRange: DateRange;
   previousRange: DateRange;
   // UI state
@@ -69,6 +71,7 @@ const INITIAL_STATE: BudgetState = {
   budgetStatuses: [],
   analysis: [],
   insights: [],
+  debtPayments: 0,
   currentRange: DEFAULT_RANGE,
   previousRange: DEFAULT_PREV,
   periodType: "monthly",
@@ -97,7 +100,8 @@ export function useBudget() {
     const budgetStatuses = computeBudgetStatus(transactions, budgetCategories, currentRange);
     const analysis       = analyzeSpending(transactions, currentRange, previousRange);
     const insights       = generateInsights(budgetStatuses, analysis);
-    return { budgetStatuses, analysis, insights, currentRange, previousRange };
+    const debtPayments   = sumDebtPayments(transactions, currentRange);
+    return { budgetStatuses, analysis, insights, debtPayments, currentRange, previousRange };
   }
 
   // ── Initial load ──────────────────────────────────────────────────────────
@@ -143,6 +147,7 @@ export function useBudget() {
           category: (data.category as string | null) ?? null,
           amount:   (data.amount   as number) ?? 0,
           type:     (data.type     as string) ?? "expense",
+          subType:  (data.subType  as string | undefined),
           status:   (data.status   as string) ?? "",
         };
       });

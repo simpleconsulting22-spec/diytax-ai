@@ -8,6 +8,7 @@ export interface SpendingRecord {
   category: string | null;
   amount: number;
   type: string;
+  subType?: string;
   status: string;
 }
 
@@ -73,6 +74,26 @@ function sumByCategory(
     totals[txn.category] = (totals[txn.category] ?? 0) + Math.abs(txn.amount);
   }
   return totals;
+}
+
+/**
+ * Sum absolute amounts of debt payment transactions (subType === "debt_payment")
+ * within a date range.
+ */
+export function sumDebtPayments(
+  transactions: SpendingRecord[],
+  range: DateRange
+): number {
+  return round2(
+    transactions
+      .filter(
+        (txn) =>
+          txn.subType === "debt_payment" &&
+          txn.date >= range.start &&
+          txn.date <= range.end
+      )
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0)
+  );
 }
 
 // ─── Core analysis functions ──────────────────────────────────────────────────
