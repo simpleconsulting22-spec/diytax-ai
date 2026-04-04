@@ -84,9 +84,9 @@ export default function ImportCSVPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { state, handleFileChange, handleImport, resetImport, deleteImport } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleImport, resetImport, deleteImport } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning } = state;
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
@@ -242,6 +242,67 @@ export default function ImportCSVPage() {
             {hasParsed && (
               <>
                 <CSVPreviewTable rows={rows} totalCount={rows.length} />
+
+                {/* Sign-convention warning (auto-detected or manually toggled) */}
+                <div style={{ marginTop: "16px" }}>
+                  {signWarning && !flipSign && (
+                    <div style={{
+                      padding: "12px 16px",
+                      backgroundColor: "#fff7ed",
+                      border: "1px solid #fed7aa",
+                      borderRadius: "8px",
+                      fontSize: "13px",
+                      color: "#92400e",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "12px",
+                      flexWrap: "wrap",
+                    }}>
+                      <span>
+                        ⚠ <strong>Sign convention detected:</strong> Most charges appear as positive amounts — this is typical of American Express exports. Expenses may be showing as income.
+                      </span>
+                      <button
+                        onClick={handleFlipSign}
+                        style={{
+                          padding: "6px 14px",
+                          backgroundColor: "#f97316",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "6px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          fontFamily: font,
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                        }}
+                      >
+                        Flip signs →
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Manual flip toggle — always available when preview is shown */}
+                  <div style={{
+                    marginTop: signWarning && !flipSign ? "8px" : "0",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    fontSize: "12px",
+                    color: "#6b7280",
+                  }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={flipSign}
+                        onChange={handleFlipSign}
+                        style={{ cursor: "pointer" }}
+                      />
+                      Flip sign convention (credit card exports where charges are positive, e.g. AmEx)
+                    </label>
+                  </div>
+                </div>
 
                 <div style={{ marginTop: "24px", display: "flex", gap: "12px" }}>
                   <button

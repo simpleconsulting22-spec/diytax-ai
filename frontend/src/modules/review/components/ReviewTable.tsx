@@ -1,57 +1,36 @@
 import React from "react";
 import { ReviewTransaction } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
-import CategoryDropdown from "./CategoryDropdown";
+import InlineCategoryEditor from "./InlineCategoryEditor";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function ConfidenceCell({ confidence }: { confidence: number | null }) {
+function ConfidenceCell({
+  confidence,
+  explanation,
+}: {
+  confidence: number | null;
+  explanation: string | null;
+}) {
   if (confidence === null || confidence === undefined) {
-    return <span style={{ color: "#9ca3af", fontSize: "13px" }}>—</span>;
+    return <span style={{ color: "#d1d5db", fontSize: "12px" }}>—</span>;
   }
   const pct = Math.round(confidence * 100);
   const isHigh = confidence >= 0.8;
   return (
     <span
+      title={explanation ?? undefined}
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "4px",
-        fontSize: "13px",
-        fontWeight: 500,
-        color: isHigh ? "#16A34A" : "#d97706",
-      }}
-    >
-      <span style={{ fontSize: "14px" }}>{isHigh ? "✓" : "⚠"}</span>
-      {pct}%
-    </span>
-  );
-}
-
-function SourceBadge({ source }: { source: ReviewTransaction["source"] }) {
-  const config: Record<
-    string,
-    { label: string; bg: string; color: string }
-  > = {
-    rule: { label: "rule", bg: "#f0fdf4", color: "#15803d" },
-    user_rule: { label: "learned", bg: "#eff6ff", color: "#1d4ed8" },
-    ai: { label: "AI", bg: "#fff7ed", color: "#c2410c" },
-  };
-  const c = source ? config[source] : null;
-  if (!c) return <span style={{ color: "#9ca3af", fontSize: "12px" }}>—</span>;
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: "999px",
-        fontSize: "11px",
+        gap: "3px",
+        fontSize: "12px",
         fontWeight: 600,
-        backgroundColor: c.bg,
-        color: c.color,
+        color: isHigh ? "#16A34A" : "#d97706",
+        cursor: explanation ? "help" : "default",
       }}
     >
-      {c.label}
+      {isHigh ? "✓" : "⚠"} {pct}%
     </span>
   );
 }
@@ -60,11 +39,13 @@ function EntityDropdown({
   value,
   entities,
   disabled,
+  autoAssigned,
   onChange,
 }: {
   value: string | null;
   entities: UserEntity[];
   disabled: boolean;
+  autoAssigned?: boolean;
   onChange: (entityId: string | null, entityType: "business" | "rental" | "personal", entityName?: string) => void;
 }) {
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -78,28 +59,34 @@ function EntityDropdown({
   }
 
   return (
-    <select
-      value={value ?? ""}
-      disabled={disabled}
-      onChange={handleChange}
-      style={{
-        fontSize: "13px",
-        padding: "5px 8px",
-        borderRadius: "6px",
-        border: "1px solid #d1d5db",
-        backgroundColor: disabled ? "#f9fafb" : "#fff",
-        color: value ? "#111827" : "#9ca3af",
-        cursor: disabled ? "not-allowed" : "pointer",
-        minWidth: "130px",
-      }}
-    >
-      <option value="">Personal</option>
-      {entities.map((en) => (
-        <option key={en.id} value={en.id}>
-          {en.name}
-        </option>
-      ))}
-    </select>
+    <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+      <select
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={handleChange}
+        title={autoAssigned ? "Auto-predicted from past transactions — confirm or change" : undefined}
+        style={{
+          fontSize: "13px",
+          padding: "5px 8px",
+          borderRadius: "6px",
+          border: autoAssigned ? "1.5px solid #a5b4fc" : "1px solid #e5e7eb",
+          backgroundColor: disabled ? "#f9fafb" : (autoAssigned ? "#eef2ff" : "#fff"),
+          color: value ? "#111827" : "#9ca3af",
+          cursor: disabled ? "not-allowed" : "pointer",
+          minWidth: "130px",
+        }}
+      >
+        <option value="">Personal</option>
+        {entities.map((en) => (
+          <option key={en.id} value={en.id}>{en.name}</option>
+        ))}
+      </select>
+      {autoAssigned && (
+        <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 600 }}>
+          ✦ auto-predicted
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -123,25 +110,33 @@ interface ReviewTableProps {
   onConfirm: (id: string) => void;
 }
 
-const TH_STYLE: React.CSSProperties = {
+const TH: React.CSSProperties = {
   padding: "10px 14px",
   textAlign: "left",
   fontWeight: 600,
-  fontSize: "12px",
+  fontSize: "11px",
   color: "#6b7280",
   textTransform: "uppercase",
-  letterSpacing: "0.04em",
+  letterSpacing: "0.05em",
   borderBottom: "1px solid #e5e7eb",
   whiteSpace: "nowrap",
   backgroundColor: "#f9fafb",
 };
 
-const TD_STYLE: React.CSSProperties = {
-  padding: "11px 14px",
+const TD: React.CSSProperties = {
+  padding: "10px 14px",
   fontSize: "13px",
   color: "#374151",
   verticalAlign: "middle",
 };
+
+function fmtDate(d: string): string {
+  if (!d) return "—";
+  // YYYY-MM-DD → M/D
+  const [, m, day] = d.split("-");
+  if (!m || !day) return d;
+  return `${parseInt(m)}/${parseInt(day)}`;
+}
 
 export default function ReviewTable({
   transactions,
@@ -157,29 +152,23 @@ export default function ReviewTable({
 }: ReviewTableProps) {
   if (transactions.length === 0) {
     return (
-      <div
-        style={{
-          textAlign: "center",
-          padding: "60px 24px",
-          color: "#6b7280",
-          fontSize: "15px",
-        }}
-      >
+      <div style={{ textAlign: "center", padding: "64px 24px", color: "#6b7280" }}>
         <div style={{ fontSize: "40px", marginBottom: "12px" }}>✅</div>
-        <div style={{ fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
+        <div style={{ fontWeight: 700, color: "#111827", fontSize: "16px", marginBottom: "4px" }}>
           All caught up!
         </div>
-        No transactions need review right now.
+        <div style={{ fontSize: "14px" }}>No transactions need review right now.</div>
       </div>
     );
   }
 
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "980px" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "900px" }}>
         <thead>
           <tr>
-            <th style={{ ...TH_STYLE, width: "36px", textAlign: "center" }}>
+            {/* Checkbox */}
+            <th style={{ ...TH, width: "36px", textAlign: "center" }}>
               <input
                 type="checkbox"
                 checked={allSelected}
@@ -187,23 +176,22 @@ export default function ReviewTable({
                 style={{ cursor: "pointer" }}
               />
             </th>
-            <th style={TH_STYLE}>Description</th>
-            <th style={{ ...TH_STYLE, textAlign: "right" }}>Amount</th>
-            <th style={{ ...TH_STYLE, minWidth: "180px" }}>Category</th>
-            <th style={TH_STYLE}>Tax Category</th>
+            <th style={{ ...TH, width: "56px" }}>Date</th>
+            <th style={TH}>Description</th>
+            <th style={{ ...TH, textAlign: "right" }}>Amount</th>
+            <th style={{ ...TH, minWidth: "200px" }}>Category</th>
             {entities.length > 0 && (
-              <th style={{ ...TH_STYLE, minWidth: "150px" }}>Assign To</th>
+              <th style={{ ...TH, minWidth: "140px" }}>Assign To</th>
             )}
-            <th style={{ ...TH_STYLE, textAlign: "center" }}>Confidence</th>
-            <th style={{ ...TH_STYLE, textAlign: "center" }}>Source</th>
-            <th style={{ ...TH_STYLE, textAlign: "center" }}>Action</th>
+            <th style={{ ...TH, textAlign: "center", width: "72px" }}>Conf.</th>
+            <th style={{ ...TH, textAlign: "center", width: "88px" }}>Action</th>
           </tr>
         </thead>
         <tbody>
           {transactions.map((txn, idx) => {
             const isUpdating = updating.has(txn.id);
-            const isAI = txn.source === "ai";
             const isSelected = selectedIds.has(txn.id);
+            const isAI       = txn.source === "ai";
 
             return (
               <tr
@@ -213,16 +201,14 @@ export default function ReviewTable({
                     ? "#f0fdf4"
                     : isAI
                     ? "#fffbeb"
-                    : idx % 2 === 0
-                    ? "#fff"
-                    : "#fafafa",
-                  opacity: isUpdating ? 0.55 : 1,
-                  transition: "opacity 0.15s",
+                    : idx % 2 === 0 ? "#fff" : "#fafafa",
+                  opacity: isUpdating ? 0.5 : 1,
+                  transition: "opacity 0.15s, background-color 0.1s",
                   borderBottom: "1px solid #f3f4f6",
                 }}
               >
                 {/* Checkbox */}
-                <td style={{ ...TD_STYLE, textAlign: "center" }}>
+                <td style={{ ...TD, textAlign: "center" }}>
                   <input
                     type="checkbox"
                     checked={isSelected}
@@ -232,9 +218,28 @@ export default function ReviewTable({
                   />
                 </td>
 
-                {/* Description */}
-                <td style={{ ...TD_STYLE, maxWidth: "260px" }}>
+                {/* Date */}
+                <td style={{ ...TD, color: "#9ca3af", whiteSpace: "nowrap", fontSize: "12px" }}>
+                  {fmtDate(txn.date)}
+                </td>
+
+                {/* Description + vendor */}
+                <td style={{ ...TD, maxWidth: "280px" }}>
+                  {txn.possibleDuplicate && (
+                    <div style={{
+                      fontSize: "10px",
+                      color: "#d97706",
+                      fontWeight: 700,
+                      marginBottom: "2px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "3px",
+                    }}>
+                      ⚠ Possible duplicate
+                    </div>
+                  )}
                   <div
+                    title={txn.description}
                     style={{
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -242,48 +247,54 @@ export default function ReviewTable({
                       color: "#111827",
                       fontWeight: 500,
                     }}
-                    title={txn.description}
                   >
                     {txn.description || "—"}
                   </div>
+                  {txn.vendor && txn.vendor !== txn.description.toLowerCase().split(" ")[0] && (
+                    <div style={{
+                      fontSize: "11px",
+                      color: "#9ca3af",
+                      marginTop: "1px",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}>
+                      {txn.vendor}
+                    </div>
+                  )}
                 </td>
 
                 {/* Amount */}
-                <td
-                  style={{
-                    ...TD_STYLE,
-                    textAlign: "right",
-                    fontVariantNumeric: "tabular-nums",
-                    fontWeight: 500,
-                    whiteSpace: "nowrap",
-                    color: txn.type === "expense" ? "#dc2626" : "#16A34A",
-                  }}
-                >
-                  {txn.type === "expense" ? "-" : "+"}$
+                <td style={{
+                  ...TD,
+                  textAlign: "right",
+                  fontVariantNumeric: "tabular-nums",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                  color: txn.type === "expense" ? "#dc2626" : "#16A34A",
+                }}>
+                  {txn.type === "expense" ? "−" : "+"}$
                   {Math.abs(txn.amount ?? 0).toFixed(2)}
                 </td>
 
-                {/* Category dropdown */}
-                <td style={TD_STYLE}>
-                  <CategoryDropdown
+                {/* Category — inline editable */}
+                <td style={TD}>
+                  <InlineCategoryEditor
                     value={txn.category}
+                    source={txn.source}
                     disabled={isUpdating}
                     onChange={(cat) => onCategoryChange(txn.id, cat)}
                   />
                 </td>
 
-                {/* Tax Category (read-only) */}
-                <td style={{ ...TD_STYLE, color: "#6b7280", whiteSpace: "nowrap" }}>
-                  {txn.taxCategory || "—"}
-                </td>
-
-                {/* Assign To dropdown (only if user has entities) */}
+                {/* Assign To */}
                 {entities.length > 0 && (
-                  <td style={TD_STYLE}>
+                  <td style={TD}>
                     <EntityDropdown
                       value={txn.entityId}
                       entities={entities}
                       disabled={isUpdating}
+                      autoAssigned={txn.entityAutoAssigned}
                       onChange={(entityId, entityType, entityName) =>
                         onEntityChange(txn.id, entityId, entityType, entityName)
                       }
@@ -291,18 +302,16 @@ export default function ReviewTable({
                   </td>
                 )}
 
-                {/* Confidence */}
-                <td style={{ ...TD_STYLE, textAlign: "center" }}>
-                  <ConfidenceCell confidence={txn.categorizationConfidence} />
+                {/* Confidence — hover for explanation tooltip */}
+                <td style={{ ...TD, textAlign: "center" }}>
+                  <ConfidenceCell
+                    confidence={txn.categorizationConfidence}
+                    explanation={txn.categorizationExplanation}
+                  />
                 </td>
 
-                {/* Source badge */}
-                <td style={{ ...TD_STYLE, textAlign: "center" }}>
-                  <SourceBadge source={txn.source} />
-                </td>
-
-                {/* Confirm button */}
-                <td style={{ ...TD_STYLE, textAlign: "center" }}>
+                {/* Confirm */}
+                <td style={{ ...TD, textAlign: "center" }}>
                   <button
                     onClick={() => onConfirm(txn.id)}
                     disabled={isUpdating}
@@ -319,7 +328,7 @@ export default function ReviewTable({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    Confirm
+                    ✓ Done
                   </button>
                 </td>
               </tr>

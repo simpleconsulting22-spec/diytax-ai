@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Papa from "papaparse";
 import {
   collection,
@@ -50,6 +50,7 @@ interface PreparedRow {
   accountId: string | null;
   normalizedDescription: string;
   importKey: string;
+  possibleDuplicate: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -69,10 +70,131 @@ export function normalize(desc: string): string {
   return desc.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Extract the first meaningful word from a normalised description as the vendor name
+// ─── Vendor extraction ────────────────────────────────────────────────────────
+
+// Common payment-processor prefixes to strip before extracting vendor name
+const VENDOR_LEADING_NOISE = [
+  /^sq\s*\*\s*/i, /^tst\s*\*\s*/i, /^pp\s*\*\s*/i, /^paypal\s*\*\s*/i,
+  /^amzn\s+mktp(\s+us)?\s*/i, /^amazon\.com\/bill\s*/i,
+  /^ach\s+(credit|debit)?\s*/i, /^pos\s*#?\s*\d*\s*/i,
+  /^debit\s+card\s+/i, /^purchase\s+at\s+/i, /^payment\s+to\s+/i,
+  /^autopay\s+/i, /^zelle\s+(to|from)\s+/i, /^venmo\s+/i,
+  /^recurring\s+/i, /^online\s+(payment|purchase)\s*/i,
+  /^\d{4,}\s+/,
+];
+const VENDOR_BRAND_ALIASES: Array<[RegExp, string]> = [
+  [/^amzn\b/i, "amazon"], [/^amazon\b/i, "amazon"],
+  [/^wal.?mart\b/i, "walmart"], [/^starbucks\b/i, "starbucks"],
+  [/^mcdonald/i, "mcdonalds"], [/^uber\s*eats/i, "uber eats"],
+  [/^uber\b/i, "uber"], [/^lyft\b/i, "lyft"],
+  [/^doordash\b/i, "doordash"], [/^netflix/i, "netflix"],
+  [/^spotify/i, "spotify"], [/^apple\.?com/i, "apple"],
+  [/^google\b/i, "google"], [/^microsoft\b/i, "microsoft"],
+  [/^zoom\.?us/i, "zoom"], [/^dropbox\b/i, "dropbox"],
+  [/^github\b/i, "github"], [/^aws\b/i, "amazon web services"],
+  [/^shopify\b/i, "shopify"], [/^quickbooks/i, "quickbooks"],
+];
+
 export function extractVendor(normalizedDescription: string): string {
   if (!normalizedDescription) return "unknown";
-  return normalizedDescription.split(" ")[0] || "unknown";
+  let s = normalizedDescription.toLowerCase().trim();
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pat of VENDOR_LEADING_NOISE) {
+      const next = s.replace(pat, "").trim();
+      if (next !== s) { s = next; changed = true; break; }
+    }
+  }
+  // Strip trailing store numbers / reference codes
+  s = s.replace(/\s+#\d+.*/, "").replace(/\s+\d{6,}.*/, "").trim();
+
+  for (const [pat, canonical] of VENDOR_BRAND_ALIASES) {
+    if (pat.test(s)) return canonical;
+  }
+
+  const words = s.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
+  if (words.length === 0) return normalizedDescription.split(" ")[0] || "unknown";
+  return words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
+}
+
+// ─── Fuzzy duplicate detection ────────────────────────────────────────────────
+
+// Word-bag Jaccard similarity — fast, no external deps
+function jaccardSimilarity(a: string, b: string): number {
+  const wordsA = new Set(a.split(/\s+/).filter((w) => w.length > 1));
+  const wordsB = new Set(b.split(/\s+/).filter((w) => w.length > 1));
+  if (wordsA.size === 0 && wordsB.size === 0) return 1;
+  let intersection = 0;
+  wordsA.forEach((w) => { if (wordsB.has(w)) intersection++; });
+  const union = new Set([...wordsA, ...wordsB]).size;
+  return union === 0 ? 1 : intersection / union;
+}
+
+// Returns a set of importKeys that appear to be cross-batch fuzzy duplicates.
+// Skips if date range > 90 days to bound query cost.
+async function findCrossBatchFuzzyDuplicates(
+  userId: string,
+  candidates: PreparedRow[]
+): Promise<Set<string>> {
+  const flagged = new Set<string>();
+  if (candidates.length === 0) return flagged;
+
+  const dates = candidates.map((p) => p.row.date).filter(Boolean).sort();
+  if (dates.length === 0) return flagged;
+
+  const minDate = dates[0];
+  const maxDate = dates[dates.length - 1];
+  const daySpan =
+    (new Date(maxDate).getTime() - new Date(minDate).getTime()) /
+    (1000 * 60 * 60 * 24);
+
+  // Skip fuzzy check for very wide date ranges — too many existing transactions
+  if (daySpan > 90) return flagged;
+
+  const uniqueDates = [...new Set(dates)];
+  const existingTxns: Array<{ date: string; amount: number; normalizedDescription: string }> = [];
+
+  for (let i = 0; i < uniqueDates.length; i += DEDUP_CHUNK_SIZE) {
+    const chunk = uniqueDates.slice(i, i + DEDUP_CHUNK_SIZE);
+    const snap = await getDocs(
+      query(
+        collection(db, "transactions"),
+        where("uid", "==", userId),
+        where("date", "in", chunk)
+      )
+    );
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      if (data.date && data.amount !== undefined && data.normalizedDescription) {
+        existingTxns.push({
+          date: data.date as string,
+          amount: data.amount as number,
+          normalizedDescription: data.normalizedDescription as string,
+        });
+      }
+    });
+    // Guard: bail if we'd be comparing against a huge set
+    if (existingTxns.length > 2000) return flagged;
+  }
+
+  for (const candidate of candidates) {
+    for (const existing of existingTxns) {
+      if (candidate.row.date !== existing.date) continue;
+      if (Math.abs(candidate.row.amount - existing.amount) > 0.01) continue;
+      const sim = jaccardSimilarity(
+        candidate.normalizedDescription,
+        existing.normalizedDescription
+      );
+      if (sim >= 0.8) {
+        flagged.add(candidate.importKey);
+        break;
+      }
+    }
+  }
+
+  return flagged;
 }
 
 // Normalise a date string to YYYY-MM-DD; returns empty string when unrecognised
@@ -121,9 +243,51 @@ function parseAmount(raw: string): number {
   return parseFloat(s);
 }
 
+// ─── Sign-issue detection ─────────────────────────────────────────────────────
+
+/**
+ * Returns true when the parsed rows look like a credit-card export where
+ * charges are positive (e.g. American Express).
+ *
+ * Heuristic: if > 65% of non-transfer amounts are positive AND none of the
+ * descriptions look like payroll / interest / deposits, the signs are likely
+ * inverted and the user should be prompted to flip them.
+ */
+export function detectSignIssue(rows: NormalizedRow[]): boolean {
+  const nonTransfer = rows.filter((r) => !r.isTransfer && !isNaN(r.amount));
+  if (nonTransfer.length < 5) return false;
+
+  const positiveCount = nonTransfer.filter((r) => r.amount > 0).length;
+  const ratio = positiveCount / nonTransfer.length;
+  if (ratio < 0.65) return false;
+
+  // If any row description looks like legitimate income, trust the signs
+  const hasLegitIncome = nonTransfer.some((r) =>
+    /payroll|direct\s+deposit|salary|dividend|interest\s+earned|refund|ach\s+credit/i.test(
+      r.description
+    )
+  );
+  return !hasLegitIncome;
+}
+
 // ─── CSV parsing ─────────────────────────────────────────────────────────────
 
-export function parseCSVFile(file: File): Promise<NormalizedRow[]> {
+/**
+ * Parse a CSV file into normalised rows.
+ *
+ * Handles two common export layouts:
+ *  1. Single Amount column (positive or negative)
+ *  2. Separate Debit / Credit columns (both positive, opposite conventions)
+ *
+ * @param flipSign  When true, negate all parsed amounts before deriving type.
+ *                  Use this for AmEx-style exports where charges are positive.
+ */
+export function parseCSVFile(
+  file: File,
+  options?: { flipSign?: boolean }
+): Promise<NormalizedRow[]> {
+  const flipSign = options?.flipSign ?? false;
+
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(file, {
       header: true,
@@ -133,14 +297,26 @@ export function parseCSVFile(file: File): Promise<NormalizedRow[]> {
 
         const dateCol = findColumn(headers, ["date", "posted", "posting", "transaction date"]);
         const descCol = findColumn(headers, ["description", "memo", "name", "payee", "desc", "narrative"]);
-        const amtCol  = findColumn(headers, ["amount", "transaction amount", "debit", "credit"]);
         const acctCol = findColumn(headers, ["account", "account name", "account number"]);
 
-        if (!dateCol || !descCol || !amtCol) {
+        // ── Column layout detection ────────────────────────────────────────
+        // Prefer a single Amount column. Fall back to separate Debit/Credit
+        // columns only when there is no Amount column at all.
+        const singleAmtCol = findColumn(headers, ["amount", "transaction amount"]);
+        const debitCol  = findColumn(headers, ["debit"]);
+        const creditCol = findColumn(headers, ["credit"]);
+
+        // "Split" layout: separate Debit + Credit columns, no Amount column
+        const hasSplitColumns =
+          !singleAmtCol && !!debitCol && !!creditCol && debitCol !== creditCol;
+
+        const amtCol = singleAmtCol ?? (!hasSplitColumns ? (debitCol ?? creditCol) : undefined);
+
+        if (!dateCol || !descCol || (!amtCol && !hasSplitColumns)) {
           reject(
             new Error(
               `Could not detect required columns. Found: ${headers.join(", ")}. ` +
-              `Need columns for Date, Description, and Amount.`
+              `Need columns for Date, Description, and Amount (or separate Debit/Credit).`
             )
           );
           return;
@@ -148,12 +324,35 @@ export function parseCSVFile(file: File): Promise<NormalizedRow[]> {
 
         const rows: NormalizedRow[] = results.data
           .map((row) => {
-            const amount = parseAmount(row[amtCol] ?? "");
+            // ── Amount resolution ──────────────────────────────────────────
+            let amount: number;
+
+            if (hasSplitColumns) {
+              // Split Debit/Credit layout: both columns are positive values.
+              // Debit = money out (expense) → store as negative.
+              // Credit = money in (income) → store as positive.
+              const debitVal  = parseAmount(row[debitCol!]  ?? "");
+              const creditVal = parseAmount(row[creditCol!] ?? "");
+
+              if (!isNaN(debitVal) && debitVal > 0) {
+                amount = flipSign ? debitVal : -debitVal;
+              } else if (!isNaN(creditVal) && creditVal > 0) {
+                amount = flipSign ? -creditVal : creditVal;
+              } else {
+                amount = NaN;
+              }
+            } else {
+              // Single Amount column (positive or negative)
+              const raw = parseAmount(row[amtCol!] ?? "");
+              amount = flipSign ? -raw : raw;
+            }
+
             const description = (row[descCol] ?? "").trim();
-            const isTransfer = detectTransfer(description);
+            const isTransfer  = detectTransfer(description);
             const type: NormalizedRow["type"] = isTransfer
               ? "transfer"
               : (!isNaN(amount) && amount >= 0 ? "income" : "expense");
+
             return {
               date: parseDate(row[dateCol] ?? ""),
               description,
@@ -164,9 +363,6 @@ export function parseCSVFile(file: File): Promise<NormalizedRow[]> {
               rawData: row,
             };
           })
-          // Keep rows that have at least a description OR a valid amount — invalid rows
-          // are surfaced in the preview so the user can see them, but writeTransactions
-          // will skip and count them separately.
           .filter((r) => r.description.length > 0 || !isNaN(r.amount));
 
         resolve(rows);
@@ -294,10 +490,10 @@ async function writeTransactions(
       : null;
     const normalizedDescription = normalize(row.description);
     const importKey = `${userId}|${accountId ?? "na"}|${row.date}|${row.amount}|${normalizedDescription}`;
-    return { row, accountId, normalizedDescription, importKey };
+    return { row, accountId, normalizedDescription, importKey, possibleDuplicate: false };
   });
 
-  // ── 4. Deduplicate against existing transactions ───────────────────────────
+  // ── 4. Strict deduplication against existing transactions ─────────────────
   const allKeys = prepared.map((p) => p.importKey);
   const existingKeys = await findExistingImportKeys(userId, allKeys);
 
@@ -310,6 +506,19 @@ async function writeTransactions(
     }
     return true;
   });
+
+  // ── 4b. Fuzzy duplicate detection (cross-batch) ────────────────────────────
+  // Flag rows that look like near-duplicates of existing transactions.
+  // These are still written but marked possibleDuplicate: true so the
+  // review UI can surface them for user confirmation.
+  try {
+    const fuzzyKeys = await findCrossBatchFuzzyDuplicates(userId, rowsToWrite);
+    for (const row of rowsToWrite) {
+      if (fuzzyKeys.has(row.importKey)) row.possibleDuplicate = true;
+    }
+  } catch {
+    // Non-blocking — fuzzy detection is best-effort
+  }
 
   console.log(`[CSV Import] Duplicates skipped: ${duplicateCount}`);
   console.log(`[CSV Import] Rows to write: ${rowsToWrite.length}`);
@@ -330,16 +539,17 @@ async function writeTransactions(
     const batch = writeBatch(db);
     const chunk = rowsToWrite.slice(i, i + BATCH_SIZE);
 
-    for (const { row, accountId, normalizedDescription, importKey } of chunk) {
+    for (const { row, accountId, normalizedDescription, importKey, possibleDuplicate } of chunk) {
       const ref = doc(collection(db, "transactions"));
       if (row.isTransfer) transferCount++;
+      const vendor = extractVendor(normalizedDescription);
       batch.set(ref, {
         uid: userId,
         accountId,
         date: row.date,
         description: row.description,
         normalizedDescription,
-        vendor: extractVendor(normalizedDescription),
+        vendor,
         amount: row.amount,
         type: row.type,
         status: row.isTransfer ? "transfer" : "needs_review",
@@ -350,6 +560,7 @@ async function writeTransactions(
         entityId: row.isTransfer ? null : (defaultEntity?.id ?? null),
         entityType: row.isTransfer ? null : (defaultEntity?.type ?? "personal"),
         entityName: row.isTransfer ? null : (defaultEntity?.name ?? null),
+        ...(possibleDuplicate ? { possibleDuplicate: true } : {}),
         createdAt: serverTimestamp(),
       });
     }
@@ -378,10 +589,13 @@ interface ImportState {
   importing: boolean;
   importError: string;
   importResult: ImportResult | null;
+  flipSign: boolean;
+  signWarning: boolean;
 }
 
 export function useCSVImport() {
   const { user } = useAuth();
+  const lastFileRef = useRef<File | null>(null);
 
   const [state, setState] = useState<ImportState>({
     fileName: "",
@@ -390,18 +604,45 @@ export function useCSVImport() {
     importing: false,
     importError: "",
     importResult: null,
+    flipSign: false,
+    signWarning: false,
   });
 
   async function handleFileChange(file: File | null) {
     if (!file) return;
-    setState((prev) => ({ ...prev, fileName: file.name, parseError: "", rows: [], importResult: null }));
+    lastFileRef.current = file;
+    setState((prev) => ({
+      ...prev,
+      fileName: file.name,
+      parseError: "",
+      rows: [],
+      importResult: null,
+      flipSign: false,
+      signWarning: false,
+    }));
     try {
       const rows = await parseCSVFile(file);
-      setState((prev) => ({ ...prev, rows }));
+      const signWarning = detectSignIssue(rows);
+      setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
         parseError: e instanceof Error ? e.message : "Failed to parse CSV.",
+      }));
+    }
+  }
+
+  async function handleFlipSign() {
+    if (!lastFileRef.current) return;
+    const nextFlip = !state.flipSign;
+    setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
+    try {
+      const rows = await parseCSVFile(lastFileRef.current, { flipSign: nextFlip });
+      setState((prev) => ({ ...prev, rows }));
+    } catch (e: unknown) {
+      setState((prev) => ({
+        ...prev,
+        parseError: e instanceof Error ? e.message : "Failed to re-parse CSV.",
       }));
     }
   }
@@ -427,6 +668,7 @@ export function useCSVImport() {
   }
 
   function resetImport() {
+    lastFileRef.current = null;
     setState({
       fileName: "",
       parseError: "",
@@ -434,6 +676,8 @@ export function useCSVImport() {
       importing: false,
       importError: "",
       importResult: null,
+      flipSign: false,
+      signWarning: false,
     });
   }
 
@@ -456,5 +700,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleImport, resetImport, deleteImport };
+  return { state, handleFileChange, handleFlipSign, handleImport, resetImport, deleteImport };
 }

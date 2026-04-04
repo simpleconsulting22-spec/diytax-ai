@@ -20,8 +20,10 @@ import { getUserEntities, UserEntity } from "../../../services/entityService";
 
 export interface ReviewTransaction {
   id: string;
+  date: string;
   description: string;
   normalizedDescription: string;
+  vendor: string | null;
   amount: number;
   type: "income" | "expense";
   category: string | null;
@@ -29,10 +31,13 @@ export interface ReviewTransaction {
   taxSchedule: string | null;
   categorizationConfidence: number | null;
   source: "rule" | "user_rule" | "ai" | null;
+  categorizationExplanation: string | null;
   status: "needs_review" | "categorized";
   entityId: string | null;
   entityType: "business" | "rental" | "personal";
   entityName?: string;
+  entityAutoAssigned?: boolean;   // true when entity was predicted (not user-set)
+  possibleDuplicate?: boolean;    // true when fuzzy cross-batch match detected
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,10 +94,24 @@ export function useReviewTransactions() {
         const data = d.data();
         return {
           id: d.id,
-          ...(data as Omit<ReviewTransaction, "id">),
+          date: data.date ?? "",
+          description: data.description ?? "",
+          normalizedDescription: data.normalizedDescription ?? "",
+          vendor: (data.vendor as string) ?? null,
+          amount: data.amount ?? 0,
+          type: data.type ?? "expense",
+          category: data.category ?? null,
+          taxCategory: data.taxCategory ?? null,
+          taxSchedule: data.taxSchedule ?? null,
+          categorizationConfidence: data.categorizationConfidence ?? null,
+          source: (data.categorizationSource as ReviewTransaction["source"]) ?? null,
+          categorizationExplanation: (data.categorizationExplanation as string) ?? null,
+          status: data.status ?? "needs_review",
           entityId: data.entityId ?? null,
           entityType: data.entityType ?? "personal",
           entityName: data.entityName,
+          entityAutoAssigned: data.entityAutoAssigned === true,
+          possibleDuplicate: data.possibleDuplicate === true,
         };
       });
 
@@ -281,7 +300,66 @@ export function useReviewTransactions() {
     }
   }
 
+  // ── Bulk category assign ───────────────────────────────────────────────────
+
+  async function handleBulkCategoryAssign(ids: string[], category: string) {
+    if (!user || ids.length === 0) return;
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
+    try {
+      // Batch-write category to all selected transactions
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 499)) {
+          batch.update(doc(db, "transactions", id), {
+            category,
+            categorizationSource: "user_rule",
+            isUserModified: true,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      }
+
+      // Learning loop: write a categoryRule for each unique vendor
+      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
+      const seen = new Set<string>();
+      for (const txn of selectedTxns) {
+        const vendorName = extractVendor(
+          txn.normalizedDescription || txn.description || ""
+        );
+        if (vendorName && !seen.has(vendorName)) {
+          seen.add(vendorName);
+          await addDoc(collection(db, "categoryRules"), {
+            uid: user.uid,
+            vendorName,
+            category,
+            createdAt: serverTimestamp(),
+          });
+        }
+      }
+
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        transactions: prev.transactions.map((t) =>
+          ids.includes(t.id)
+            ? { ...t, category, source: "user_rule" as const }
+            : t
+        ),
+      }));
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+      }));
+    }
+  }
+
   // ── Selection helpers ──────────────────────────────────────────────────────
+
+  function clearSelection() {
+    setState((prev) => ({ ...prev, selectedIds: new Set() }));
+  }
 
   function toggleSelect(id: string) {
     setState((prev) => {
@@ -311,6 +389,8 @@ export function useReviewTransactions() {
     handleCategoryChange,
     handleConfirm,
     handleBulkConfirm,
+    handleBulkCategoryAssign,
+    clearSelection,
     toggleSelect,
     toggleSelectAll,
     reload: loadTransactions,

@@ -5,7 +5,7 @@ import { categorizeTransaction } from "../services/categorizationService";
 
 const BATCH_SIZE = 50;
 
-// ─── Core batch logic ─────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BatchResult {
   total: number;
@@ -14,6 +14,8 @@ export interface BatchResult {
   skipped: number;
 }
 
+// ─── Core batch logic ─────────────────────────────────────────────────────────
+
 /**
  * Queries all uncategorized needs_review transactions for a user and
  * categorizes them, writing results back to Firestore.
@@ -21,12 +23,11 @@ export interface BatchResult {
  * Safety guarantees:
  *  - Skips transactions where isUserModified === true
  *  - Skips transactions that already have a non-empty category
+ *  - Does NOT overwrite an existing entityId if the user already set one
  */
 export async function categorizeUserTransactions(userId: string): Promise<BatchResult> {
   const db = admin.firestore();
 
-  // Firestore: category == null matches docs where field is null OR absent.
-  // CSV-imported transactions have no category field, so they match.
   const snap = await db
     .collection("transactions")
     .where("uid", "==", userId)
@@ -44,36 +45,25 @@ export async function categorizeUserTransactions(userId: string): Promise<BatchR
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const chunk = docs.slice(i, i + BATCH_SIZE);
 
-    // Process each chunk concurrently; failures in one doc don't block others.
     const results = await Promise.allSettled(
       chunk.map(async (docSnap) => {
         total++;
         const txn = docSnap.data();
 
-        // Safety: do not overwrite user-modified transactions
-        if (txn.isUserModified === true) {
-          skipped++;
-          return;
-        }
-
-        // Safety: do not overwrite an existing category
+        if (txn.isUserModified === true) { skipped++; return; }
         if (txn.category !== null && txn.category !== undefined && String(txn.category).trim() !== "") {
-          skipped++;
-          return;
+          skipped++; return;
         }
 
         const result = await categorizeTransaction(userId, {
-          description: (txn.description as string) ?? "",
+          description:           (txn.description as string) ?? "",
           normalizedDescription: txn.normalizedDescription as string | undefined,
-          amount: (txn.amount as number) ?? 0,
-          type: (txn.type as string) ?? "expense",
+          vendor:                (txn.vendor as string) ?? "",
+          amount:                (txn.amount as number) ?? 0,
+          type:                  (txn.type as string) ?? "expense",
         });
 
-        // Nothing to write if categorization returned no result
-        if (!result.category) {
-          skipped++;
-          return;
-        }
+        if (!result.category) { skipped++; return; }
 
         if (result.source === "rule" || result.source === "user_rule") {
           ruleMatched++;
@@ -83,29 +73,39 @@ export async function categorizeUserTransactions(userId: string): Promise<BatchR
 
         const newStatus = result.confidence >= 0.8 ? "categorized" : "needs_review";
 
-        await db.collection("transactions").doc(docSnap.id).update({
-          category: result.category,
-          taxCategory: result.taxCategory,
-          taxSchedule: result.taxSchedule,
-          categorizationConfidence: result.confidence,
-          categorizationSource: result.source,
-          categorizedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: newStatus,
-        });
+        // Build the update payload
+        const update: Record<string, unknown> = {
+          category:                    result.category,
+          taxCategory:                 result.taxCategory,
+          taxSchedule:                 result.taxSchedule,
+          categorizationConfidence:    result.confidence,
+          categorizationSource:        result.source,
+          categorizationExplanation:   result.categorizationExplanation,
+          categorizedAt:               admin.firestore.FieldValue.serverTimestamp(),
+          status:                      newStatus,
+        };
+
+        // Entity prediction — only set if the transaction has no entity yet
+        if (!txn.entityId && result.entityId) {
+          update.entityId          = result.entityId;
+          update.entityName        = result.entityName ?? null;
+          update.entityType        = result.entityType ?? "business";
+          update.entityAutoAssigned = true; // flag so UI can highlight it
+        }
+
+        await db.collection("transactions").doc(docSnap.id).update(update);
       })
     );
 
-    // Log any unexpected failures at the doc level
     results.forEach((r, idx) => {
       if (r.status === "rejected") {
-        const docId = chunk[idx]?.id ?? "unknown";
-        console.error(`[CategorizeBatch] Failed to categorize doc ${docId}:`, r.reason);
+        console.error(`[CategorizeBatch] Failed doc ${chunk[idx]?.id ?? "?"}:`, r.reason);
       }
     });
   }
 
   console.log(
-    `[CategorizeBatch] uid=${userId} | total=${total} | rule=${ruleMatched} | ai=${aiMatched} | skipped=${skipped}`
+    `[CategorizeBatch] uid=${userId} total=${total} rule=${ruleMatched} ai=${aiMatched} skipped=${skipped}`
   );
 
   return { total, ruleMatched, aiMatched, skipped };

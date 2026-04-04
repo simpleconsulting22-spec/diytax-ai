@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
+import { TAX_CATEGORIES } from "./components/CategoryDropdown";
 import { useReviewTransactions } from "./hooks/useReviewTransactions";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -18,6 +19,8 @@ export default function ReviewPage() {
     handleCategoryChange,
     handleConfirm,
     handleBulkConfirm,
+    handleBulkCategoryAssign,
+    clearSelection,
     toggleSelect,
     toggleSelectAll,
     reload,
@@ -25,88 +28,62 @@ export default function ReviewPage() {
 
   const { transactions, entities, loading, error, selectedIds, updating } = state;
 
-  const navLinkStyle: React.CSSProperties = {
-    fontSize: "14px",
-    color: "#6b7280",
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    padding: "4px 0",
-    fontFamily: font,
-  };
+  // Track which category was last bulk-assigned so the select resets after
+  const [bulkAssignKey, setBulkAssignKey] = useState(0);
 
-  const activeNavLinkStyle: React.CSSProperties = {
-    ...navLinkStyle,
-    color: "#16A34A",
-    fontWeight: 600,
+  const navLink: React.CSSProperties = {
+    background: "none", border: "none", fontSize: "14px",
+    color: "#6b7280", cursor: "pointer", padding: "4px 0", fontFamily: font,
   };
+  const navLinkActive: React.CSSProperties = { ...navLink, color: "#16A34A", fontWeight: 700 };
+
+  const hasSelection = selectedIds.size > 0;
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
-      {/* Nav */}
-      <nav
-        style={{
-          backgroundColor: "#fff",
-          borderBottom: "1px solid #e5e7eb",
-          padding: "0 32px",
-          height: "64px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
+    <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font, paddingBottom: hasSelection ? "80px" : "0" }}>
+
+      {/* ── Nav ──────────────────────────────────────────────────────────────── */}
+      <nav style={{
+        backgroundColor: "#fff",
+        borderBottom: "1px solid #e5e7eb",
+        padding: "0 32px",
+        height: "64px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "28px" }}>
           <div
             style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
             onClick={() => navigate("/dashboard")}
           >
             DIYTax AI
           </div>
-          <button style={navLinkStyle} onClick={() => navigate("/dashboard")}>
-            Dashboard
-          </button>
-          <button style={navLinkStyle} onClick={() => navigate("/transactions")}>
-            Transactions
-          </button>
-          <button style={activeNavLinkStyle}>
-            Review
-          </button>
+          <button style={navLink}       onClick={() => navigate("/dashboard")}>Dashboard</button>
+          <button style={navLink}       onClick={() => navigate("/transactions")}>Transactions</button>
+          <button style={navLinkActive}>Review</button>
+          <button style={navLink}       onClick={() => navigate("/import-csv")}>Import CSV</button>
+          <button style={navLink}       onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
+          <button style={navLink}       onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
+          <button style={navLink}       onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
-
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
-            style={{
-              padding: "8px 16px",
-              backgroundColor: "#f3f4f6",
-              color: "#374151",
-              border: "none",
-              borderRadius: "8px",
-              fontSize: "13px",
-              fontWeight: 600,
-              cursor: "pointer",
-              fontFamily: font,
-            }}
             onClick={() => signOut(auth).then(() => navigate("/login"))}
+            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
           >
             Sign Out
           </button>
         </div>
       </nav>
 
-      {/* Page content */}
+      {/* ── Page content ─────────────────────────────────────────────────────── */}
       <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "40px 24px" }}>
-        {/* Header row */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            marginBottom: "24px",
-            flexWrap: "wrap",
-            gap: "16px",
-          }}
-        >
+
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
               Review Transactions
@@ -117,114 +94,47 @@ export default function ReviewPage() {
                 : `${transactions.length} transaction${transactions.length !== 1 ? "s" : ""} need review`}
             </p>
           </div>
-
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            {selectedIds.size > 0 && (
-              <button
-                onClick={handleBulkConfirm}
-                style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#16A34A",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "8px",
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: font,
-                }}
-              >
-                Mark {selectedIds.size} as reviewed
-              </button>
-            )}
-            <button
-              onClick={reload}
-              style={{
-                padding: "10px 16px",
-                backgroundColor: "#f3f4f6",
-                color: "#374151",
-                border: "none",
-                borderRadius: "8px",
-                fontSize: "14px",
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: font,
-              }}
-            >
-              Refresh
-            </button>
-          </div>
+          <button
+            onClick={reload}
+            style={{ padding: "10px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+          >
+            Refresh
+          </button>
         </div>
 
         {/* Legend */}
         {!loading && transactions.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              gap: "20px",
-              marginBottom: "16px",
-              fontSize: "12px",
-              color: "#6b7280",
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ display: "flex", gap: "20px", marginBottom: "16px", fontSize: "12px", color: "#6b7280", flexWrap: "wrap", alignItems: "center" }}>
+            <span>Click any category cell to edit inline</span>
+            <span style={{ color: "#d1d5db" }}>·</span>
             <span>
-              <span style={{ color: "#16A34A", fontWeight: 700 }}>✓</span> High confidence (≥ 80%)
+              <span style={{ fontSize: "10px", padding: "1px 6px", backgroundColor: "#fff7ed", color: "#c2410c", borderRadius: "999px", fontWeight: 700, marginRight: "4px" }}>AI</span>
+              AI-suggested — review and accept or override
             </span>
+            <span style={{ color: "#d1d5db" }}>·</span>
             <span>
-              <span style={{ color: "#d97706", fontWeight: 700 }}>⚠</span> Low confidence (&lt; 80%)
+              <span style={{ fontSize: "10px", padding: "1px 6px", backgroundColor: "#eff6ff", color: "#1d4ed8", borderRadius: "999px", fontWeight: 700, marginRight: "4px" }}>learned</span>
+              Matched a rule from your past edits
             </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-              <span
-                style={{
-                  display: "inline-block",
-                  width: "12px",
-                  height: "12px",
-                  backgroundColor: "#fffbeb",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "2px",
-                }}
-              />
-              AI-categorized rows
+            <span style={{ color: "#d1d5db" }}>·</span>
+            <span>
+              <span style={{ fontSize: "10px", padding: "1px 6px", backgroundColor: "#f0fdf4", color: "#15803d", borderRadius: "999px", fontWeight: 700, marginRight: "4px" }}>rule</span>
+              Matched a built-in keyword rule
             </span>
           </div>
         )}
 
         {/* Error */}
         {error && (
-          <div
-            style={{
-              padding: "12px 16px",
-              backgroundColor: "#fef2f2",
-              border: "1px solid #fecaca",
-              borderRadius: "8px",
-              color: "#dc2626",
-              fontSize: "14px",
-              marginBottom: "16px",
-            }}
-          >
+          <div style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "16px" }}>
             {error}
           </div>
         )}
 
         {/* Table card */}
-        <div
-          style={{
-            backgroundColor: "#fff",
-            borderRadius: "12px",
-            boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
-            overflow: "hidden",
-          }}
-        >
+        <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)", overflow: "hidden" }}>
           {loading ? (
-            <div
-              style={{
-                padding: "60px 24px",
-                textAlign: "center",
-                color: "#9ca3af",
-                fontSize: "14px",
-              }}
-            >
+            <div style={{ padding: "60px 24px", textAlign: "center", color: "#9ca3af", fontSize: "14px" }}>
               Loading transactions…
             </div>
           ) : (
@@ -245,20 +155,111 @@ export default function ReviewPage() {
 
         {/* Footer count */}
         {!loading && transactions.length > 0 && (
-          <div
-            style={{
-              marginTop: "12px",
-              fontSize: "12px",
-              color: "#9ca3af",
-              textAlign: "right",
-            }}
-          >
+          <div style={{ marginTop: "10px", fontSize: "12px", color: "#9ca3af", textAlign: "right" }}>
             {selectedIds.size > 0
               ? `${selectedIds.size} of ${transactions.length} selected`
               : `${transactions.length} total`}
           </div>
         )}
       </div>
+
+      {/* ── Bulk action toolbar (slides up from bottom) ───────────────────────── */}
+      {hasSelection && (
+        <div style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: "#1e293b",
+          color: "#f1f5f9",
+          padding: "14px 32px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          flexWrap: "wrap",
+          zIndex: 50,
+          boxShadow: "0 -4px 32px rgba(0,0,0,0.25)",
+          fontFamily: font,
+        }}>
+
+          {/* Selection count */}
+          <span style={{ fontSize: "14px", fontWeight: 700, color: "#f1f5f9", marginRight: "4px" }}>
+            {selectedIds.size} selected
+          </span>
+
+          <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
+
+          {/* Bulk category assign */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", color: "#94a3b8" }}>Assign category:</span>
+            <select
+              key={bulkAssignKey}
+              defaultValue=""
+              onChange={(e) => {
+                const cat = e.target.value;
+                if (!cat) return;
+                handleBulkCategoryAssign([...selectedIds], cat);
+                setBulkAssignKey((k) => k + 1);
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                backgroundColor: "#334155",
+                color: "#f1f5f9",
+                fontSize: "13px",
+                cursor: "pointer",
+                fontFamily: font,
+                outline: "none",
+              }}
+            >
+              <option value="" disabled>Select category…</option>
+              {TAX_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          {/* Mark as reviewed */}
+          <button
+            onClick={handleBulkConfirm}
+            style={{
+              padding: "8px 20px",
+              backgroundColor: "#16A34A",
+              color: "#fff",
+              border: "none",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: font,
+              whiteSpace: "nowrap",
+            }}
+          >
+            ✓ Mark {selectedIds.size} as Reviewed
+          </button>
+
+          {/* Clear selection */}
+          <button
+            onClick={clearSelection}
+            style={{
+              padding: "8px 14px",
+              backgroundColor: "transparent",
+              color: "#94a3b8",
+              border: "1px solid #334155",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: font,
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   );
 }
