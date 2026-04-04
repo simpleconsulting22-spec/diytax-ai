@@ -23,6 +23,7 @@ import ScheduleAPage from "./modules/tax/ScheduleAPage";
 import DeductionsPage from "./modules/deductions/DeductionsPage";
 import SSAPage from "./modules/income/SSAPage";
 import RetirementPage from "./modules/income/RetirementPage";
+import BudgetPage from "./modules/budget/BudgetPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 
@@ -157,6 +158,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <RetirementPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/budget"
+        element={
+          <AuthGuard>
+            <BudgetPage />
           </AuthGuard>
         }
       />

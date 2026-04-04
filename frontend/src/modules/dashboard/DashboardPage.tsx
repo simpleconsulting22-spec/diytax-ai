@@ -294,6 +294,7 @@ export default function DashboardPage() {
           <button style={navLinkActive}>Dashboard</button>
           <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
+          <button style={navLink} onClick={() => navigate("/budget")}>Budget</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
           <button style={navLink} onClick={() => navigate("/income/ssa")}>Social Security</button>
           <button style={navLink} onClick={() => navigate("/income/retirement")}>Retirement Income</button>
