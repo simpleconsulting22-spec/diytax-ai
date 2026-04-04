@@ -4,6 +4,7 @@ import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleA, SALT_CAP } from "./hooks/useScheduleA";
+import YearSelector from "../../components/YearSelector";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,7 @@ export default function ScheduleAPage() {
           <button style={navLinkActive}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button

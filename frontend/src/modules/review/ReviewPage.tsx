@@ -6,6 +6,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
 import { useReviewTransactions } from "./hooks/useReviewTransactions";
+import YearSelector from "../../components/YearSelector";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -68,6 +69,7 @@ export default function ReviewPage() {
           <button style={navLink}       onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button

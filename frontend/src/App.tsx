@@ -7,6 +7,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { TaxYearProvider } from "./contexts/TaxYearContext";
 import MfaModal from "./components/MfaModal";
 import LoginPage from "./pages/LoginPage";
 import OnboardingPage from "./modules/onboarding/OnboardingPage";
@@ -168,7 +169,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <TaxYearProvider>
+          <AppRoutes />
+        </TaxYearProvider>
       </AuthProvider>
     </BrowserRouter>
   );

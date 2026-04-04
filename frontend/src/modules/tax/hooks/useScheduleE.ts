@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
+import { useTaxYear, matchesTaxYear } from "../../../contexts/TaxYearContext";
 
 // ─── IRS Schedule E (Part I) line mapping ─────────────────────────────────────
 
@@ -82,6 +83,8 @@ interface RawTxn {
   type: "income" | "expense";
   amount: number;
   category: string | null;
+  taxYear?: number | null;
+  date?: string;
 }
 
 function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
@@ -153,6 +156,7 @@ function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
 
 export function useScheduleE() {
   const { user } = useAuth();
+  const { selectedYear } = useTaxYear();
   const [properties, setProperties] = useState<PropertyScheduleE[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -169,7 +173,9 @@ export function useScheduleE() {
           where("taxSchedule", "==", "Schedule E")
         )
       );
-      const txns = snap.docs.map((d) => d.data() as RawTxn);
+      const txns = snap.docs
+        .map((d) => d.data() as RawTxn)
+        .filter((t) => matchesTaxYear(t, selectedYear));
       setProperties(aggregate(txns));
     } catch (e: unknown) {
       setError(
@@ -178,7 +184,7 @@ export function useScheduleE() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, selectedYear]);
 
   useEffect(() => {
     load();

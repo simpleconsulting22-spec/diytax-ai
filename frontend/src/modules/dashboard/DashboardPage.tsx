@@ -3,8 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEProperty } from "./useDashboardData";
 import { useScheduleA } from "../tax/hooks/useScheduleA";
+import YearSelector from "../../components/YearSelector";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -239,6 +241,7 @@ function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
 export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { selectedYear } = useTaxYear();
   const { data, loading, error, reload } = useDashboardData();
   const { data: scheduleAData, loading: scheduleALoading } = useScheduleA();
 
@@ -299,6 +302,7 @@ export default function DashboardPage() {
           <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
@@ -315,7 +319,7 @@ export default function DashboardPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              Tax Year 2025
+              Tax Year {selectedYear}
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
               Welcome back, {user?.email?.split("@")[0]}
@@ -401,6 +405,25 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+
+        {/* YTD stat cards */}
+        <div style={{ display: "flex", gap: "16px", marginBottom: "16px" }}>
+          <StatCard
+            label={`${selectedYear} Income`}
+            value={loading ? "—" : fmt(data.ytd.income)}
+            valueColor="#16A34A"
+          />
+          <StatCard
+            label={`${selectedYear} Expenses`}
+            value={loading ? "—" : fmt(data.ytd.expenses)}
+            valueColor="#dc2626"
+          />
+          <StatCard
+            label="Net"
+            value={loading ? "—" : fmt(data.ytd.net)}
+            valueColor={data.ytd.net >= 0 ? "#16A34A" : "#dc2626"}
+          />
+        </div>
 
         {/* Stat cards */}
         <div style={{ display: "flex", gap: "16px", marginBottom: "24px" }}>

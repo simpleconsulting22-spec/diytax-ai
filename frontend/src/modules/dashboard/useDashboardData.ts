@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTaxYear, matchesTaxYear } from "../../contexts/TaxYearContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,8 @@ interface TxnRecord {
   entityId?: string | null;
   entityType?: "business" | "rental" | "personal";
   entityName?: string;
+  taxYear?: number | null;
+  date?: string;
 }
 
 export interface CategoryTotal {
@@ -58,6 +61,11 @@ export interface DashboardData {
     properties: ScheduleEProperty[];     // per-property net income, sorted DESC
     totalNetIncome: number;
   };
+  ytd: {
+    income: number;
+    expenses: number;
+    net: number;
+  };
 }
 
 // ─── Aggregation ──────────────────────────────────────────────────────────────
@@ -66,6 +74,8 @@ function aggregate(txns: TxnRecord[]): DashboardData {
   let needsReviewCount = 0;
   let needsReviewAmount = 0;
   let categorized = 0;
+  let ytdIncome = 0;
+  let ytdExpenses = 0;
 
   const categoryMap = new Map<string, number>();
   let scheduleCIncome = 0;
@@ -88,6 +98,15 @@ function aggregate(txns: TxnRecord[]): DashboardData {
     }
 
     categorized++;
+
+    // YTD income / expenses (all categorized, excluding transfers)
+    if (txn.status !== "transfer") {
+      if (txn.type === "income") {
+        ytdIncome += txn.amount > 0 ? txn.amount : Math.abs(txn.amount);
+      } else {
+        ytdExpenses += Math.abs(txn.amount);
+      }
+    }
 
     // Category totals — expense transactions with a known category
     if (txn.type === "expense" && txn.category) {
@@ -183,6 +202,8 @@ function aggregate(txns: TxnRecord[]): DashboardData {
     scheduleEProperties.reduce((s, p) => s + p.netIncome, 0) * 100
   ) / 100;
 
+  const ytdNet = Math.round((ytdIncome - ytdExpenses) * 100) / 100;
+
   return {
     total: txns.length,
     categorized,
@@ -201,6 +222,11 @@ function aggregate(txns: TxnRecord[]): DashboardData {
       properties: scheduleEProperties,
       totalNetIncome: scheduleETotalNetIncome,
     },
+    ytd: {
+      income: Math.round(ytdIncome * 100) / 100,
+      expenses: Math.round(ytdExpenses * 100) / 100,
+      net: ytdNet,
+    },
   };
 }
 
@@ -217,10 +243,12 @@ const EMPTY_DATA: DashboardData = {
   entityTotals: [],
   hasUnassigned: false,
   scheduleE: { properties: [], totalNetIncome: 0 },
+  ytd: { income: 0, expenses: 0, net: 0 },
 };
 
 export function useDashboardData() {
   const { user } = useAuth();
+  const { selectedYear } = useTaxYear();
   const [data, setData] = useState<DashboardData>(EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -233,14 +261,15 @@ export function useDashboardData() {
       const snap = await getDocs(
         query(collection(db, "transactions"), where("uid", "==", user.uid))
       );
-      const txns = snap.docs.map((d) => d.data() as TxnRecord);
+      const allTxns = snap.docs.map((d) => d.data() as TxnRecord);
+      const txns = allTxns.filter((t) => matchesTaxYear(t, selectedYear));
       setData(aggregate(txns));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load data.");
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, selectedYear]);
 
   useEffect(() => {
     load();

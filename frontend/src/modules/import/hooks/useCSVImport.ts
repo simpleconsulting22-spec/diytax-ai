@@ -560,6 +560,7 @@ async function writeTransactions(
         entityId: row.isTransfer ? null : (defaultEntity?.id ?? null),
         entityType: row.isTransfer ? null : (defaultEntity?.type ?? "personal"),
         entityName: row.isTransfer ? null : (defaultEntity?.name ?? null),
+        taxYear: parseInt(row.date.slice(0, 4)) || null,
         ...(possibleDuplicate ? { possibleDuplicate: true } : {}),
         createdAt: serverTimestamp(),
       });

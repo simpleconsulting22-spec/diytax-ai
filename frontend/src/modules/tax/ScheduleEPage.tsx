@@ -4,6 +4,7 @@ import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleE, PropertyScheduleE, ScheduleELine } from "./hooks/useScheduleE";
+import YearSelector from "../../components/YearSelector";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -274,6 +275,7 @@ export default function ScheduleEPage() {
           <button style={navLinkActive}>Schedule E</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
             onClick={() => signOut(auth).then(() => navigate("/login"))}

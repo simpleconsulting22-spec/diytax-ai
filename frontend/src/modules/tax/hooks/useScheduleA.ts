@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
+import { useTaxYear, matchesTaxYear } from "../../../contexts/TaxYearContext";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ function round2(n: number) {
 
 export function useScheduleA() {
   const { user } = useAuth();
+  const { selectedYear } = useTaxYear();
   const [data, setData] = useState<ScheduleAData>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -74,11 +76,21 @@ export function useScheduleA() {
         ),
       ]);
 
-      const charityFromTxns = charitySnap.docs.reduce(
+      // Helper: filter transaction snap by selected year
+      const filterByYear = (docs: typeof charitySnap.docs) =>
+        docs.filter((d) => {
+          const data = d.data();
+          return matchesTaxYear(
+            { taxYear: data.taxYear as number | null | undefined, date: data.date as string | undefined },
+            selectedYear
+          );
+        });
+
+      const charityFromTxns = filterByYear(charitySnap.docs).reduce(
         (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
         0
       );
-      const medicalFromTxns = medicalSnap.docs.reduce(
+      const medicalFromTxns = filterByYear(medicalSnap.docs).reduce(
         (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
         0
       );
@@ -88,7 +100,13 @@ export function useScheduleA() {
       let mortgageTotal = 0;
       let charityManual = 0;
 
-      deductionsSnap.forEach((d) => {
+      // Filter deductions by taxYear if the field exists, otherwise include all
+      const filteredDeductions = deductionsSnap.docs.filter((d) => {
+        const deductionYear = d.data().taxYear as number | undefined;
+        return deductionYear == null || deductionYear === selectedYear;
+      });
+
+      filteredDeductions.forEach((d) => {
         const item = d.data();
         const amt = (item.amount as number) ?? 0;
         switch (item.type) {
@@ -125,7 +143,7 @@ export function useScheduleA() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, selectedYear]);
 
   useEffect(() => {
     load();

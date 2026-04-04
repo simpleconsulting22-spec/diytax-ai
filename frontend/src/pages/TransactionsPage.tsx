@@ -14,7 +14,9 @@ import { signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 import { db, auth } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
+import { useTaxYear } from "../contexts/TaxYearContext";
 import { apiClient } from "../services/apiClient";
+import YearSelector from "../components/YearSelector";
 
 const TAX_CATEGORIES = [
   "Income",
@@ -45,6 +47,7 @@ interface Transaction {
 export default function TransactionsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { selectedYear } = useTaxYear();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filter, setFilter] = useState<FilterType>("all");
   const [loading, setLoading] = useState(true);
@@ -54,21 +57,26 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     if (!user) return;
+    setLastDoc(null);
     loadTransactions(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, filter]);
+  }, [user, filter, selectedYear]);
 
   async function loadTransactions(reset: boolean) {
     if (!user) return;
     setLoading(true);
     try {
+      const yearStart = `${selectedYear}-01-01`;
+      const yearEnd = `${selectedYear}-12-31`;
       const constraints: Parameters<typeof query>[1][] = [
         where("uid", "==", user.uid),
+        ...(filter !== "all" ? [where("status", "==", filter)] : []),
+        where("date", ">=", yearStart),
+        where("date", "<=", yearEnd),
         orderBy("date", "desc"),
         limit(50),
+        ...(!reset && lastDoc ? [startAfter(lastDoc)] : []),
       ];
-      if (filter !== "all") constraints.splice(1, 0, where("status", "==", filter));
-      if (!reset && lastDoc) constraints.push(startAfter(lastDoc));
 
       const q = query(collection(db, "transactions"), ...constraints);
       const snap = await getDocs(q);
@@ -175,6 +183,7 @@ export default function TransactionsPage() {
       <nav style={navStyle}>
         <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A" }}>DIYTax AI</div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
             style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}

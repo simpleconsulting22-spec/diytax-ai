@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useScheduleC, EntityScheduleC, ScheduleCLine } from "./hooks/useScheduleC";
 import { useScheduleE } from "./hooks/useScheduleE";
 import { useSSAData } from "../income/hooks/useSSAData";
 import { useRetirementData } from "../income/hooks/useRetirementData";
+import YearSelector from "../../components/YearSelector";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -234,6 +236,7 @@ function EntityCard({ entity }: { entity: EntityScheduleC }) {
 export default function TaxSummaryPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { selectedYear } = useTaxYear();
   const { entities, loading, error, reload } = useScheduleC();
   const { properties } = useScheduleE();
   const { ssaTotal } = useSSAData();
@@ -303,6 +306,7 @@ export default function TaxSummaryPage() {
           <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
@@ -320,7 +324,7 @@ export default function TaxSummaryPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              2025 Tax Summary
+              {selectedYear} Tax Summary
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
               Schedule C — Self-Employment Income &amp; Deductions

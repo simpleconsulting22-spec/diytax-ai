@@ -13,6 +13,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
+import { useTaxYear, matchesTaxYear } from "../../../contexts/TaxYearContext";
 import { apiClient } from "../../../services/apiClient";
 import { getUserEntities, UserEntity } from "../../../services/entityService";
 
@@ -62,6 +63,7 @@ interface ReviewState {
 
 export function useReviewTransactions() {
   const { user } = useAuth();
+  const { selectedYear } = useTaxYear();
 
   const [state, setState] = useState<ReviewState>({
     transactions: [],
@@ -90,7 +92,12 @@ export function useReviewTransactions() {
         getUserEntities(user.uid),
       ]);
 
-      const docs: ReviewTransaction[] = snap.docs.map((d) => {
+      const docs: ReviewTransaction[] = snap.docs.filter((d) =>
+        matchesTaxYear(
+          { taxYear: d.data().taxYear as number | null | undefined, date: d.data().date as string | undefined },
+          selectedYear
+        )
+      ).map((d) => {
         const data = d.data();
         return {
           id: d.id,
@@ -156,7 +163,7 @@ export function useReviewTransactions() {
         error: e instanceof Error ? e.message : "Failed to load transactions.",
       }));
     }
-  }, [user]);
+  }, [user, selectedYear]);
 
   useEffect(() => {
     loadTransactions();
