@@ -1,19 +1,89 @@
 import React from "react";
 
-export const TAX_CATEGORIES = [
-  "Income",
-  "Advertising",
-  "Meals & Entertainment",
-  "Travel",
-  "Office Supplies",
-  "Software & Subscriptions",
-  "Home Office",
-  "Vehicle & Mileage",
-  "Professional Services",
-  "Equipment",
-  "Charitable Contribution",
-  "Other",
+// Exhaustive list of tax-relevant categories, grouped for readability.
+// The flat array is used in dropdowns; the grouped structure is exposed
+// for any component that wants to render sections.
+export const CATEGORY_GROUPS: Array<{ group: string; categories: string[] }> = [
+  {
+    group: "Income",
+    categories: [
+      "Business Income",
+      "Rental Income",
+      "Investment Income",
+      "Interest Income",
+      "Dividend Income",
+      "Other Income",
+    ],
+  },
+  {
+    group: "Business Expenses (Sch. C)",
+    categories: [
+      "Advertising & Marketing",
+      "Auto & Vehicle",
+      "Bank Fees & Charges",
+      "Business Insurance",
+      "Business Meals",
+      "Business Travel",
+      "Computer & Software",
+      "Contract Labor",
+      "Education & Training",
+      "Equipment & Machinery",
+      "Home Office",
+      "Legal & Professional",
+      "Licenses & Permits",
+      "Office Supplies",
+      "Phone & Internet",
+      "Postage & Shipping",
+      "Printing & Publishing",
+      "Rent & Lease",
+      "Repairs & Maintenance",
+      "Taxes & Licenses",
+      "Utilities",
+      "Wages & Salaries",
+      "Other Business Expense",
+    ],
+  },
+  {
+    group: "Deductions (Sch. A)",
+    categories: [
+      "Charitable Contribution",
+      "Medical Expense",
+      "Dental Expense",
+      "State & Local Taxes",
+      "Mortgage Interest",
+      "Investment Expense",
+      "Casualty Loss",
+    ],
+  },
+  {
+    group: "Rental (Sch. E)",
+    categories: [
+      "Mortgage Interest (Rental)",
+      "Property Management",
+      "Property Taxes",
+      "Rental Insurance",
+      "Rental Repairs & Maintenance",
+      "Rental Supplies",
+      "Rental Utilities",
+    ],
+  },
+  {
+    group: "Personal",
+    categories: [
+      "Groceries",
+      "Dining & Restaurants",
+      "Entertainment",
+      "Personal Care",
+      "Clothing & Apparel",
+      "Healthcare",
+      "Personal Transportation",
+      "Personal Subscriptions",
+      "Other Personal",
+    ],
+  },
 ];
+
+export const TAX_CATEGORIES: string[] = CATEGORY_GROUPS.flatMap((g) => g.categories);
 
 interface CategoryDropdownProps {
   value: string | null;
@@ -46,10 +116,14 @@ export default function CategoryDropdown({ value, disabled, onChange }: Category
       <option value="" disabled>
         Select category…
       </option>
-      {TAX_CATEGORIES.map((cat) => (
-        <option key={cat} value={cat}>
-          {cat}
-        </option>
+      {CATEGORY_GROUPS.map((group) => (
+        <optgroup key={group.group} label={group.group}>
+          {group.categories.map((cat) => (
+            <option key={cat} value={cat}>
+              {cat}
+            </option>
+          ))}
+        </optgroup>
       ))}
     </select>
   );

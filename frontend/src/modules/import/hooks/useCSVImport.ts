@@ -10,7 +10,9 @@ import {
   deleteDoc,
   writeBatch,
   doc,
+  setDoc,
   serverTimestamp,
+  increment,
 } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { db } from "../../../firebase";
@@ -32,6 +34,7 @@ export interface NormalizedRow {
   accountIdentifier: string | null;
   accountType: "bank" | "credit_card";
   rawData: Record<string, string>;
+  userModified?: boolean;   // true when user manually overrode the type in the preview
 }
 
 // ─── Transfer detection ───────────────────────────────────────────────────────
@@ -344,6 +347,40 @@ export function detectSignIssue(rows: NormalizedRow[]): boolean {
     )
   );
   return !hasLegitIncome;
+}
+
+// ─── Type-rule learning ───────────────────────────────────────────────────────
+
+/**
+ * Load user's learned type rules from Firestore and apply them to parsed rows.
+ * Rows whose vendor matches a saved rule have their type overridden automatically.
+ */
+async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<NormalizedRow[]> {
+  try {
+    const snap = await getDocs(
+      query(collection(db, "typeRules"), where("uid", "==", userId))
+    );
+    if (snap.empty) return rows;
+
+    const rules = new Map<string, TransactionType>();
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      if (data.vendorName && data.type) {
+        rules.set(data.vendorName as string, data.type as TransactionType);
+      }
+    });
+
+    return rows.map((row) => {
+      const vendor = extractVendor(normalize(row.description));
+      const learnedType = rules.get(vendor);
+      if (learnedType && learnedType !== row.type) {
+        return { ...row, type: learnedType, isTransfer: learnedType === "transfer" };
+      }
+      return row;
+    });
+  } catch {
+    return rows; // non-blocking — fail silently
+  }
 }
 
 // ─── CSV parsing ─────────────────────────────────────────────────────────────
@@ -715,7 +752,8 @@ export function useCSVImport() {
       signWarning: false,
     }));
     try {
-      const rows = await parseCSVFile(file, { accountType: state.accountType });
+      let rows = await parseCSVFile(file, { accountType: state.accountType });
+      if (user) rows = await applyTypeRules(user.uid, rows);
       const signWarning = state.accountType === "bank" && detectSignIssue(rows);
       setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
@@ -731,10 +769,11 @@ export function useCSVImport() {
     const nextFlip = !state.flipSign;
     setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
     try {
-      const rows = await parseCSVFile(lastFileRef.current, {
+      let rows = await parseCSVFile(lastFileRef.current, {
         flipSign: nextFlip,
         accountType: state.accountType,
       });
+      if (user) rows = await applyTypeRules(user.uid, rows);
       setState((prev) => ({ ...prev, rows }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -748,10 +787,11 @@ export function useCSVImport() {
     setState((prev) => ({ ...prev, accountType, rows: [], signWarning: false }));
     if (!lastFileRef.current) return;
     try {
-      const rows = await parseCSVFile(lastFileRef.current, {
+      let rows = await parseCSVFile(lastFileRef.current, {
         flipSign: state.flipSign,
         accountType,
       });
+      if (user) rows = await applyTypeRules(user.uid, rows);
       const signWarning = accountType === "bank" && detectSignIssue(rows);
       setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
@@ -759,6 +799,42 @@ export function useCSVImport() {
         ...prev,
         parseError: e instanceof Error ? e.message : "Failed to re-parse CSV.",
       }));
+    }
+  }
+
+  async function updateRowType(index: number, newType: TransactionType) {
+    const row = state.rows[index];
+    if (!row || !user) return;
+
+    // Update preview immediately
+    setState((prev) => {
+      const rows = [...prev.rows];
+      rows[index] = {
+        ...rows[index],
+        type: newType,
+        isTransfer: newType === "transfer",
+        userModified: true,
+      };
+      return { ...prev, rows };
+    });
+
+    // Persist as a learned type rule for future imports
+    try {
+      const vendor = extractVendor(normalize(row.description));
+      const ruleRef = doc(db, "typeRules", `${user.uid}_${vendor}`);
+      await setDoc(
+        ruleRef,
+        {
+          uid: user.uid,
+          vendorName: vendor,
+          type: newType,
+          usageCount: increment(1),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch {
+      // Non-blocking — rule writing is best-effort
     }
   }
 
@@ -816,5 +892,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport };
+  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType };
 }

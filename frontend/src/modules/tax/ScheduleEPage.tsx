@@ -253,14 +253,14 @@ export default function ScheduleEPage() {
         style={{
           backgroundColor: "#fff",
           borderBottom: "1px solid #e5e7eb",
-          padding: "0 32px",
+          padding: "0 32px 10px",
           height: "64px",
           display: "flex",
-          alignItems: "center",
+          alignItems: "flex-end",
           justifyContent: "space-between",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
           <div
             style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
             onClick={() => navigate("/dashboard")}
@@ -274,7 +274,7 @@ export default function ScheduleEPage() {
           <button style={navLink} onClick={() => navigate("/tax-summary")}>Tax Summary</button>
           <button style={navLinkActive}>Schedule E</button>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <YearSelector variant="nav" />
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button

@@ -18,6 +18,7 @@ export default function ReviewPage() {
     allSelected,
     handleEntityChange,
     handleCategoryChange,
+    handleTypeChange,
     handleConfirm,
     handleBulkConfirm,
     handleBulkCategoryAssign,
@@ -31,6 +32,7 @@ export default function ReviewPage() {
 
   // Track which category was last bulk-assigned so the select resets after
   const [bulkAssignKey, setBulkAssignKey] = useState(0);
+  const [accountFilter, setAccountFilter] = useState<string>("all");
 
   const navLink: React.CSSProperties = {
     background: "none", border: "none", fontSize: "14px",
@@ -40,6 +42,16 @@ export default function ReviewPage() {
 
   const hasSelection = selectedIds.size > 0;
 
+  // Unique account names from loaded transactions (for filter dropdown)
+  const accountOptions = Array.from(
+    new Set(transactions.map((t) => t.accountName).filter((n): n is string => !!n))
+  ).sort();
+
+  const filteredTransactions =
+    accountFilter === "all"
+      ? transactions
+      : transactions.filter((t) => t.accountName === accountFilter);
+
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font, paddingBottom: hasSelection ? "80px" : "0" }}>
 
@@ -47,13 +59,13 @@ export default function ReviewPage() {
       <nav style={{
         backgroundColor: "#fff",
         borderBottom: "1px solid #e5e7eb",
-        padding: "0 32px",
+        padding: "0 32px 10px",
         height: "64px",
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-end",
         justifyContent: "space-between",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "28px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "28px" }}>
           <div
             style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
             onClick={() => navigate("/dashboard")}
@@ -68,7 +80,7 @@ export default function ReviewPage() {
           <button style={navLink}       onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
           <button style={navLink}       onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
@@ -126,6 +138,41 @@ export default function ReviewPage() {
           </div>
         )}
 
+        {/* Account filter */}
+        {!loading && accountOptions.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
+            <select
+              value={accountFilter}
+              onChange={(e) => setAccountFilter(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#fff",
+                fontSize: "13px",
+                color: "#374151",
+                cursor: "pointer",
+                fontFamily: font,
+                outline: "none",
+              }}
+            >
+              <option value="all">All Accounts</option>
+              {accountOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {accountFilter !== "all" && (
+              <button
+                onClick={() => setAccountFilter("all")}
+                style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "16px" }}>
@@ -141,7 +188,7 @@ export default function ReviewPage() {
             </div>
           ) : (
             <ReviewTable
-              transactions={transactions}
+              transactions={filteredTransactions}
               entities={entities}
               selectedIds={selectedIds}
               updating={updating}
@@ -150,16 +197,19 @@ export default function ReviewPage() {
               onToggleSelectAll={toggleSelectAll}
               onCategoryChange={handleCategoryChange}
               onEntityChange={handleEntityChange}
+              onTypeChange={handleTypeChange}
               onConfirm={handleConfirm}
             />
           )}
         </div>
 
         {/* Footer count */}
-        {!loading && transactions.length > 0 && (
+        {!loading && filteredTransactions.length > 0 && (
           <div style={{ marginTop: "10px", fontSize: "12px", color: "#9ca3af", textAlign: "right" }}>
             {selectedIds.size > 0
-              ? `${selectedIds.size} of ${transactions.length} selected`
+              ? `${selectedIds.size} of ${filteredTransactions.length} selected`
+              : accountFilter !== "all"
+              ? `${filteredTransactions.length} of ${transactions.length} total`
               : `${transactions.length} total`}
           </div>
         )}

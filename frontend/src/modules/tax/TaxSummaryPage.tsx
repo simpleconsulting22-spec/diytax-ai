@@ -281,14 +281,14 @@ export default function TaxSummaryPage() {
         style={{
           backgroundColor: "#fff",
           borderBottom: "1px solid #e5e7eb",
-          padding: "0 32px",
+          padding: "0 32px 10px",
           height: "64px",
           display: "flex",
-          alignItems: "center",
+          alignItems: "flex-end",
           justifyContent: "space-between",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
           <div
             style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
             onClick={() => navigate("/dashboard")}
@@ -305,7 +305,7 @@ export default function TaxSummaryPage() {
           <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
           <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <YearSelector variant="nav" />
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>

@@ -37,10 +37,18 @@ export default function InlineCategoryEditor({
     : TAX_CATEGORIES;
 
   // When there is an AI suggestion and the user hasn't typed, pin current value at top
-  const suggestions =
+  const baseList =
     source === "ai" && value && !typed
       ? [value, ...TAX_CATEGORIES.filter((c) => c !== value)]
       : filtered;
+
+  // If typed text doesn't exactly match any suggestion, offer a custom-entry option
+  const isExactMatch = typed
+    ? TAX_CATEGORIES.some((c) => c.toLowerCase() === typed.toLowerCase())
+    : false;
+  const showCustomOption = typed.length > 0 && !isExactMatch;
+
+  const suggestions = baseList;
 
   // ── Dropdown positioning (fixed, escapes overflow:auto containers) ─────────
   const updateDropdownPosition = useCallback(() => {
@@ -81,17 +89,27 @@ export default function InlineCategoryEditor({
   }
 
   // ── Keyboard navigation ────────────────────────────────────────────────────
+  const totalOptions = suggestions.length + (showCustomOption ? 1 : 0);
+
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") { closeEditor(); return; }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlighted((h) => Math.min(h + 1, suggestions.length - 1));
+      setHighlighted((h) => Math.min(h + 1, totalOptions - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlighted((h) => Math.max(h - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (suggestions[highlighted]) select(suggestions[highlighted]);
+      if (showCustomOption && highlighted === suggestions.length) {
+        // Custom entry selected
+        select(typed);
+      } else if (suggestions[highlighted]) {
+        select(suggestions[highlighted]);
+      } else if (showCustomOption && typed) {
+        // Nothing highlighted but user pressed Enter with typed text
+        select(typed);
+      }
     }
   }
 
@@ -163,53 +181,76 @@ export default function InlineCategoryEditor({
               ✦ AI SUGGESTION — click to accept or type to override
             </div>
           )}
-          {suggestions.length === 0 ? (
+          {suggestions.length === 0 && !showCustomOption ? (
             <div style={{ padding: "10px 12px", color: "#9ca3af", fontSize: "13px" }}>
-              No matches
+              No matches — press Enter to use &ldquo;{typed}&rdquo; as a custom category
             </div>
           ) : (
-            suggestions.map((cat, i) => {
-              const isAiPinned = i === 0 && source === "ai" && cat === value && !typed;
-              return (
+            <>
+              {suggestions.map((cat, i) => {
+                const isAiPinned = i === 0 && source === "ai" && cat === value && !typed;
+                return (
+                  <div
+                    key={cat + i}
+                    onMouseDown={(e) => { e.preventDefault(); select(cat); }}
+                    onMouseEnter={() => setHighlighted(i)}
+                    style={{
+                      padding: "8px 12px",
+                      fontSize: "13px",
+                      cursor: "pointer",
+                      backgroundColor: i === highlighted
+                        ? (isAiPinned ? "#fff7ed" : "#f0fdf4")
+                        : "transparent",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      borderBottom: isAiPinned ? "1px solid #f3f4f6" : "none",
+                    }}
+                  >
+                    <span style={{
+                      color: isAiPinned ? "#c2410c" : "#111827",
+                      fontWeight: isAiPinned ? 600 : 400,
+                    }}>
+                      {cat}
+                    </span>
+                    {isAiPinned && (
+                      <span style={{
+                        fontSize: "10px",
+                        padding: "1px 7px",
+                        backgroundColor: "#fff7ed",
+                        color: "#c2410c",
+                        borderRadius: "999px",
+                        fontWeight: 700,
+                        border: "1px solid #fed7aa",
+                      }}>
+                        AI
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              {showCustomOption && (
                 <div
-                  key={cat + i}
-                  onMouseDown={(e) => { e.preventDefault(); select(cat); }}
-                  onMouseEnter={() => setHighlighted(i)}
+                  onMouseDown={(e) => { e.preventDefault(); select(typed); }}
+                  onMouseEnter={() => setHighlighted(suggestions.length)}
                   style={{
                     padding: "8px 12px",
                     fontSize: "13px",
                     cursor: "pointer",
-                    backgroundColor: i === highlighted
-                      ? (isAiPinned ? "#fff7ed" : "#f0fdf4")
-                      : "transparent",
+                    backgroundColor: highlighted === suggestions.length ? "#f0f6ff" : "transparent",
                     display: "flex",
-                    justifyContent: "space-between",
                     alignItems: "center",
-                    borderBottom: isAiPinned ? "1px solid #f3f4f6" : "none",
+                    gap: "8px",
+                    borderTop: suggestions.length > 0 ? "1px solid #f3f4f6" : "none",
+                    color: "#2563eb",
+                    fontWeight: 500,
                   }}
                 >
-                  <span style={{
-                    color: isAiPinned ? "#c2410c" : "#111827",
-                    fontWeight: isAiPinned ? 600 : 400,
-                  }}>
-                    {cat}
-                  </span>
-                  {isAiPinned && (
-                    <span style={{
-                      fontSize: "10px",
-                      padding: "1px 7px",
-                      backgroundColor: "#fff7ed",
-                      color: "#c2410c",
-                      borderRadius: "999px",
-                      fontWeight: 700,
-                      border: "1px solid #fed7aa",
-                    }}>
-                      AI
-                    </span>
-                  )}
+                  <span style={{ fontSize: "14px" }}>+</span>
+                  Use &ldquo;{typed}&rdquo; as custom category
                 </div>
-              );
-            })
+              )}
+            </>
           )}
         </div>
       </div>

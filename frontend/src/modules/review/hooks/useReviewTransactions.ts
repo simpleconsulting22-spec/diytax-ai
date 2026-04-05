@@ -26,7 +26,9 @@ export interface ReviewTransaction {
   normalizedDescription: string;
   vendor: string | null;
   amount: number;
-  type: "income" | "expense";
+  type: "income" | "expense" | "transfer";
+  accountId: string | null;
+  accountName: string | null;
   category: string | null;
   taxCategory: string | null;
   taxSchedule: string | null;
@@ -80,7 +82,7 @@ export function useReviewTransactions() {
     if (!user) return;
     setState((prev) => ({ ...prev, loading: true, error: "" }));
     try {
-      const [snap, entities] = await Promise.all([
+      const [snap, entities, accountSnap] = await Promise.all([
         getDocs(
           query(
             collection(db, "transactions"),
@@ -90,7 +92,15 @@ export function useReviewTransactions() {
           )
         ),
         getUserEntities(user.uid),
+        getDocs(
+          query(collection(db, "accounts"), where("uid", "==", user.uid))
+        ),
       ]);
+
+      const accountMap = new Map<string, string>();
+      accountSnap.docs.forEach((d) => {
+        accountMap.set(d.id, (d.data().name as string) ?? d.id);
+      });
 
       const docs: ReviewTransaction[] = snap.docs.filter((d) =>
         matchesTaxYear(
@@ -107,6 +117,8 @@ export function useReviewTransactions() {
           vendor: (data.vendor as string) ?? null,
           amount: data.amount ?? 0,
           type: data.type ?? "expense",
+          accountId: (data.accountId as string) ?? null,
+          accountName: data.accountId ? (accountMap.get(data.accountId as string) ?? null) : null,
           category: data.category ?? null,
           taxCategory: data.taxCategory ?? null,
           taxSchedule: data.taxSchedule ?? null,
@@ -362,6 +374,45 @@ export function useReviewTransactions() {
     }
   }
 
+  // ── Type change ────────────────────────────────────────────────────────────
+
+  async function handleTypeChange(id: string, newType: "income" | "expense" | "transfer") {
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
+    try {
+      const updates: Record<string, unknown> = {
+        type: newType,
+        updatedAt: serverTimestamp(),
+      };
+      if (newType === "transfer") {
+        updates.status = "transfer";
+      }
+      await updateDoc(doc(db, "transactions", id), updates);
+
+      if (newType === "transfer") {
+        // Remove from review list — it's now a transfer
+        setState((prev) => ({
+          ...prev,
+          updating: new Set([...prev.updating].filter((i) => i !== id)),
+          transactions: prev.transactions.filter((t) => t.id !== id),
+          selectedIds: new Set([...prev.selectedIds].filter((i) => i !== id)),
+        }));
+      } else {
+        setState((prev) => ({
+          ...prev,
+          updating: new Set([...prev.updating].filter((i) => i !== id)),
+          transactions: prev.transactions.map((t) =>
+            t.id === id ? { ...t, type: newType } : t
+          ),
+        }));
+      }
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => i !== id)),
+      }));
+    }
+  }
+
   // ── Selection helpers ──────────────────────────────────────────────────────
 
   function clearSelection() {
@@ -394,6 +445,7 @@ export function useReviewTransactions() {
     allSelected,
     handleEntityChange,
     handleCategoryChange,
+    handleTypeChange,
     handleConfirm,
     handleBulkConfirm,
     handleBulkCategoryAssign,

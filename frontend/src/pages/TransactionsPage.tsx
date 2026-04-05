@@ -108,10 +108,10 @@ export default function TransactionsPage() {
   const navStyle: React.CSSProperties = {
     backgroundColor: "#fff",
     borderBottom: "1px solid #e5e7eb",
-    padding: "0 32px",
+    padding: "0 32px 10px",
     height: "64px",
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-end",
     justifyContent: "space-between",
     fontFamily: font,
   };
@@ -182,7 +182,7 @@ export default function TransactionsPage() {
     <div style={pageStyle}>
       <nav style={navStyle}>
         <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A" }}>DIYTax AI</div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <YearSelector variant="nav" />
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button

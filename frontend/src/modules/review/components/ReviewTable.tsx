@@ -1,9 +1,95 @@
-import React from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ReviewTransaction } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+const REVIEW_TYPES = ["income", "expense", "transfer"] as const;
+type ReviewType = "income" | "expense" | "transfer";
+
+function typeBadgeStyle(type: ReviewType): React.CSSProperties {
+  switch (type) {
+    case "transfer": return { backgroundColor: "#f3f4f6", color: "#6b7280" };
+    case "expense":  return { backgroundColor: "#fef2f2", color: "#dc2626" };
+    default:         return { backgroundColor: "#f0fdf4", color: "#16A34A" };
+  }
+}
+
+function TypeBadge({
+  type,
+  id,
+  disabled,
+  onTypeChange,
+}: {
+  type: ReviewType;
+  id: string;
+  disabled: boolean;
+  onTypeChange?: (id: string, type: ReviewType) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [open]);
+
+  if (!onTypeChange || disabled) {
+    return (
+      <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, ...typeBadgeStyle(type) }}>
+        {type}
+      </span>
+    );
+  }
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Click to change type"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "3px",
+          padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 600,
+          cursor: "pointer", border: "1.5px solid transparent", outline: "none",
+          ...typeBadgeStyle(type),
+        }}
+      >
+        {type}
+        <span style={{ fontSize: "9px", opacity: 0.7 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 200,
+          backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "8px",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.13)", padding: "4px", minWidth: "110px",
+        }}>
+          {REVIEW_TYPES.map((t) => (
+            <button
+              key={t}
+              onClick={() => { onTypeChange(id, t); setOpen(false); }}
+              style={{
+                display: "flex", alignItems: "center", gap: "6px", width: "100%",
+                textAlign: "left", padding: "6px 10px", border: "none", borderRadius: "6px",
+                fontSize: "12px", fontWeight: t === type ? 700 : 500, cursor: "pointer",
+                backgroundColor: t === type ? "#f3f4f6" : "transparent",
+                color: t === type ? "#111827" : "#374151",
+              }}
+            >
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", backgroundColor: typeBadgeStyle(t).color as string, flexShrink: 0 }} />
+              {t}
+              {t === type && <span style={{ marginLeft: "auto", fontSize: "10px" }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ConfidenceCell({
   confidence,
@@ -66,14 +152,14 @@ function EntityDropdown({
         onChange={handleChange}
         title={autoAssigned ? "Auto-predicted from past transactions — confirm or change" : undefined}
         style={{
-          fontSize: "13px",
-          padding: "5px 8px",
+          fontSize: "11px",
+          padding: "4px 6px",
           borderRadius: "6px",
           border: autoAssigned ? "1.5px solid #a5b4fc" : "1px solid #e5e7eb",
           backgroundColor: disabled ? "#f9fafb" : (autoAssigned ? "#eef2ff" : "#fff"),
           color: value ? "#111827" : "#9ca3af",
           cursor: disabled ? "not-allowed" : "pointer",
-          minWidth: "130px",
+          minWidth: "100px",
         }}
       >
         <option value="">Personal</option>
@@ -107,6 +193,7 @@ interface ReviewTableProps {
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) => void;
+  onTypeChange: (id: string, type: "income" | "expense" | "transfer") => void;
   onConfirm: (id: string) => void;
 }
 
@@ -132,10 +219,10 @@ const TD: React.CSSProperties = {
 
 function fmtDate(d: string): string {
   if (!d) return "—";
-  // YYYY-MM-DD → M/D
-  const [, m, day] = d.split("-");
-  if (!m || !day) return d;
-  return `${parseInt(m)}/${parseInt(day)}`;
+  // YYYY-MM-DD → MM/DD/YY
+  const [year, m, day] = d.split("-");
+  if (!m || !day || !year) return d;
+  return `${parseInt(m)}/${parseInt(day)}/${year.slice(2)}`;
 }
 
 export default function ReviewTable({
@@ -148,6 +235,7 @@ export default function ReviewTable({
   onToggleSelectAll,
   onCategoryChange,
   onEntityChange,
+  onTypeChange,
   onConfirm,
 }: ReviewTableProps) {
   if (transactions.length === 0) {
@@ -179,6 +267,7 @@ export default function ReviewTable({
             <th style={{ ...TH, width: "56px" }}>Date</th>
             <th style={TH}>Description</th>
             <th style={{ ...TH, textAlign: "right" }}>Amount</th>
+            <th style={{ ...TH, width: "90px" }}>Type</th>
             <th style={{ ...TH, minWidth: "200px" }}>Category</th>
             {entities.length > 0 && (
               <th style={{ ...TH, minWidth: "140px" }}>Assign To</th>
@@ -271,10 +360,20 @@ export default function ReviewTable({
                   fontVariantNumeric: "tabular-nums",
                   fontWeight: 600,
                   whiteSpace: "nowrap",
-                  color: txn.type === "expense" ? "#dc2626" : "#16A34A",
+                  color: txn.type === "expense" ? "#dc2626" : txn.type === "transfer" ? "#9ca3af" : "#16A34A",
                 }}>
-                  {txn.type === "expense" ? "−" : "+"}$
+                  {txn.type === "expense" ? "−" : txn.type === "transfer" ? "" : "+"}$
                   {Math.abs(txn.amount ?? 0).toFixed(2)}
+                </td>
+
+                {/* Type — clickable badge */}
+                <td style={TD}>
+                  <TypeBadge
+                    type={txn.type as "income" | "expense" | "transfer"}
+                    id={txn.id}
+                    disabled={isUpdating}
+                    onTypeChange={onTypeChange}
+                  />
                 </td>
 
                 {/* Category — inline editable */}

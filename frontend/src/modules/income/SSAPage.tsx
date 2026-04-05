@@ -47,8 +47,8 @@ export default function SSAPage() {
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
       {/* Nav */}
-      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: "64px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
+      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px 10px", height: "64px", display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
           <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }} onClick={() => navigate("/dashboard")}>DIYTax AI</div>
           <button style={navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
           <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
@@ -60,7 +60,7 @@ export default function SSAPage() {
           <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
           <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button onClick={() => signOut(auth).then(() => navigate("/login"))} style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}>

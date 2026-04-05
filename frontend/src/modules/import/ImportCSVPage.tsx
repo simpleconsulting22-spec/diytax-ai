@@ -84,7 +84,7 @@ export default function ImportCSVPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning, accountType } = state;
 
@@ -107,8 +107,8 @@ export default function ImportCSVPage() {
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
       {/* Nav */}
-      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: "64px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "32px" }}>
+      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px 10px", height: "64px", display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
           <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }} onClick={() => navigate("/dashboard")}>
             DIYTax AI
           </div>
@@ -120,7 +120,7 @@ export default function ImportCSVPage() {
           <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
           <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
@@ -274,7 +274,7 @@ export default function ImportCSVPage() {
             {/* Preview + import */}
             {hasParsed && (
               <>
-                <CSVPreviewTable rows={rows} totalCount={rows.length} />
+                <CSVPreviewTable rows={rows} totalCount={rows.length} onTypeChange={updateRowType} />
 
                 {/* Sign-convention warning (auto-detected, bank mode only) */}
                 <div style={{ marginTop: "16px" }}>

@@ -24,7 +24,7 @@ export default function PrivacyPolicyPage() {
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
       {/* Nav */}
-      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: "64px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px 10px", height: "64px", display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
         <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }} onClick={() => navigate("/")}>
           DIYTax AI
         </div>
