@@ -29,6 +29,7 @@ export interface ReviewTransaction {
   type: "income" | "expense" | "transfer";
   accountId: string | null;
   accountName: string | null;
+  subType: "credit_card_payment" | "loan_payment" | null;
   category: string | null;
   taxCategory: string | null;
   taxSchedule: string | null;
@@ -119,6 +120,7 @@ export function useReviewTransactions() {
           type: data.type ?? "expense",
           accountId: (data.accountId as string) ?? null,
           accountName: data.accountId ? (accountMap.get(data.accountId as string) ?? null) : null,
+          subType: (data.subType as ReviewTransaction["subType"]) ?? null,
           category: data.category ?? null,
           taxCategory: data.taxCategory ?? null,
           taxSchedule: data.taxSchedule ?? null,
@@ -376,7 +378,11 @@ export function useReviewTransactions() {
 
   // ── Type change ────────────────────────────────────────────────────────────
 
-  async function handleTypeChange(id: string, newType: "income" | "expense" | "transfer") {
+  async function handleTypeChange(
+    id: string,
+    newType: "income" | "expense" | "transfer",
+    newSubType?: "credit_card_payment" | "loan_payment" | null
+  ) {
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       const updates: Record<string, unknown> = {
@@ -385,6 +391,9 @@ export function useReviewTransactions() {
       };
       if (newType === "transfer") {
         updates.status = "transfer";
+        updates.subType = newSubType ?? null;
+      } else {
+        updates.subType = null;
       }
       await updateDoc(doc(db, "transactions", id), updates);
 
@@ -401,7 +410,7 @@ export function useReviewTransactions() {
           ...prev,
           updating: new Set([...prev.updating].filter((i) => i !== id)),
           transactions: prev.transactions.map((t) =>
-            t.id === id ? { ...t, type: newType } : t
+            t.id === id ? { ...t, type: newType, subType: null } : t
           ),
         }));
       }

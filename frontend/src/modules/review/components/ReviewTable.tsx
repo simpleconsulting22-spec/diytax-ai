@@ -5,8 +5,17 @@ import InlineCategoryEditor from "./InlineCategoryEditor";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-const REVIEW_TYPES = ["income", "expense", "transfer"] as const;
 type ReviewType = "income" | "expense" | "transfer";
+type ReviewSubType = "credit_card_payment" | "loan_payment" | null;
+
+// All selectable options including transfer subtypes
+const TYPE_OPTIONS: Array<{ type: ReviewType; subType: ReviewSubType; label: string }> = [
+  { type: "income",   subType: null,           label: "income" },
+  { type: "expense",  subType: null,           label: "expense" },
+  { type: "transfer", subType: null,           label: "transfer" },
+  { type: "transfer", subType: "credit_card_payment", label: "credit card payment" },
+  { type: "transfer", subType: "loan_payment", label: "loan payment" },
+];
 
 function typeBadgeStyle(type: ReviewType): React.CSSProperties {
   switch (type) {
@@ -16,16 +25,24 @@ function typeBadgeStyle(type: ReviewType): React.CSSProperties {
   }
 }
 
+function transferSubTypeLabel(subType: ReviewSubType): string | null {
+  if (subType === "credit_card_payment") return "credit card payment";
+  if (subType === "loan_payment") return "loan payment";
+  return null;
+}
+
 function TypeBadge({
   type,
+  subType,
   id,
   disabled,
   onTypeChange,
 }: {
   type: ReviewType;
+  subType: ReviewSubType;
   id: string;
   disabled: boolean;
-  onTypeChange?: (id: string, type: ReviewType) => void;
+  onTypeChange?: (id: string, type: ReviewType, subType?: ReviewSubType) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -39,13 +56,22 @@ function TypeBadge({
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [open]);
 
+  const subLabel = type === "transfer" ? transferSubTypeLabel(subType) : null;
+
   if (!onTypeChange || disabled) {
     return (
-      <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, ...typeBadgeStyle(type) }}>
-        {type}
+      <span style={{ display: "inline-flex", flexDirection: "column", gap: "1px" }}>
+        <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, ...typeBadgeStyle(type) }}>
+          {type}
+        </span>
+        {subLabel && (
+          <span style={{ fontSize: "10px", color: "#9ca3af", paddingLeft: "2px" }}>{subLabel}</span>
+        )}
       </span>
     );
   }
+
+  const isActive = (opt: typeof TYPE_OPTIONS[0]) => opt.type === type && opt.subType === subType;
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
@@ -53,36 +79,41 @@ function TypeBadge({
         onClick={() => setOpen((o) => !o)}
         title="Click to change type"
         style={{
-          display: "inline-flex", alignItems: "center", gap: "3px",
-          padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 600,
+          display: "inline-flex", flexDirection: "column", alignItems: "flex-start",
+          padding: "2px 8px", borderRadius: "8px", fontSize: "11px", fontWeight: 600,
           cursor: "pointer", border: "1.5px solid transparent", outline: "none",
           ...typeBadgeStyle(type),
         }}
       >
-        {type}
-        <span style={{ fontSize: "9px", opacity: 0.7 }}>▾</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+          {type}
+          <span style={{ fontSize: "9px", opacity: 0.7 }}>▾</span>
+        </span>
+        {subLabel && (
+          <span style={{ fontSize: "10px", fontWeight: 400, opacity: 0.8, lineHeight: 1.2 }}>{subLabel}</span>
+        )}
       </button>
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 200,
           backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "8px",
-          boxShadow: "0 4px 16px rgba(0,0,0,0.13)", padding: "4px", minWidth: "110px",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.13)", padding: "4px", minWidth: "140px",
         }}>
-          {REVIEW_TYPES.map((t) => (
+          {TYPE_OPTIONS.map((opt) => (
             <button
-              key={t}
-              onClick={() => { onTypeChange(id, t); setOpen(false); }}
+              key={`${opt.type}-${opt.subType}`}
+              onClick={() => { onTypeChange(id, opt.type, opt.subType); setOpen(false); }}
               style={{
                 display: "flex", alignItems: "center", gap: "6px", width: "100%",
                 textAlign: "left", padding: "6px 10px", border: "none", borderRadius: "6px",
-                fontSize: "12px", fontWeight: t === type ? 700 : 500, cursor: "pointer",
-                backgroundColor: t === type ? "#f3f4f6" : "transparent",
-                color: t === type ? "#111827" : "#374151",
+                fontSize: "12px", fontWeight: isActive(opt) ? 700 : 500, cursor: "pointer",
+                backgroundColor: isActive(opt) ? "#f3f4f6" : "transparent",
+                color: isActive(opt) ? "#111827" : "#374151",
               }}
             >
-              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", backgroundColor: typeBadgeStyle(t).color as string, flexShrink: 0 }} />
-              {t}
-              {t === type && <span style={{ marginLeft: "auto", fontSize: "10px" }}>✓</span>}
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", backgroundColor: typeBadgeStyle(opt.type).color as string, flexShrink: 0 }} />
+              {opt.label}
+              {isActive(opt) && <span style={{ marginLeft: "auto", fontSize: "10px" }}>✓</span>}
             </button>
           ))}
         </div>
@@ -193,7 +224,7 @@ interface ReviewTableProps {
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) => void;
-  onTypeChange: (id: string, type: "income" | "expense" | "transfer") => void;
+  onTypeChange: (id: string, type: "income" | "expense" | "transfer", subType?: "credit_card_payment" | "loan_payment" | null) => void;
   onConfirm: (id: string) => void;
 }
 
@@ -370,6 +401,7 @@ export default function ReviewTable({
                 <td style={TD}>
                   <TypeBadge
                     type={txn.type as "income" | "expense" | "transfer"}
+                    subType={txn.subType ?? null}
                     id={txn.id}
                     disabled={isUpdating}
                     onTypeChange={onTypeChange}

@@ -22,7 +22,7 @@ import { getUserEntities, UserEntity } from "../../../services/entityService";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TransactionType = "income" | "expense" | "transfer" | "refund";
-export type TransactionSubType = "debt_payment";
+export type TransactionSubType = "credit_card_payment" | "loan_payment";
 
 export interface NormalizedRow {
   date: string;
@@ -80,6 +80,26 @@ const BANK_DEBT_PAYMENT_PATTERNS = [
   /\bpayment\s+to\s+\w*\s*(card|visa|mastercard|amex)/i,
 ];
 
+// Loan payment patterns — mortgage, auto, student, personal loans
+const LOAN_PAYMENT_PATTERNS = [
+  /\bmortgage\b/i,
+  /\bhome\s+loan\b/i,
+  /\bhome\s+equity\b/i,
+  /\bheloc\b/i,
+  /\bauto\s+loan\b/i,
+  /\bcar\s+loan\b/i,
+  /\bvehicle\s+loan\b/i,
+  /\bstudent\s+loan\b/i,
+  /\bsallie\s+mae\b/i,
+  /\bnavient\b/i,
+  /\bfedloan\b/i,
+  /\bgreat\s+lakes\b/i,
+  /\bnelnet\b/i,
+  /\bpersonal\s+loan\b/i,
+  /\bloan\s+payment\b/i,
+  /\bloan\s+repayment\b/i,
+];
+
 function detectBankTransfer(description: string): boolean {
   return BANK_TRANSFER_PATTERNS.some((re) => re.test(description));
 }
@@ -90,6 +110,10 @@ function detectCreditCardPayment(description: string): boolean {
 
 function detectBankDebtPayment(description: string): boolean {
   return BANK_DEBT_PAYMENT_PATTERNS.some((re) => re.test(description));
+}
+
+function detectLoanPayment(description: string): boolean {
+  return LOAN_PAYMENT_PATTERNS.some((re) => re.test(description));
 }
 
 /** Derive transaction type based on account type, amount, and description. */
@@ -108,9 +132,14 @@ function deriveType(
     return { type: "refund", isTransfer: false };
   }
 
-  // Bank account: credit card debt payments → transfer tagged as debt_payment
+  // Bank account: loan payments (mortgage, auto, student) → transfer tagged as loan_payment
+  if (detectLoanPayment(description)) {
+    return { type: "transfer", subType: "loan_payment", isTransfer: true };
+  }
+
+  // Bank account: credit card payments → transfer tagged as credit_card_payment
   if (detectBankDebtPayment(description)) {
-    return { type: "transfer", subType: "debt_payment", isTransfer: true };
+    return { type: "transfer", subType: "credit_card_payment", isTransfer: true };
   }
 
   // Generic account-to-account transfer
@@ -570,7 +599,8 @@ async function writeTransactions(
   userId: string,
   rows: NormalizedRow[],
   fileName: string,
-  accountType: "bank" | "credit_card"
+  accountType: "bank" | "credit_card",
+  defaultAccountName?: string
 ): Promise<WriteResult> {
   // ── 0. Resolve default entity (auto-assign if exactly one entity) ──────────
   const entities = await getUserEntities(userId);
@@ -601,7 +631,9 @@ async function writeTransactions(
   const accountMap = new Map<string, string>();
   const uniqueIdentifiers = [
     ...new Set(
-      validRows.map((r) => r.accountIdentifier).filter((id): id is string => id !== null)
+      validRows
+        .map((r) => r.accountIdentifier ?? (defaultAccountName || null))
+        .filter((id): id is string => id !== null)
     ),
   ];
   for (const ident of uniqueIdentifiers) {
@@ -610,9 +642,8 @@ async function writeTransactions(
 
   // ── 3. Build importKeys ────────────────────────────────────────────────────
   const prepared: PreparedRow[] = validRows.map((row) => {
-    const accountId = row.accountIdentifier
-      ? (accountMap.get(row.accountIdentifier) ?? null)
-      : null;
+    const identifier = row.accountIdentifier ?? (defaultAccountName || null);
+    const accountId = identifier ? (accountMap.get(identifier) ?? null) : null;
     const normalizedDescription = normalize(row.description);
     const importKey = `${userId}|${accountId ?? "na"}|${row.date}|${row.amount}|${normalizedDescription}`;
     return { row, accountId, normalizedDescription, importKey, possibleDuplicate: false };
@@ -838,11 +869,11 @@ export function useCSVImport() {
     }
   }
 
-  async function handleImport() {
+  async function handleImport(defaultAccountName?: string) {
     if (!user || state.rows.length === 0) return;
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      const result = await writeTransactions(user.uid, state.rows, state.fileName, state.accountType);
+      const result = await writeTransactions(user.uid, state.rows, state.fileName, state.accountType, defaultAccountName);
       setState((prev) => ({
         ...prev,
         importing: false,

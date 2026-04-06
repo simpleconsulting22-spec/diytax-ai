@@ -90,6 +90,7 @@ export default function ImportCSVPage() {
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
+  const [accountName, setAccountName] = useState("");
 
   // Refresh history after a successful import
   useEffect(() => {
@@ -181,7 +182,7 @@ export default function ImportCSVPage() {
             </div>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
-                onClick={resetImport}
+                onClick={() => { resetImport(); setAccountName(""); }}
                 style={{ padding: "10px 20px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
               >
                 Import Another File
@@ -339,9 +340,36 @@ export default function ImportCSVPage() {
                   )}
                 </div>
 
-                <div style={{ marginTop: "24px", display: "flex", gap: "12px" }}>
+                {/* Account name (used when the CSV has no Account column) */}
+                <div style={{ marginTop: "20px" }}>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+                    Account name <span style={{ fontWeight: 400, color: "#9ca3af" }}>(optional — used for filtering in Review)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={accountName}
+                    onChange={(e) => setAccountName(e.target.value)}
+                    placeholder="e.g. Chase Checking, Amex Gold"
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid #d1d5db",
+                      fontSize: "13px",
+                      color: "#374151",
+                      fontFamily: font,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <div style={{ marginTop: "4px", fontSize: "12px", color: "#9ca3af" }}>
+                    If your CSV already has an Account column, this is ignored.
+                  </div>
+                </div>
+
+                <div style={{ marginTop: "16px", display: "flex", gap: "12px" }}>
                   <button
-                    onClick={handleImport}
+                    onClick={() => handleImport(accountName.trim() || undefined)}
                     disabled={importing}
                     style={{ flex: 1, padding: "14px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "10px", fontSize: "15px", fontWeight: 600, cursor: importing ? "not-allowed" : "pointer", opacity: importing ? 0.65 : 1, fontFamily: font }}
                   >

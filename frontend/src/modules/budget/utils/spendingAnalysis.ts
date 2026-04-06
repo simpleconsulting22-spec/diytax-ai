@@ -77,7 +77,7 @@ function sumByCategory(
 }
 
 /**
- * Sum absolute amounts of debt payment transactions (subType === "debt_payment")
+ * Sum absolute amounts of debt payment transactions (subType === "credit_card_payment")
  * within a date range.
  */
 export function sumDebtPayments(
@@ -88,7 +88,7 @@ export function sumDebtPayments(
     transactions
       .filter(
         (txn) =>
-          txn.subType === "debt_payment" &&
+          txn.subType === "credit_card_payment" &&
           txn.date >= range.start &&
           txn.date <= range.end
       )
