@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
@@ -22,6 +22,8 @@ export default function ReviewPage() {
     handleConfirm,
     handleBulkConfirm,
     handleBulkCategoryAssign,
+    handleBulkEntityAssign,
+    handleAutoCategorizeBatch,
     clearSelection,
     toggleSelect,
     toggleSelectAll,
@@ -32,7 +34,30 @@ export default function ReviewPage() {
 
   // Track which category was last bulk-assigned so the select resets after
   const [bulkAssignKey, setBulkAssignKey] = useState(0);
+  const [bulkEntityKey, setBulkEntityKey] = useState(0);
   const [accountFilter, setAccountFilter] = useState<string>("all");
+
+  // Auto-categorize progress state (Task 2B)
+  const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
+
+  const handleAutoAll = useCallback(async () => {
+    setAutoProgress({ processed: 0, total: transactions.length });
+    await handleAutoCategorizeBatch("all", (processed, total) =>
+      setAutoProgress({ processed, total })
+    );
+    setAutoProgress(null);
+  }, [handleAutoCategorizeBatch, transactions.length]);
+
+  const handleAutoSelected = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    setAutoProgress({ processed: 0, total: ids.length });
+    await handleAutoCategorizeBatch(ids, (processed, total) =>
+      setAutoProgress({ processed, total })
+    );
+    setAutoProgress(null);
+    clearSelection();
+  }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
 
   const navLink: React.CSSProperties = {
     background: "none", border: "none", fontSize: "14px",
@@ -108,12 +133,37 @@ export default function ReviewPage() {
                 : `${transactions.length} transaction${transactions.length !== 1 ? "s" : ""} need review`}
             </p>
           </div>
-          <button
-            onClick={reload}
-            style={{ padding: "10px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-          >
-            Refresh
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {/* Auto Categorize All (Task 2B) */}
+            {!loading && transactions.length > 0 && (
+              <button
+                onClick={handleAutoAll}
+                disabled={!!autoProgress}
+                style={{
+                  padding: "10px 18px",
+                  backgroundColor: autoProgress ? "#d1fae5" : "#16A34A",
+                  color: autoProgress ? "#065f46" : "#fff",
+                  border: "none",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  cursor: autoProgress ? "not-allowed" : "pointer",
+                  fontFamily: font,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {autoProgress
+                  ? `Processing… ${autoProgress.processed} / ${autoProgress.total}`
+                  : "✦ Auto Categorize All"}
+              </button>
+            )}
+            <button
+              onClick={reload}
+              style={{ padding: "10px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+            >
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* Legend */}
@@ -271,6 +321,58 @@ export default function ReviewPage() {
               ))}
             </select>
           </div>
+
+          {/* Bulk entity assign (Task 4) */}
+          {entities.length > 0 && (
+            <>
+              <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "13px", color: "#94a3b8" }}>Assign to:</span>
+                <select
+                  key={bulkEntityKey}
+                  defaultValue=""
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    if (val === "__personal__") {
+                      handleBulkEntityAssign([...selectedIds], null, "personal");
+                    } else {
+                      const entity = entities.find((en) => en.id === val);
+                      if (entity) handleBulkEntityAssign([...selectedIds], entity.id, entity.type, entity.name);
+                    }
+                    setBulkEntityKey((k) => k + 1);
+                  }}
+                  style={{
+                    padding: "6px 10px", borderRadius: "6px",
+                    border: "1px solid #334155", backgroundColor: "#334155",
+                    color: "#f1f5f9", fontSize: "13px", cursor: "pointer",
+                    fontFamily: font, outline: "none",
+                  }}
+                >
+                  <option value="" disabled>Assign to…</option>
+                  <option value="__personal__">Personal</option>
+                  {entities.map((en) => (
+                    <option key={en.id} value={en.id}>{en.name}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+
+          {/* Auto Categorize Selected (Task 4) */}
+          <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
+          <button
+            onClick={handleAutoSelected}
+            disabled={!!autoProgress}
+            style={{
+              padding: "8px 16px", backgroundColor: "#0f172a",
+              color: "#94a3b8", border: "1px solid #334155",
+              borderRadius: "8px", fontSize: "13px", fontWeight: 600,
+              cursor: autoProgress ? "not-allowed" : "pointer", fontFamily: font, whiteSpace: "nowrap",
+            }}
+          >
+            {autoProgress ? `${autoProgress.processed}/${autoProgress.total}…` : "✦ AI Categorize"}
+          </button>
 
           <div style={{ flex: 1 }} />
 

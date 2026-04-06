@@ -21,6 +21,10 @@ export interface CategorizationResult {
   entityId?: string | null;
   entityName?: string | null;
   entityType?: string;
+  // AI-suggested entity name (before ID resolution in batch)
+  aiAssignment?: string | null;
+  // AI-suggested transaction type (to catch transfers)
+  aiType?: "income" | "expense" | "transfer";
   // Human-readable explanation of how the category was decided
   categorizationExplanation: string;
 }
@@ -202,6 +206,26 @@ async function getRelatedRules(uid: string, limit = 5): Promise<RelatedRule[]> {
   }
 }
 
+// ─── User entity loader (for AI prompt context) ───────────────────────────────
+
+interface EntityForAI {
+  name: string;
+  type: "business" | "rental";
+}
+
+async function getUserEntitiesForAI(uid: string): Promise<EntityForAI[]> {
+  const db = admin.firestore();
+  try {
+    const snap = await db.collection("entities").where("userId", "==", uid).get();
+    return snap.docs.map((d) => ({
+      name: d.data().name as string,
+      type: d.data().type as "business" | "rental",
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── AI fallback ──────────────────────────────────────────────────────────────
 
 async function callAI(
@@ -214,14 +238,27 @@ async function callAI(
     return null;
   }
 
-  // Fetch a few of the user's past rules to give the model context
-  const relatedRules = await getRelatedRules(uid, 5);
+  // Fetch user's entities and past rules in parallel
+  const [entities, relatedRules] = await Promise.all([
+    getUserEntitiesForAI(uid),
+    getRelatedRules(uid, 5),
+  ]);
+
   const rulesContext =
     relatedRules.length > 0
       ? `\nThis user's past categorizations (for context):\n${relatedRules
           .map((r) => `  - "${r.vendorName}" → ${r.category}`)
           .join("\n")}\n`
       : "";
+
+  // Build entity list for assignment — AI sees names, uses type internally
+  const entityLines = entities.map((e) =>
+    `  - "${e.name}" (${e.type === "business" ? "business/Schedule C" : "rental/Schedule E"})`
+  );
+  const entityContext =
+    entityLines.length > 0
+      ? `\nUser's entities (assign transaction to best match, or "Personal"):\n${entityLines.join("\n")}\n  - "Personal" (default for non-business/non-rental)\n`
+      : `\nAssign to: "Personal" (no business/rental entities configured)\n`;
 
   const prompt =
     `Classify this financial transaction for US tax purposes.\n\n` +
@@ -230,19 +267,29 @@ async function callAI(
     `  Description: ${transaction.description}\n` +
     `  Amount: $${Math.abs(transaction.amount).toFixed(2)} (${transaction.type})\n` +
     `  Sign convention: negative amount = expense, positive = income\n` +
-    `${rulesContext}\n` +
-    `Tax categories to choose from:\n` +
-    `  Income, Advertising, Meals & Entertainment, Travel, Office Supplies,\n` +
-    `  Software & Subscriptions, Home Office, Vehicle & Mileage,\n` +
-    `  Professional Services, Equipment, Charitable Contribution,\n` +
-    `  Medical Expense, Other\n\n` +
-    `Tax schedules: Schedule A (itemized deductions), Schedule C (business/self-employment),\n` +
-    `  Schedule E (rental income), Form 1040 (wages/retirement/SSA), Other\n\n` +
+    `${rulesContext}` +
+    `${entityContext}\n` +
+    `CRITICAL RULES:\n` +
+    `  - Credit card payments, loan payments, and internal account transfers → type "transfer" (NEVER expense)\n` +
+    `  - Rental-related expenses (mortgage, property tax, repairs on rental) → assign to rental entity\n` +
+    `  - Business expenses → assign to business entity\n` +
+    `  - Personal/unclear → assign to "Personal"\n\n` +
+    `Tax categories:\n` +
+    `  Income: Business Income, Rental Income, Investment Income, Other Income\n` +
+    `  Business (Sch. C): Advertising & Marketing, Auto & Vehicle, Business Meals, Business Travel,\n` +
+    `    Computer & Software, Contract Labor, Home Office, Legal & Professional, Office Supplies,\n` +
+    `    Phone & Internet, Rent & Lease, Repairs & Maintenance, Wages & Salaries, Other Business Expense\n` +
+    `  Rental (Sch. E): Mortgage Interest (Rental), Property Management, Property Taxes,\n` +
+    `    Rental Insurance, Rental Repairs & Maintenance, Rental Utilities\n` +
+    `  Deductions (Sch. A): Charitable Contribution, Medical Expense, Mortgage Interest\n` +
+    `  Personal: Groceries, Dining & Restaurants, Entertainment, Healthcare, Other Personal\n\n` +
     `Return ONLY valid JSON with no markdown:\n` +
     `{\n` +
     `  "category": "<category from the list above>",\n` +
     `  "taxCategory": "<brief tax category label>",\n` +
-    `  "taxSchedule": "<one schedule from the list above>",\n` +
+    `  "taxSchedule": "<Schedule A|Schedule C|Schedule E|Form 1040|Personal>",\n` +
+    `  "type": "<income|expense|transfer>",\n` +
+    `  "assignment": "<exact entity name from the list above, or Personal>",\n` +
     `  "confidence": <number between 0.60 and 0.90>,\n` +
     `  "explanation": "<one concise sentence explaining why>"\n` +
     `}`;
@@ -252,7 +299,7 @@ async function callAI(
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 200,
+      max_tokens: 250,
       temperature: 0,
     });
 
@@ -262,6 +309,8 @@ async function callAI(
       category?: string;
       taxCategory?: string;
       taxSchedule?: string;
+      type?: string;
+      assignment?: string;
       confidence?: number;
       explanation?: string;
     };
@@ -269,6 +318,16 @@ async function callAI(
     // Clamp AI confidence to [0.60, 0.90] — rules own the extremes
     const rawConf = typeof parsed.confidence === "number" ? parsed.confidence : 0.75;
     const confidence = Math.min(0.9, Math.max(0.6, rawConf));
+
+    // Validate AI type — default to original transaction type if invalid
+    const aiType = (["income", "expense", "transfer"].includes(parsed.type ?? ""))
+      ? (parsed.type as "income" | "expense" | "transfer")
+      : undefined;
+
+    // Validate assignment — must be a known entity name or "Personal"
+    const validNames = new Set([...entities.map((e) => e.name), "Personal"]);
+    const aiAssignment =
+      parsed.assignment && validNames.has(parsed.assignment) ? parsed.assignment : null;
 
     return {
       category: parsed.category ?? "",
@@ -279,6 +338,8 @@ async function callAI(
       entityId: null,
       entityName: null,
       entityType: undefined,
+      aiAssignment,
+      aiType,
       categorizationExplanation:
         parsed.explanation
           ? `AI: ${parsed.explanation}`

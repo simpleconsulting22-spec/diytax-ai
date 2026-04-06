@@ -233,9 +233,8 @@ export function useReviewTransactions() {
         updatedAt: serverTimestamp(),
       });
 
-      // 3. Learning loop: write a categoryRule keyed on the leading vendor word
-      //    from normalizedDescription (fills the gap for CSV transactions that
-      //    have no merchantName and are skipped by the Cloud Function's rule logic)
+      // 3. Learning loop: write a categoryRule keyed on the leading vendor word.
+      //    Also persist entity assignment so future AI skips this vendor entirely.
       const txn = state.transactions.find((t) => t.id === id);
       if (txn) {
         const vendorName = extractVendor(
@@ -247,6 +246,10 @@ export function useReviewTransactions() {
             vendorName,
             category: newCategory,
             taxCategory: txn.taxCategory ?? "",
+            // Persist entity so next vendor match auto-assigns (Task 3)
+            entityId:   txn.entityId   ?? null,
+            entityName: txn.entityName ?? null,
+            entityType: txn.entityType ?? null,
             createdAt: serverTimestamp(),
           });
         }
@@ -341,7 +344,7 @@ export function useReviewTransactions() {
         await batch.commit();
       }
 
-      // Learning loop: write a categoryRule for each unique vendor
+      // Learning loop: write a categoryRule for each unique vendor, with entity (Task 3)
       const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
@@ -354,6 +357,9 @@ export function useReviewTransactions() {
             uid: user.uid,
             vendorName,
             category,
+            entityId:   txn.entityId   ?? null,
+            entityName: txn.entityName ?? null,
+            entityType: txn.entityType ?? null,
             createdAt: serverTimestamp(),
           });
         }
@@ -374,6 +380,72 @@ export function useReviewTransactions() {
         updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
       }));
     }
+  }
+
+  // ── Bulk entity assign (Task 4) ────────────────────────────────────────────
+
+  async function handleBulkEntityAssign(
+    ids: string[],
+    entityId: string | null,
+    entityType: "business" | "rental" | "personal",
+    entityName?: string
+  ) {
+    if (ids.length === 0) return;
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
+    try {
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 499)) {
+          batch.update(doc(db, "transactions", id), {
+            entityId,
+            entityType,
+            entityName: entityName ?? null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      }
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        transactions: prev.transactions.map((t) =>
+          ids.includes(t.id) ? { ...t, entityId, entityType, entityName } : t
+        ),
+      }));
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+      }));
+    }
+  }
+
+  // ── Auto-categorize with progress (Task 2B) ────────────────────────────────
+
+  async function handleAutoCategorizeBatch(
+    ids: string[] | "all",
+    onProgress?: (processed: number, total: number) => void
+  ) {
+    if (!user) return;
+    const targetIds =
+      ids === "all"
+        ? state.transactions.map((t) => t.id)
+        : ids;
+    if (targetIds.length === 0) return;
+
+    const CHUNK = 150;
+    const total = targetIds.length;
+    let processed = 0;
+
+    for (let i = 0; i < targetIds.length; i += CHUNK) {
+      const chunk = targetIds.slice(i, i + CHUNK);
+      await apiClient.call("categorizeSelected", { transactionIds: chunk });
+      processed = Math.min(i + CHUNK, total);
+      onProgress?.(processed, total);
+    }
+
+    // Reload so the UI reflects newly categorized rows
+    await loadTransactions();
   }
 
   // ── Type change ────────────────────────────────────────────────────────────
@@ -458,6 +530,8 @@ export function useReviewTransactions() {
     handleConfirm,
     handleBulkConfirm,
     handleBulkCategoryAssign,
+    handleBulkEntityAssign,
+    handleAutoCategorizeBatch,
     clearSelection,
     toggleSelect,
     toggleSelectAll,

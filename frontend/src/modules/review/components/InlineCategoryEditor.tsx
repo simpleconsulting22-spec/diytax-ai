@@ -1,5 +1,21 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
-import { TAX_CATEGORIES } from "./CategoryDropdown";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { TAX_CATEGORIES, CATEGORY_GROUPS } from "./CategoryDropdown";
+
+// Returns a filtered category list based on the entity's schedule type.
+// Business entities → Schedule C categories; Rental → Schedule E categories.
+// Falls back to full list when entityType is unset or personal.
+function categoriesForEntity(entityType?: "business" | "rental" | "personal" | null): string[] {
+  if (!entityType || entityType === "personal") return TAX_CATEGORIES;
+  if (entityType === "business") {
+    return CATEGORY_GROUPS
+      .filter((g) => g.group.startsWith("Income") || g.group.startsWith("Business"))
+      .flatMap((g) => g.categories);
+  }
+  // rental
+  return CATEGORY_GROUPS
+    .filter((g) => g.group.startsWith("Income") || g.group.startsWith("Rental") || g.group.startsWith("Deductions"))
+    .flatMap((g) => g.categories);
+}
 
 type CategorySource = "rule" | "user_rule" | "ai" | null;
 
@@ -7,6 +23,7 @@ interface InlineCategoryEditorProps {
   value: string | null;
   source: CategorySource;
   disabled?: boolean;
+  entityType?: "business" | "rental" | "personal" | null;
   onChange: (category: string) => void;
 }
 
@@ -20,6 +37,7 @@ export default function InlineCategoryEditor({
   value,
   source,
   disabled = false,
+  entityType,
   onChange,
 }: InlineCategoryEditorProps) {
   const [editing, setEditing]         = useState(false);
@@ -30,11 +48,14 @@ export default function InlineCategoryEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
 
+  // Category pool filtered by entity type (Task 5 — assignment intelligence)
+  const categoryPool = useMemo(() => categoriesForEntity(entityType), [entityType]);
+
   // ── Suggestions list ───────────────────────────────────────────────────────
   const typed = inputValue.trim();
   const filtered = typed
-    ? TAX_CATEGORIES.filter((c) => c.toLowerCase().includes(typed.toLowerCase()))
-    : TAX_CATEGORIES;
+    ? categoryPool.filter((c) => c.toLowerCase().includes(typed.toLowerCase()))
+    : categoryPool;
 
   // When there is an AI suggestion and the user hasn't typed, pin current value at top
   const baseList =

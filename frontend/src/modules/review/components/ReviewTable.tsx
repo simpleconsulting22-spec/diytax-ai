@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { ReviewTransaction } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
@@ -207,6 +207,11 @@ function EntityDropdown({
   );
 }
 
+// ─── Sort helpers ─────────────────────────────────────────────────────────────
+
+type SortCol = "date" | "amount" | "description" | "type" | "category" | null;
+type SortDir = "asc" | "desc";
+
 // ─── Table ────────────────────────────────────────────────────────────────────
 
 interface ReviewTableProps {
@@ -269,6 +274,52 @@ export default function ReviewTable({
   onTypeChange,
   onConfirm,
 }: ReviewTableProps) {
+  const [sortCol, setSortCol] = useState<SortCol>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  // Three-state sort: first click ASC, second DESC, third resets
+  function handleSort(col: Exclude<SortCol, null>) {
+    if (sortCol === col) {
+      if (sortDir === "asc") setSortDir("desc");
+      else { setSortCol(null); setSortDir("asc"); }
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  }
+
+  function sortIcon(col: Exclude<SortCol, null>): string {
+    if (sortCol !== col) return " ↕";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
+
+  const sorted = useMemo(() => {
+    if (!sortCol) return transactions;
+    return [...transactions].sort((a, b) => {
+      let av: string | number = "";
+      let bv: string | number = "";
+      if (sortCol === "date")        { av = a.date;                              bv = b.date; }
+      else if (sortCol === "amount") { av = a.amount;                            bv = b.amount; }
+      else if (sortCol === "description") { av = (a.description || "").toLowerCase(); bv = (b.description || "").toLowerCase(); }
+      else if (sortCol === "type")   { av = a.type;                              bv = b.type; }
+      else if (sortCol === "category") { av = (a.category || "").toLowerCase();  bv = (b.category || "").toLowerCase(); }
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [transactions, sortCol, sortDir]);
+
+  const sortableTH = (col: Exclude<SortCol, null>, label: string, extraStyle?: React.CSSProperties): React.ReactNode => (
+    <th
+      style={{ ...TH, ...extraStyle, cursor: "pointer", userSelect: "none" }}
+      onClick={() => handleSort(col)}
+      title={`Sort by ${label}`}
+    >
+      {label}
+      <span style={{ opacity: sortCol === col ? 1 : 0.35, fontSize: "10px" }}>{sortIcon(col)}</span>
+    </th>
+  );
+
   if (transactions.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "64px 24px", color: "#6b7280" }}>
@@ -295,11 +346,11 @@ export default function ReviewTable({
                 style={{ cursor: "pointer" }}
               />
             </th>
-            <th style={{ ...TH, width: "56px" }}>Date</th>
-            <th style={TH}>Description</th>
-            <th style={{ ...TH, textAlign: "right" }}>Amount</th>
-            <th style={{ ...TH, width: "90px" }}>Type</th>
-            <th style={{ ...TH, minWidth: "200px" }}>Category</th>
+            {sortableTH("date", "Date", { width: "56px" })}
+            {sortableTH("description", "Description")}
+            {sortableTH("amount", "Amount", { textAlign: "right" })}
+            {sortableTH("type", "Type", { width: "90px" })}
+            {sortableTH("category", "Category", { minWidth: "200px" })}
             {entities.length > 0 && (
               <th style={{ ...TH, minWidth: "140px" }}>Assign To</th>
             )}
@@ -308,7 +359,7 @@ export default function ReviewTable({
           </tr>
         </thead>
         <tbody>
-          {transactions.map((txn, idx) => {
+          {sorted.map((txn, idx) => {
             const isUpdating = updating.has(txn.id);
             const isSelected = selectedIds.has(txn.id);
             const isAI       = txn.source === "ai";
@@ -408,12 +459,13 @@ export default function ReviewTable({
                   />
                 </td>
 
-                {/* Category — inline editable */}
+                {/* Category — inline editable, filtered by entity type (Task 5) */}
                 <td style={TD}>
                   <InlineCategoryEditor
                     value={txn.category}
                     source={txn.source}
                     disabled={isUpdating}
+                    entityType={txn.entityType ?? null}
                     onChange={(cat) => onCategoryChange(txn.id, cat)}
                   />
                 </td>
