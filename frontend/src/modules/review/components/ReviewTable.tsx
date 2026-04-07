@@ -157,12 +157,14 @@ function EntityDropdown({
   entities,
   disabled,
   autoAssigned,
+  entityAssignmentSource,
   onChange,
 }: {
   value: string | null;
   entities: UserEntity[];
   disabled: boolean;
   autoAssigned?: boolean;
+  entityAssignmentSource?: "rule" | "user_rule" | "ai" | null;
   onChange: (entityId: string | null, entityType: "business" | "rental" | "personal", entityName?: string) => void;
 }) {
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -175,22 +177,41 @@ function EntityDropdown({
     }
   }
 
+  const badge = autoAssigned
+    ? entityAssignmentSource === "ai"
+      ? { label: "AI", bg: "#fff7ed", color: "#c2410c" }
+      : entityAssignmentSource === "rule"
+      ? { label: "rule", bg: "#f0fdf4", color: "#15803d" }
+      : { label: "learned", bg: "#eff6ff", color: "#1d4ed8" }
+    : null;
+
+  const borderColor = !autoAssigned ? "#e5e7eb"
+    : entityAssignmentSource === "ai" ? "#fed7aa"
+    : entityAssignmentSource === "rule" ? "#bbf7d0"
+    : "#bfdbfe";
+
+  const bgColor = !autoAssigned ? "#fff"
+    : entityAssignmentSource === "ai" ? "#fff7ed"
+    : entityAssignmentSource === "rule" ? "#f0fdf4"
+    : "#eff6ff";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
       <select
         value={value ?? ""}
         disabled={disabled}
         onChange={handleChange}
-        title={autoAssigned ? "Auto-predicted from past transactions — confirm or change" : undefined}
+        title={autoAssigned ? "Auto-assigned — confirm or change" : undefined}
         style={{
           fontSize: "11px",
-          padding: "4px 6px",
+          padding: "3px 5px",
           borderRadius: "6px",
-          border: autoAssigned ? "1.5px solid #a5b4fc" : "1px solid #e5e7eb",
-          backgroundColor: disabled ? "#f9fafb" : (autoAssigned ? "#eef2ff" : "#fff"),
+          border: `1.5px solid ${borderColor}`,
+          backgroundColor: disabled ? "#f9fafb" : bgColor,
           color: value ? "#111827" : "#9ca3af",
           cursor: disabled ? "not-allowed" : "pointer",
-          minWidth: "100px",
+          minWidth: "90px",
+          maxWidth: "120px",
         }}
       >
         <option value="">Personal</option>
@@ -198,9 +219,17 @@ function EntityDropdown({
           <option key={en.id} value={en.id}>{en.name}</option>
         ))}
       </select>
-      {autoAssigned && (
-        <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 600 }}>
-          ✦ auto-predicted
+      {badge && (
+        <span style={{
+          fontSize: "10px",
+          fontWeight: 700,
+          padding: "1px 5px",
+          borderRadius: "999px",
+          backgroundColor: badge.bg,
+          color: badge.color,
+          alignSelf: "flex-start",
+        }}>
+          {badge.label}
         </span>
       )}
     </div>
@@ -236,7 +265,7 @@ interface ReviewTableProps {
 }
 
 const TH: React.CSSProperties = {
-  padding: "10px 14px",
+  padding: "8px 10px",
   textAlign: "left",
   fontWeight: 600,
   fontSize: "11px",
@@ -249,7 +278,7 @@ const TH: React.CSSProperties = {
 };
 
 const TD: React.CSSProperties = {
-  padding: "10px 14px",
+  padding: "8px 10px",
   fontSize: "13px",
   color: "#374151",
   verticalAlign: "middle",
@@ -350,16 +379,16 @@ export default function ReviewTable({
                 style={{ cursor: "pointer" }}
               />
             </th>
-            {sortableTH("date", "Date", { width: "56px" })}
+            {sortableTH("date", "Date", { width: "52px" })}
             {sortableTH("description", "Description")}
-            {sortableTH("amount", "Amount", { textAlign: "right" })}
-            {sortableTH("type", "Type", { width: "90px" })}
-            {sortableTH("category", "Category", { minWidth: "200px" })}
+            {sortableTH("amount", "Amount", { textAlign: "right", width: "90px" })}
+            {sortableTH("type", "Type", { width: "80px" })}
+            {sortableTH("category", "Category", { minWidth: "160px" })}
             {entities.length > 0 && (
-              <th style={{ ...TH, minWidth: "140px" }}>Assign To</th>
+              <th style={{ ...TH, width: "120px" }}>Assign To</th>
             )}
-            <th style={{ ...TH, textAlign: "center", width: "72px" }}>Conf.</th>
-            <th style={{ ...TH, textAlign: "center", width: "88px" }}>Action</th>
+            <th style={{ ...TH, textAlign: "center", width: "60px" }}>Conf.</th>
+            <th style={{ ...TH, textAlign: "center", width: "80px" }}>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -484,6 +513,7 @@ export default function ReviewTable({
                       entities={entities}
                       disabled={isUpdating}
                       autoAssigned={txn.entityAutoAssigned}
+                      entityAssignmentSource={txn.entityAssignmentSource}
                       onChange={(entityId, entityType, entityName) =>
                         onEntityChange(txn.id, entityId, entityType, entityName)
                       }

@@ -41,7 +41,8 @@ export interface ReviewTransaction {
   entityId: string | null;
   entityType: "business" | "rental" | "personal";
   entityName?: string;
-  entityAutoAssigned?: boolean;   // true when entity was predicted (not user-set)
+  entityAutoAssigned?: boolean;           // true when entity was predicted (not user-set)
+  entityAssignmentSource?: "rule" | "user_rule" | "ai" | null; // how entity was assigned
   possibleDuplicate?: boolean;    // true when fuzzy cross-batch match detected
 }
 
@@ -136,6 +137,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           entityType: data.entityType ?? "personal",
           entityName: data.entityName,
           entityAutoAssigned: data.entityAutoAssigned === true,
+          entityAssignmentSource: (data.entityAssignmentSource as ReviewTransaction["entityAssignmentSource"]) ?? null,
           possibleDuplicate: data.possibleDuplicate === true,
         };
       });

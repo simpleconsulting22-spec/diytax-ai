@@ -70,17 +70,19 @@ async function applyResultToDoc(
   // Entity assignment — only if not already user-set
   if (!txn.entityId) {
     if (result.entityId) {
-      update.entityId          = result.entityId;
-      update.entityName        = result.entityName ?? null;
-      update.entityType        = result.entityType ?? "business";
-      update.entityAutoAssigned = true;
+      update.entityId               = result.entityId;
+      update.entityName             = result.entityName ?? null;
+      update.entityType             = result.entityType ?? "business";
+      update.entityAutoAssigned     = true;
+      update.entityAssignmentSource = "user_rule";
     } else if (result.aiAssignment && result.aiAssignment !== "Personal") {
       const entity = entityMap.get(result.aiAssignment);
       if (entity) {
-        update.entityId          = entity.id;
-        update.entityName        = entity.name;
-        update.entityType        = entity.type;
-        update.entityAutoAssigned = true;
+        update.entityId               = entity.id;
+        update.entityName             = entity.name;
+        update.entityType             = entity.type;
+        update.entityAutoAssigned     = true;
+        update.entityAssignmentSource = "ai";
       }
     }
   }
