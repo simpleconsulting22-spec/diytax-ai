@@ -66,7 +66,7 @@ interface ReviewState {
   updating: Set<string>;
 }
 
-export function useReviewTransactions() {
+export function useReviewTransactions(statusFilter: "needs_review" | "categorized" = "needs_review") {
   const { user } = useAuth();
   const { selectedYear } = useTaxYear();
 
@@ -91,7 +91,7 @@ export function useReviewTransactions() {
           query(
             collection(db, "transactions"),
             where("uid", "==", user.uid),
-            where("status", "==", "needs_review"),
+            where("status", "==", statusFilter),
             orderBy("createdAt", "desc")
           )
         ),
@@ -182,7 +182,7 @@ export function useReviewTransactions() {
         error: e instanceof Error ? e.message : "Failed to load transactions.",
       }));
     }
-  }, [user, selectedYear]);
+  }, [user, selectedYear, statusFilter]);
 
   useEffect(() => {
     loadTransactions();

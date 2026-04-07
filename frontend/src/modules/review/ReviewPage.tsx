@@ -190,6 +190,9 @@ function BulkCategoryPicker({ categoryPool, onSelect, onCustomCategoryAdded }: B
 export default function ReviewPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+
+  const [statusFilter, setStatusFilter] = useState<"needs_review" | "categorized">("needs_review");
+
   const {
     state,
     allSelected,
@@ -206,11 +209,12 @@ export default function ReviewPage() {
     toggleSelect,
     toggleSelectAll,
     reload,
-  } = useReviewTransactions();
+  } = useReviewTransactions(statusFilter);
 
   const { transactions, entities, customCategories, loading, error, selectedIds, updating } = state;
 
   const isMobile = useIsMobile();
+  const isCategorizedView = statusFilter === "categorized";
 
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
   const [accountFilter, setAccountFilter] = useState<string>("all");
@@ -284,11 +288,38 @@ export default function ReviewPage() {
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
               {loading
                 ? "Loading…"
+                : isCategorizedView
+                ? `${transactions.length} categorized transaction${transactions.length !== 1 ? "s" : ""} — click any category to edit`
                 : `${transactions.length} transaction${transactions.length !== 1 ? "s" : ""} need review`}
             </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            {!loading && transactions.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {/* Toggle pills */}
+            <div style={{ display: "flex", backgroundColor: "#f3f4f6", borderRadius: "8px", padding: "3px", gap: "2px" }}>
+              {(["needs_review", "categorized"] as const).map((val) => (
+                <button
+                  key={val}
+                  onClick={() => { setStatusFilter(val); clearSelection(); }}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    border: "none",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: font,
+                    backgroundColor: statusFilter === val ? "#fff" : "transparent",
+                    color: statusFilter === val ? "#111827" : "#6b7280",
+                    boxShadow: statusFilter === val ? "0 1px 4px rgba(0,0,0,0.10)" : "none",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {val === "needs_review" ? "Uncategorized" : "Categorized"}
+                </button>
+              ))}
+            </div>
+
+            {!isCategorizedView && !loading && transactions.length > 0 && (
               <button
                 onClick={handleAutoAll}
                 disabled={!!autoProgress}
@@ -320,7 +351,7 @@ export default function ReviewPage() {
         </div>
 
         {/* Legend */}
-        {!loading && transactions.length > 0 && (
+        {!loading && !isCategorizedView && transactions.length > 0 && (
           <div style={{ display: "flex", gap: "20px", marginBottom: "16px", fontSize: "12px", color: "#6b7280", flexWrap: "wrap", alignItems: "center" }}>
             <span>Click any category cell to edit inline</span>
             <span style={{ color: "#d1d5db" }}>·</span>
@@ -421,7 +452,7 @@ export default function ReviewPage() {
       </div>
 
       {/* ── Bulk action toolbar ────────────────────────────────────────────────── */}
-      {hasSelection && (
+      {hasSelection && !isCategorizedView && (
         <div style={{
           position: "fixed",
           bottom: 0,
