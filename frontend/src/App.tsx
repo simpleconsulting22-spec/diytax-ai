@@ -24,6 +24,7 @@ import DeductionsPage from "./modules/deductions/DeductionsPage";
 import SSAPage from "./modules/income/SSAPage";
 import RetirementPage from "./modules/income/RetirementPage";
 import BudgetPage from "./modules/budget/BudgetPage";
+import TransfersPage from "./modules/transfers/TransfersPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
@@ -167,6 +168,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <BudgetPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/transfers"
+        element={
+          <AuthGuard>
+            <TransfersPage />
           </AuthGuard>
         }
       />
