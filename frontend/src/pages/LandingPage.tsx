@@ -6,6 +6,8 @@ const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 const green = "#16A34A";
 const greenDark = "#15803d";
 const greenLight = "#f0fdf4";
+const gold = "#D4AF37";
+const textPrimary = "#1F2937";
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -34,7 +36,7 @@ const STEPS = [
   {
     n: "5",
     title: "File with confidence",
-    body: "Export everything and file your taxes easily with your preferred tool.",
+    body: "Export everything and file your taxes easily with the tool you already use.",
   },
 ];
 
@@ -87,7 +89,7 @@ export default function LandingPage() {
   }
 
   return (
-    <div style={{ fontFamily: font, color: "#111827", backgroundColor: "#fff", overflowX: "hidden" }}>
+    <div style={{ fontFamily: font, color: textPrimary, backgroundColor: "#fff", overflowX: "hidden" }}>
 
       {/* ── Nav ─────────────────────────────────────────────────────────────── */}
       <nav style={{
@@ -168,13 +170,14 @@ export default function LandingPage() {
             fontSize: "clamp(28px, 6vw, 48px)",
             fontWeight: 800,
             lineHeight: 1.2,
-            color: "#111827",
+            color: textPrimary,
             margin: "0 0 20px",
             letterSpacing: "-0.02em",
           }}>
             Who needs an accountant when your{" "}
             <span style={{ color: green }}>AI tax assistant</span>{" "}
-            keeps everything organized?
+            keeps everything{" "}
+            <span style={{ color: gold }}>organized</span>?
           </h1>
 
           <p style={{
@@ -249,7 +252,7 @@ export default function LandingPage() {
       <section id="how-it-works" style={{ padding: "64px 20px", backgroundColor: "#fff" }}>
         <div style={{ maxWidth: "680px", margin: "0 auto" }}>
           <div style={{ textAlign: "center", marginBottom: "48px" }}>
-            <h2 style={{ fontSize: "clamp(22px, 4vw, 32px)", fontWeight: 800, color: "#111827", margin: "0 0 12px" }}>
+            <h2 style={{ fontSize: "clamp(22px, 4vw, 32px)", fontWeight: 800, color: textPrimary, margin: "0 0 12px" }}>
               How it works — in minutes, not hours
             </h2>
             <p style={{ fontSize: "15px", color: "#6b7280", margin: 0 }}>
@@ -292,7 +295,7 @@ export default function LandingPage() {
 
                 {/* Content */}
                 <div style={{ paddingBottom: i < STEPS.length - 1 ? "28px" : "0", paddingTop: "6px" }}>
-                  <h3 style={{ fontSize: "16px", fontWeight: 700, color: "#111827", margin: "0 0 6px" }}>
+                  <h3 style={{ fontSize: "16px", fontWeight: 700, color: textPrimary, margin: "0 0 6px" }}>
                     {step.title}
                   </h3>
                   <p style={{ fontSize: "14px", color: "#6b7280", margin: 0, lineHeight: 1.6 }}>
@@ -319,15 +322,31 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* ── Quote bridge ─────────────────────────────────────────────────────── */}
+      <div style={{ padding: "40px 20px", backgroundColor: "#fff", textAlign: "center" }}>
+        <p style={{
+          fontSize: "clamp(15px, 2.5vw, 18px)",
+          fontWeight: 600,
+          color: textPrimary,
+          margin: "0 auto",
+          maxWidth: "600px",
+          lineHeight: 1.5,
+          fontStyle: "italic",
+        }}>
+          "Most people don't have a tax problem — they have a{" "}
+          <span style={{ color: gold }}>data organization</span> problem."
+        </p>
+      </div>
+
       {/* ── Features ─────────────────────────────────────────────────────────── */}
       <section style={{ padding: "64px 20px", backgroundColor: "#f9fafb" }}>
         <div style={{ maxWidth: "900px", margin: "0 auto" }}>
           <div style={{ textAlign: "center", marginBottom: "48px" }}>
-            <h2 style={{ fontSize: "clamp(22px, 4vw, 32px)", fontWeight: 800, color: "#111827", margin: "0 0 12px" }}>
-              Everything you need, nothing you don't
+            <h2 style={{ fontSize: "clamp(22px, 4vw, 32px)", fontWeight: 800, color: textPrimary, margin: "0 0 12px" }}>
+              Everything you need—nothing you don't
             </h2>
             <p style={{ fontSize: "15px", color: "#6b7280", margin: 0 }}>
-              Built for self-employed people, landlords, and anyone who wants tax season to be painless.
+              Simple tools designed to help you stay organized, save time, and file with confidence.
             </p>
           </div>
 
@@ -418,7 +437,7 @@ function FeatureGrid() {
           }}
         >
           <div style={{ fontSize: "28px", marginBottom: "12px" }}>{f.icon}</div>
-          <h3 style={{ fontSize: "15px", fontWeight: 700, color: "#111827", margin: "0 0 6px" }}>{f.title}</h3>
+          <h3 style={{ fontSize: "15px", fontWeight: 700, color: textPrimary, margin: "0 0 6px" }}>{f.title}</h3>
           <p style={{ fontSize: "13px", color: "#6b7280", margin: 0, lineHeight: 1.6 }}>{f.body}</p>
         </div>
       ))}
