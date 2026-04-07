@@ -30,13 +30,14 @@ export default function ScheduleAPage() {
       note: "Note: AGI threshold (7.5%) not yet applied — consult your tax professional.",
     },
     {
-      label: "Taxes Paid (SALT)",
+      label: "State & Local Taxes",
       irsLine: "Line 5",
       amount: data.taxesTotal,
       breakdown: data.saltCapApplied
         ? `Actual total ${fmt(data.taxesUncapped)} — capped at ${fmt(SALT_CAP)} federal limit`
         : undefined,
       capApplied: data.saltCapApplied,
+      note: "Includes property taxes and state income taxes (subject to IRS limits)",
     },
     {
       label: "Mortgage Interest",
