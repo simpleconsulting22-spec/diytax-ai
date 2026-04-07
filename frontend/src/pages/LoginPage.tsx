@@ -5,7 +5,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
 } from "firebase/auth";
-import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "../firebase";
 
@@ -25,6 +25,7 @@ export default function LoginPage() {
     const userRef = doc(db, "users", uid);
     const snap = await getDoc(userRef);
     if (!snap.exists()) {
+      // Brand-new user — create doc, onboarding required.
       await setDoc(userRef, {
         uid,
         email,
@@ -32,6 +33,10 @@ export default function LoginPage() {
         mfaEnabled: true,
         onboardingComplete: false,
       });
+    } else if (snap.data().onboardingComplete === undefined) {
+      // Existing user whose doc predates the onboardingComplete field —
+      // they've already set up their account, so mark it complete.
+      await updateDoc(userRef, { onboardingComplete: true });
     }
   }
 
