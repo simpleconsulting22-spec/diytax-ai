@@ -266,10 +266,10 @@ export default function TaxSummaryPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              {selectedYear} Tax Summary
+              Your Business Income &amp; Expenses (Schedule C)
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
-              Schedule C — Self-Employment Income &amp; Deductions
+              {selectedYear} · Self-Employment Income &amp; Deductions
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>

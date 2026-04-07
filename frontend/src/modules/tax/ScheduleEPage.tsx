@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleE, PropertyScheduleE, ScheduleELine } from "./hooks/useScheduleE";
+import { useTaxYear } from "../../contexts/TaxYearContext";
 import AppNav from "../../components/AppNav";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,6 +220,7 @@ function PropertyCard({ property }: { property: PropertyScheduleE }) {
 export default function ScheduleEPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { selectedYear } = useTaxYear();
   const { properties, loading, error, reload } = useScheduleE();
 
   const assignedProps = properties.filter((p) => p.entityId !== null);
@@ -238,10 +240,10 @@ export default function ScheduleEPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              2025 Rental Income Summary
+              Your Rental Income &amp; Expenses (Schedule E)
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
-              Schedule E — Supplemental Income and Loss (Rental Real Estate)
+              {selectedYear} · Rental Real Estate
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
