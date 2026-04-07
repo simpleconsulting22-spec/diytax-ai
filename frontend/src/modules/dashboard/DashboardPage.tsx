@@ -82,9 +82,14 @@ function CategoryRow({
     <div
       style={{ ...rowBase, cursor: "pointer" }}
       onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
     >
       <span style={{ color: "#374151" }}>{row.category}</span>
-      <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>
+      <span style={{
+        fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+        textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+      }}>
         {fmt(row.amount)}
       </span>
     </div>
@@ -94,9 +99,11 @@ function CategoryRow({
 function EntitySection({
   entity,
   onGoToReview,
+  onCategoryClick,
 }: {
   entity: EntityTotal;
   onGoToReview: () => void;
+  onCategoryClick: (category: string) => void;
 }) {
   const sortedCategories = Object.entries(entity.categories).sort(
     ([, a], [, b]) => b - a
@@ -142,9 +149,18 @@ function EntitySection({
         )}
       </div>
       {sortedCategories.map(([category, amount]) => (
-        <div key={category} style={rowBase}>
+        <div
+          key={category}
+          style={{ ...rowBase, cursor: "pointer" }}
+          onClick={() => onCategoryClick(category)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        >
           <span style={{ color: "#374151", paddingLeft: "8px" }}>{category}</span>
-          <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>
+          <span style={{
+            fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+            textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+          }}>
             {fmt(amount)}
           </span>
         </div>
@@ -217,7 +233,7 @@ function ScheduleCSection({
   );
 }
 
-function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
+function ScheduleASection({ rows, onCategoryClick }: { rows: ScheduleARow[]; onCategoryClick: (cat: string) => void }) {
   if (rows.length === 0) return null;
   return (
     <div>
@@ -225,9 +241,20 @@ function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
         Schedule A — Itemized Deductions
       </div>
       {rows.map((row) => (
-        <div key={row.taxCategory} style={rowBase}>
+        <div
+          key={row.taxCategory}
+          style={{ ...rowBase, cursor: "pointer" }}
+          onClick={() => onCategoryClick(row.taxCategory)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        >
           <span style={{ color: "#374151" }}>{row.taxCategory}</span>
-          <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>{fmt(row.amount)}</span>
+          <span style={{
+            fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+            textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+          }}>
+            {fmt(row.amount)}
+          </span>
         </div>
       ))}
     </div>
@@ -416,6 +443,7 @@ export default function DashboardPage() {
                 <EntitySection
                   entity={entity}
                   onGoToReview={() => navigate("/review")}
+                  onCategoryClick={(cat) => navigate(`/transactions?category=${encodeURIComponent(cat)}`)}
                 />
               </React.Fragment>
             ))}
@@ -430,7 +458,7 @@ export default function DashboardPage() {
               <CategoryRow
                 key={row.category}
                 row={row}
-                onClick={() => navigate("/transactions")}
+                onClick={() => navigate(`/transactions?category=${encodeURIComponent(row.category)}`)}
               />
             ))}
             <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "14px", fontWeight: 700, fontSize: "14px", color: "#111827" }}>
@@ -501,7 +529,12 @@ export default function DashboardPage() {
             {hasScheduleC && hasScheduleA && (
               <div style={{ borderTop: "1px solid #e5e7eb", margin: "16px 0" }} />
             )}
-            {hasScheduleA && <ScheduleASection rows={data.scheduleA} />}
+            {hasScheduleA && (
+              <ScheduleASection
+                rows={data.scheduleA}
+                onCategoryClick={(cat) => navigate(`/transactions?category=${encodeURIComponent(cat)}`)}
+              />
+            )}
           </div>
         )}
 
