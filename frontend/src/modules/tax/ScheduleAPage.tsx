@@ -1,10 +1,8 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { signOut } from "firebase/auth";
-import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleA, SALT_CAP } from "./hooks/useScheduleA";
-import YearSelector from "../../components/YearSelector";
+import AppNav from "../../components/AppNav";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -20,12 +18,6 @@ export default function ScheduleAPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { data, loading, error, reload } = useScheduleA();
-
-  const navLink: React.CSSProperties = {
-    background: "none", border: "none", fontSize: "14px",
-    color: "#6b7280", cursor: "pointer", padding: "4px 0", fontFamily: font,
-  };
-  const navLinkActive: React.CSSProperties = { ...navLink, color: "#16A34A", fontWeight: 600 };
 
   const lines = [
     {
@@ -63,32 +55,7 @@ export default function ScheduleAPage() {
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
-      {/* Nav */}
-      <nav style={{ backgroundColor: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px 10px", height: "64px", display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
-          <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }} onClick={() => navigate("/dashboard")}>
-            DIYTax AI
-          </div>
-          <button style={navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLink} onClick={() => navigate("/transactions")}>Transaction History</button>
-          <button style={navLink} onClick={() => navigate("/review")}>Review</button>
-          <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
-          <button style={navLink} onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
-          <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
-          <button style={navLinkActive}>Deductions (Sch. A)</button>
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
-          <YearSelector variant="nav" />
-          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
-          <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
-          <button
-            onClick={() => signOut(auth).then(() => navigate("/login"))}
-            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-          >
-            Sign Out
-          </button>
-        </div>
-      </nav>
+      <AppNav />
 
       {/* Content */}
       <div style={{ maxWidth: "800px", margin: "0 auto", padding: "40px 24px" }}>

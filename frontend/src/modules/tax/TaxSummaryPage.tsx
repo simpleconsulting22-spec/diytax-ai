@@ -1,14 +1,12 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { signOut } from "firebase/auth";
-import { auth } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useScheduleC, EntityScheduleC, ScheduleCLine } from "./hooks/useScheduleC";
 import { useScheduleE } from "./hooks/useScheduleE";
 import { useSSAData } from "../income/hooks/useSSAData";
 import { useRetirementData } from "../income/hooks/useRetirementData";
-import YearSelector from "../../components/YearSelector";
+import AppNav from "../../components/AppNav";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -242,22 +240,6 @@ export default function TaxSummaryPage() {
   const { ssaTotal } = useSSAData();
   const { retirementTotal } = useRetirementData();
 
-  const navLink: React.CSSProperties = {
-    background: "none",
-    border: "none",
-    fontSize: "14px",
-    color: "#6b7280",
-    cursor: "pointer",
-    padding: "4px 0",
-    fontFamily: font,
-  };
-
-  const navLinkActive: React.CSSProperties = {
-    ...navLink,
-    color: "#16A34A",
-    fontWeight: 600,
-  };
-
   // Grand totals across all entities
   const grandIncome = entities.reduce((s, e) => s + e.scheduleC.income, 0);
   const grandExpenses = entities.reduce((s, e) => s + e.scheduleC.totalExpenses, 0);
@@ -276,47 +258,7 @@ export default function TaxSummaryPage() {
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
-      {/* Nav */}
-      <nav
-        style={{
-          backgroundColor: "#fff",
-          borderBottom: "1px solid #e5e7eb",
-          padding: "0 32px 10px",
-          height: "64px",
-          display: "flex",
-          alignItems: "flex-end",
-          justifyContent: "space-between",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
-          <div
-            style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
-            onClick={() => navigate("/dashboard")}
-          >
-            DIYTax AI
-          </div>
-          <button style={navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLink} onClick={() => navigate("/transactions")}>Transaction History</button>
-          <button style={navLink} onClick={() => navigate("/review")}>Review</button>
-          <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
-          <button style={navLink} onClick={() => navigate("/income/ssa")}>Social Security</button>
-          <button style={navLink} onClick={() => navigate("/income/retirement")}>Retirement Income</button>
-          <button style={navLinkActive}>Business Income & Expenses (Sch. C)</button>
-          <button style={navLink} onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
-          <button style={navLink} onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
-          <YearSelector variant="nav" />
-          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
-          <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
-          <button
-            onClick={() => signOut(auth).then(() => navigate("/login"))}
-            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-          >
-            Sign Out
-          </button>
-        </div>
-      </nav>
+      <AppNav />
 
       {/* Content */}
       <div style={{ maxWidth: "900px", margin: "0 auto", padding: "40px 24px" }}>

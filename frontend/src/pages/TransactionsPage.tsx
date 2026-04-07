@@ -6,12 +6,12 @@ import {
   orderBy,
   getDocs,
 } from "firebase/firestore";
-import { signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
-import { db, auth } from "../firebase";
+import { db } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { useTaxYear } from "../contexts/TaxYearContext";
-import YearSelector from "../components/YearSelector";
+import AppNav from "../components/AppNav";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -76,6 +76,7 @@ function StatusBadge({ status }: { status: TxnRow["status"] }) {
 export default function TransactionHistoryPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const { selectedYear } = useTaxYear();
 
   const [rows, setRows]           = useState<TxnRow[]>([]);
@@ -206,12 +207,6 @@ export default function TransactionHistoryPage() {
 
   // ── Styles ──────────────────────────────────────────────────────────────────
 
-  const navLink: React.CSSProperties = {
-    background: "none", border: "none", fontSize: "14px",
-    color: "#6b7280", cursor: "pointer", padding: "4px 0", fontFamily: font,
-  };
-  const navLinkActive: React.CSSProperties = { ...navLink, color: "#16A34A", fontWeight: 700 };
-
   const TH: React.CSSProperties = {
     padding: "10px 14px",
     textAlign: "left",
@@ -263,45 +258,9 @@ export default function TransactionHistoryPage() {
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
 
-      {/* Nav */}
-      <nav style={{
-        backgroundColor: "#fff",
-        borderBottom: "1px solid #e5e7eb",
-        padding: "0 32px 10px",
-        height: "64px",
-        display: "flex",
-        alignItems: "flex-end",
-        justifyContent: "space-between",
-      }}>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "28px" }}>
-          <div
-            style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
-            onClick={() => navigate("/dashboard")}
-          >
-            DIYTax AI
-          </div>
-          <button style={navLink}       onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLinkActive}>Transaction History</button>
-          <button style={navLink}       onClick={() => navigate("/review")}>Review</button>
-          <button style={navLink}       onClick={() => navigate("/import-csv")}>Import CSV</button>
-          <button style={navLink}       onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
-          <button style={navLink}       onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
-          <button style={navLink}       onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
-          <YearSelector variant="nav" />
-          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
-          <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
-          <button
-            onClick={() => signOut(auth).then(() => navigate("/login"))}
-            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-          >
-            Sign Out
-          </button>
-        </div>
-      </nav>
+      <AppNav />
 
-      <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "40px 24px" }}>
+      <div style={{ maxWidth: "1200px", margin: "0 auto", padding: isMobile ? "16px 12px" : "40px 24px" }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "28px", flexWrap: "wrap", gap: "12px" }}>
@@ -336,7 +295,7 @@ export default function TransactionHistoryPage() {
 
         {/* Summary cards */}
         {!loading && rows.length > 0 && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px", marginBottom: "28px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: "16px", marginBottom: "28px" }}>
             {[
               { label: "Total Income",   value: fmtMoney(stats.income),   color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0" },
               { label: "Total Expenses", value: fmtMoney(stats.expenses),  color: "#dc2626", bg: "#fef2f2", border: "#fecaca" },
