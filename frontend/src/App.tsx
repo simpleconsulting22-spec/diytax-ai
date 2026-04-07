@@ -26,6 +26,7 @@ import RetirementPage from "./modules/income/RetirementPage";
 import BudgetPage from "./modules/budget/BudgetPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
+import LandingPage from "./pages/LandingPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified } = useAuth();
@@ -57,6 +58,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
+      <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
       <Route path="/terms-of-service" element={<TermsOfServicePage />} />
@@ -168,7 +170,7 @@ function AppRoutes() {
           </AuthGuard>
         }
       />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
