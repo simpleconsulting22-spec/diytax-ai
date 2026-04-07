@@ -341,9 +341,19 @@ export default function BudgetPage() {
                               )}
                             </div>
                             <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
-                              <span style={{ fontWeight: 700, fontSize: "15px", color }}>
+                              <button
+                                onClick={() => navigate(`/transactions?category=${encodeURIComponent(status.category)}`)}
+                                title="View transactions for this category"
+                                style={{
+                                  fontWeight: 700, fontSize: "15px", color,
+                                  background: "none", border: "none", cursor: "pointer",
+                                  padding: 0, fontFamily: font,
+                                  textDecoration: "underline", textDecorationStyle: "dotted",
+                                  textUnderlineOffset: "2px",
+                                }}
+                              >
                                 {fmt(status.spent)}
-                              </span>
+                              </button>
                               <span style={{ fontSize: "13px", color: "#9ca3af" }}>
                                 / {fmt(status.limit)}
                               </span>
@@ -474,7 +484,19 @@ export default function BudgetPage() {
                           {item.category}
                         </div>
                         <div style={{ textAlign: "right", fontWeight: 600, fontSize: "14px", color: "#111827" }}>
-                          {fmt(item.current)}
+                          <button
+                            onClick={() => navigate(`/transactions?category=${encodeURIComponent(item.category)}`)}
+                            title="View transactions for this category"
+                            style={{
+                              fontWeight: 600, fontSize: "14px", color: "#111827",
+                              background: "none", border: "none", cursor: "pointer",
+                              padding: 0, fontFamily: font,
+                              textDecoration: "underline", textDecorationStyle: "dotted",
+                              textUnderlineOffset: "2px",
+                            }}
+                          >
+                            {fmt(item.current)}
+                          </button>
                         </div>
                         <div style={{ textAlign: "right", fontSize: "14px", color: "#9ca3af" }}>
                           {item.previous > 0 ? fmt(item.previous) : "—"}
