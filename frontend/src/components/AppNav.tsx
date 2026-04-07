@@ -18,6 +18,7 @@ const NAV_LINKS = [
   { path: "/tax-summary",  label: "Business (Sch. C)" },
   { path: "/schedule-e",   label: "Rental Properties (Sch. E)" },
   { path: "/schedule-a",   label: "Deductions (Sch. A)" },
+  { path: "/budget",       label: "Budget" },
 ] as const;
 
 // ─── AppNav ───────────────────────────────────────────────────────────────────
