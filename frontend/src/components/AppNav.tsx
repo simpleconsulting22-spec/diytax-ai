@@ -27,7 +27,7 @@ const NAV_LINKS = [
 export default function AppNav() {
   const navigate    = useNavigate();
   const location    = useLocation();
-  const { user }    = useAuth();
+  const { user, role }    = useAuth();
   const isMobile    = useIsMobile();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerRef   = useRef<HTMLDivElement>(null);
@@ -99,6 +99,24 @@ export default function AppNav() {
           {/* Right: year selector + settings + email + sign out */}
           <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
             <YearSelector variant="nav" />
+
+            {role === "owner" && (
+              <button
+                onClick={() => navigate("/manage-access")}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "13px",
+                  fontWeight: isActive("/manage-access") ? 700 : 500,
+                  color: isActive("/manage-access") ? "#16A34A" : "#6b7280",
+                  cursor: "pointer",
+                  fontFamily: font,
+                  padding: 0,
+                }}
+              >
+                Team
+              </button>
+            )}
 
             <button
               onClick={() => navigate("/onboarding")}
@@ -325,6 +343,27 @@ export default function AppNav() {
               {label}
             </button>
           ))}
+          {role === "owner" && (
+            <button
+              onClick={() => navigate("/manage-access")}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "12px 20px",
+                background: isActive("/manage-access") ? "#f0fdf4" : "none",
+                border: "none",
+                borderLeft: isActive("/manage-access") ? "3px solid #16A34A" : "3px solid transparent",
+                fontSize: "14px",
+                fontWeight: isActive("/manage-access") ? 700 : 400,
+                color: isActive("/manage-access") ? "#15803d" : "#374151",
+                cursor: "pointer",
+                fontFamily: font,
+              }}
+            >
+              Team
+            </button>
+          )}
           <button
             onClick={() => navigate("/onboarding")}
             style={{

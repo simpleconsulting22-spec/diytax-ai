@@ -25,12 +25,14 @@ import SSAPage from "./modules/income/SSAPage";
 import RetirementPage from "./modules/income/RetirementPage";
 import BudgetPage from "./modules/budget/BudgetPage";
 import TransfersPage from "./modules/transfers/TransfersPage";
+import ManageAccessPage from "./pages/ManageAccessPage";
+import AcceptInvitePage from "./pages/AcceptInvitePage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, userDoc, loading, mfaVerified, setMfaVerified } = useAuth();
+  const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -45,11 +47,14 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (!mfaVerified) {
+  // MFA is only required for the account owner — shared users (spouse/accountant)
+  // authenticate with their own Firebase credentials and don't manage tax data directly.
+  if (!mfaVerified && role === "owner") {
     return <MfaModal onVerified={() => setMfaVerified(true)} />;
   }
 
-  if ((!userDoc || userDoc.onboardingComplete !== true) && location.pathname !== "/onboarding") {
+  // Skip onboarding for shared users — they access the owner's data, not their own.
+  if (role === "owner" && (!userDoc || userDoc.onboardingComplete !== true) && location.pathname !== "/onboarding") {
     return <Navigate to="/onboarding" replace />;
   }
 
@@ -61,6 +66,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/accept-invite/:inviteId" element={<AcceptInvitePage />} />
       <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
       <Route path="/terms-of-service" element={<TermsOfServicePage />} />
       <Route
@@ -176,6 +182,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <TransfersPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/manage-access"
+        element={
+          <AuthGuard>
+            <ManageAccessPage />
           </AuthGuard>
         }
       />
