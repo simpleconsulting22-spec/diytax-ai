@@ -196,6 +196,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) {
+    if (!user) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       await updateDoc(doc(db, "transactions", id), {
@@ -204,6 +205,28 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         entityName: entityName ?? null,
         updatedAt: serverTimestamp(),
       });
+
+      // Save a learned rule so AI uses this entity assignment for the same
+      // vendor in future runs.
+      const txn = state.transactions.find((t) => t.id === id);
+      if (txn) {
+        const vendorName = extractVendor(
+          txn.normalizedDescription || txn.description || ""
+        );
+        if (vendorName) {
+          await addDoc(collection(db, "categoryRules"), {
+            uid:        user.uid,
+            vendorName,
+            category:   txn.category   ?? "",
+            taxCategory: txn.taxCategory ?? "",
+            entityId:   entityId        ?? null,
+            entityName: entityName      ?? null,
+            entityType: entityType      ?? null,
+            createdAt:  serverTimestamp(),
+          });
+        }
+      }
+
       setState((prev) => ({
         ...prev,
         updating: new Set([...prev.updating].filter((i) => i !== id)),
@@ -239,7 +262,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       });
 
       // 3. Learning loop: write a categoryRule keyed on the leading vendor word.
-      //    Also persist entity assignment so future AI skips this vendor entirely.
+      //    Capture entity at write-time (use setState callback to read latest state).
       const txn = state.transactions.find((t) => t.id === id);
       if (txn) {
         const vendorName = extractVendor(
@@ -247,15 +270,14 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         );
         if (vendorName) {
           await addDoc(collection(db, "categoryRules"), {
-            uid: user.uid,
+            uid:        user.uid,
             vendorName,
-            category: newCategory,
+            category:   newCategory,
             taxCategory: txn.taxCategory ?? "",
-            // Persist entity so next vendor match auto-assigns (Task 3)
             entityId:   txn.entityId   ?? null,
             entityName: txn.entityName ?? null,
             entityType: txn.entityType ?? null,
-            createdAt: serverTimestamp(),
+            createdAt:  serverTimestamp(),
           });
         }
       }
@@ -395,7 +417,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) {
-    if (ids.length === 0) return;
+    if (!user || ids.length === 0) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
     try {
       for (let i = 0; i < ids.length; i += 499) {
@@ -410,6 +432,30 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         }
         await batch.commit();
       }
+
+      // Learning loop: save a rule per unique vendor so AI uses this entity
+      // assignment for the same vendor in future runs.
+      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
+      const seen = new Set<string>();
+      for (const txn of selectedTxns) {
+        const vendorName = extractVendor(
+          txn.normalizedDescription || txn.description || ""
+        );
+        if (vendorName && !seen.has(vendorName)) {
+          seen.add(vendorName);
+          await addDoc(collection(db, "categoryRules"), {
+            uid:        user.uid,
+            vendorName,
+            category:   txn.category   ?? "",
+            taxCategory: txn.taxCategory ?? "",
+            entityId:   entityId        ?? null,
+            entityName: entityName      ?? null,
+            entityType: entityType      ?? null,
+            createdAt:  serverTimestamp(),
+          });
+        }
+      }
+
       setState((prev) => ({
         ...prev,
         updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
