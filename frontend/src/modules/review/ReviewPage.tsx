@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
@@ -7,8 +7,186 @@ import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
 import { useReviewTransactions } from "./hooks/useReviewTransactions";
 import YearSelector from "../../components/YearSelector";
+import { normalizeCategoryName } from "../../utils/normalizeCategory";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+
+// ─── BulkCategoryPicker ───────────────────────────────────────────────────────
+// Replaces the plain <select> in the bulk toolbar.
+// Opens upward (above the toolbar), supports search + custom category creation.
+
+interface BulkCategoryPickerProps {
+  categoryPool: string[];
+  onSelect: (category: string) => void;
+  onCustomCategoryAdded: (category: string) => void;
+}
+
+function BulkCategoryPicker({ categoryPool, onSelect, onCustomCategoryAdded }: BulkCategoryPickerProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    setTimeout(() => inputRef.current?.focus(), 0);
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [open]);
+
+  const trimmedSearch = search.trim();
+  const filtered = trimmedSearch
+    ? categoryPool.filter((c) => c.toLowerCase().includes(trimmedSearch.toLowerCase()))
+    : categoryPool;
+
+  const isExact = trimmedSearch
+    ? categoryPool.some((c) => normalizeCategoryName(c) === normalizeCategoryName(trimmedSearch))
+    : false;
+  const showCreate = trimmedSearch !== "" && !isExact;
+
+  function handleSelect(cat: string) {
+    onSelect(cat);
+    setOpen(false);
+    setSearch("");
+  }
+
+  function handleCreate() {
+    if (!trimmedSearch) return;
+    // Resolve to canonical if a normalized match already exists
+    const existing = categoryPool.find(
+      (c) => normalizeCategoryName(c) === normalizeCategoryName(trimmedSearch)
+    );
+    const canonical = existing ?? trimmedSearch;
+    onSelect(canonical);
+    if (!existing) onCustomCategoryAdded(canonical);
+    setOpen(false);
+    setSearch("");
+  }
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          padding: "6px 10px",
+          borderRadius: "6px",
+          border: "1px solid #334155",
+          backgroundColor: open ? "#334155" : "#1e293b",
+          color: "#f1f5f9",
+          fontSize: "13px",
+          cursor: "pointer",
+          fontFamily: font,
+          outline: "none",
+          display: "flex",
+          alignItems: "center",
+          gap: "6px",
+          whiteSpace: "nowrap",
+        }}
+      >
+        Assign category…
+        <span style={{ fontSize: "10px", opacity: 0.6 }}>▾</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute",
+          bottom: "calc(100% + 8px)",
+          left: 0,
+          width: "260px",
+          backgroundColor: "#1e293b",
+          border: "1px solid #334155",
+          borderRadius: "8px",
+          boxShadow: "0 -8px 32px rgba(0,0,0,0.45)",
+          overflow: "hidden",
+          zIndex: 200,
+        }}>
+          {/* Search input */}
+          <div style={{ padding: "8px" }}>
+            <input
+              ref={inputRef}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setOpen(false); setSearch(""); }
+                if (e.key === "Enter" && filtered.length === 1) handleSelect(filtered[0]);
+                if (e.key === "Enter" && showCreate && filtered.length === 0) handleCreate();
+              }}
+              placeholder="Search or create category…"
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                borderRadius: "6px",
+                border: "1px solid #475569",
+                backgroundColor: "#0f172a",
+                color: "#f1f5f9",
+                fontSize: "13px",
+                outline: "none",
+                fontFamily: font,
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          {/* Results */}
+          <div style={{ maxHeight: "240px", overflowY: "auto" }}>
+            {filtered.length === 0 && !showCreate && (
+              <div style={{ padding: "10px 12px", color: "#64748b", fontSize: "12px" }}>
+                No matching categories
+              </div>
+            )}
+
+            {filtered.map((cat) => (
+              <div
+                key={cat}
+                onMouseDown={() => handleSelect(cat)}
+                style={{
+                  padding: "8px 12px",
+                  fontSize: "13px",
+                  color: "#f1f5f9",
+                  cursor: "pointer",
+                  borderBottom: "1px solid #1e2d3d",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#334155")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                {cat}
+              </div>
+            ))}
+
+            {/* Create new custom category */}
+            {showCreate && (
+              <div
+                onMouseDown={handleCreate}
+                style={{
+                  padding: "8px 12px",
+                  fontSize: "13px",
+                  color: "#34d399",
+                  cursor: "pointer",
+                  borderTop: filtered.length > 0 ? "1px solid #334155" : "none",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontWeight: 500,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#0f2d1e")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span style={{ fontSize: "14px" }}>+</span>
+                Create &ldquo;{trimmedSearch}&rdquo;
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ReviewPage ───────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
   const { user } = useAuth();
@@ -24,20 +202,17 @@ export default function ReviewPage() {
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
     handleAutoCategorizeBatch,
+    handleCustomCategoryAdded,
     clearSelection,
     toggleSelect,
     toggleSelectAll,
     reload,
   } = useReviewTransactions();
 
-  const { transactions, entities, loading, error, selectedIds, updating } = state;
+  const { transactions, entities, customCategories, loading, error, selectedIds, updating } = state;
 
-  // Track which category was last bulk-assigned so the select resets after
-  const [bulkAssignKey, setBulkAssignKey] = useState(0);
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
   const [accountFilter, setAccountFilter] = useState<string>("all");
-
-  // Auto-categorize progress state (Task 2B)
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
 
   const handleAutoAll = useCallback(async () => {
@@ -67,7 +242,6 @@ export default function ReviewPage() {
 
   const hasSelection = selectedIds.size > 0;
 
-  // Unique account names from loaded transactions (for filter dropdown)
   const accountOptions = Array.from(
     new Set(transactions.map((t) => t.accountName).filter((n): n is string => !!n))
   ).sort();
@@ -76,6 +250,27 @@ export default function ReviewPage() {
     accountFilter === "all"
       ? transactions
       : transactions.filter((t) => t.accountName === accountFilter);
+
+  // allSelected and toggleSelectAll must reflect the filtered view only.
+  const filteredAllSelected = useMemo(
+    () =>
+      filteredTransactions.length > 0 &&
+      filteredTransactions.every((t) => selectedIds.has(t.id)),
+    [filteredTransactions, selectedIds]
+  );
+  const handleToggleSelectAllFiltered = useCallback(() => {
+    toggleSelectAll(filteredTransactions.map((t) => t.id));
+  }, [toggleSelectAll, filteredTransactions]);
+
+  // Full category pool for the bulk toolbar (no entity-type filtering —
+  // bulk assign applies to mixed transactions).
+  const bulkCategoryPool = useMemo(() => {
+    const predefinedNorms = new Set(TAX_CATEGORIES.map(normalizeCategoryName));
+    const extras = customCategories.filter(
+      (c) => !predefinedNorms.has(normalizeCategoryName(c))
+    );
+    return [...TAX_CATEGORIES, ...extras];
+  }, [customCategories]);
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font, paddingBottom: hasSelection ? "80px" : "0" }}>
@@ -98,7 +293,7 @@ export default function ReviewPage() {
             DIYTax AI
           </div>
           <button style={navLink}       onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLink}       onClick={() => navigate("/transactions")}>Transactions</button>
+          <button style={navLink}       onClick={() => navigate("/transactions")}>Transaction History</button>
           <button style={navLinkActive}>Review</button>
           <button style={navLink}       onClick={() => navigate("/import-csv")}>Import CSV</button>
           <button style={navLink}       onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
@@ -134,7 +329,6 @@ export default function ReviewPage() {
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            {/* Auto Categorize All (Task 2B) */}
             {!loading && transactions.length > 0 && (
               <button
                 onClick={handleAutoAll}
@@ -240,15 +434,17 @@ export default function ReviewPage() {
             <ReviewTable
               transactions={filteredTransactions}
               entities={entities}
+              customCategories={customCategories}
               selectedIds={selectedIds}
               updating={updating}
-              allSelected={allSelected}
+              allSelected={filteredAllSelected}
               onToggleSelect={toggleSelect}
-              onToggleSelectAll={toggleSelectAll}
+              onToggleSelectAll={handleToggleSelectAllFiltered}
               onCategoryChange={handleCategoryChange}
               onEntityChange={handleEntityChange}
               onTypeChange={handleTypeChange}
               onConfirm={handleConfirm}
+              onCustomCategoryAdded={handleCustomCategoryAdded}
             />
           )}
         </div>
@@ -265,7 +461,7 @@ export default function ReviewPage() {
         )}
       </div>
 
-      {/* ── Bulk action toolbar (slides up from bottom) ───────────────────────── */}
+      {/* ── Bulk action toolbar ────────────────────────────────────────────────── */}
       {hasSelection && (
         <div style={{
           position: "fixed",
@@ -291,38 +487,17 @@ export default function ReviewPage() {
 
           <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
 
-          {/* Bulk category assign */}
+          {/* Bulk category assign — now supports predefined + custom + inline creation */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ fontSize: "13px", color: "#94a3b8" }}>Assign category:</span>
-            <select
-              key={bulkAssignKey}
-              defaultValue=""
-              onChange={(e) => {
-                const cat = e.target.value;
-                if (!cat) return;
-                handleBulkCategoryAssign([...selectedIds], cat);
-                setBulkAssignKey((k) => k + 1);
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: "6px",
-                border: "1px solid #334155",
-                backgroundColor: "#334155",
-                color: "#f1f5f9",
-                fontSize: "13px",
-                cursor: "pointer",
-                fontFamily: font,
-                outline: "none",
-              }}
-            >
-              <option value="" disabled>Select category…</option>
-              {TAX_CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
+            <BulkCategoryPicker
+              categoryPool={bulkCategoryPool}
+              onSelect={(cat) => handleBulkCategoryAssign([...selectedIds], cat)}
+              onCustomCategoryAdded={handleCustomCategoryAdded}
+            />
           </div>
 
-          {/* Bulk entity assign (Task 4) */}
+          {/* Bulk entity assign */}
           {entities.length > 0 && (
             <>
               <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
@@ -359,7 +534,7 @@ export default function ReviewPage() {
             </>
           )}
 
-          {/* Auto Categorize Selected (Task 4) */}
+          {/* Auto Categorize Selected */}
           <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
           <button
             onClick={handleAutoSelected}

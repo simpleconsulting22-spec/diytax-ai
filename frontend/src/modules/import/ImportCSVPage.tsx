@@ -114,7 +114,7 @@ export default function ImportCSVPage() {
             DIYTax AI
           </div>
           <button style={navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
+          <button style={navLink} onClick={() => navigate("/transactions")}>Transaction History</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLinkActive}>Import CSV</button>
           <button style={navLink} onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>

@@ -81,7 +81,7 @@ export default function RetirementPage() {
         <div style={{ display: "flex", alignItems: "flex-end", gap: "32px" }}>
           <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }} onClick={() => navigate("/dashboard")}>DIYTax AI</div>
           <button style={navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
+          <button style={navLink} onClick={() => navigate("/transactions")}>Transaction History</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
           <button style={navLink} onClick={() => navigate("/income/ssa")}>Social Security</button>

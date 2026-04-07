@@ -16,6 +16,7 @@ import { useAuth } from "../../../contexts/AuthContext";
 import { useTaxYear, matchesTaxYear } from "../../../contexts/TaxYearContext";
 import { apiClient } from "../../../services/apiClient";
 import { getUserEntities, UserEntity } from "../../../services/entityService";
+import { getCustomCategories, addCustomCategory, AddCategoryResult } from "../../../services/customCategoriesService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ function extractVendor(normalizedDescription: string): string {
 interface ReviewState {
   transactions: ReviewTransaction[];
   entities: UserEntity[];
+  customCategories: string[];
   loading: boolean;
   error: string;
   selectedIds: Set<string>;
@@ -71,6 +73,7 @@ export function useReviewTransactions() {
   const [state, setState] = useState<ReviewState>({
     transactions: [],
     entities: [],
+    customCategories: [],
     loading: true,
     error: "",
     selectedIds: new Set(),
@@ -83,7 +86,7 @@ export function useReviewTransactions() {
     if (!user) return;
     setState((prev) => ({ ...prev, loading: true, error: "" }));
     try {
-      const [snap, entities, accountSnap] = await Promise.all([
+      const [snap, entities, accountSnap, customCategories] = await Promise.all([
         getDocs(
           query(
             collection(db, "transactions"),
@@ -96,6 +99,7 @@ export function useReviewTransactions() {
         getDocs(
           query(collection(db, "accounts"), where("uid", "==", user.uid))
         ),
+        getCustomCategories(user.uid),
       ]);
 
       const accountMap = new Map<string, string>();
@@ -168,6 +172,7 @@ export function useReviewTransactions() {
         ...prev,
         transactions: docs,
         entities,
+        customCategories,
         loading: false,
       }));
     } catch (e: unknown) {
@@ -494,6 +499,35 @@ export function useReviewTransactions() {
     }
   }
 
+  // ── Custom category persistence ────────────────────────────────────────────
+
+  async function handleCustomCategoryAdded(category: string) {
+    if (!user) return;
+    // Optimistic local update so the new category appears immediately in all
+    // open inline editors without waiting for a full reload.
+    setState((prev) => {
+      if (prev.customCategories.includes(category)) return prev;
+      return { ...prev, customCategories: [...prev.customCategories, category] };
+    });
+    try {
+      const result: AddCategoryResult = await addCustomCategory(user.uid, category);
+      if (!result.isNew) {
+        // Service found an existing canonical name (e.g. "Business Meals" for "business meals").
+        // Swap the optimistic entry out in favour of the canonical name.
+        setState((prev) => ({
+          ...prev,
+          customCategories: [
+            ...prev.customCategories.filter((c) => c !== category),
+            ...(prev.customCategories.includes(result.name) ? [] : [result.name]),
+          ],
+        }));
+      }
+    } catch {
+      // Non-fatal — category is already saved on the transaction/rule; the
+      // list entry will re-appear on next page load.
+    }
+  }
+
   // ── Selection helpers ──────────────────────────────────────────────────────
 
   function clearSelection() {
@@ -508,12 +542,19 @@ export function useReviewTransactions() {
     });
   }
 
-  function toggleSelectAll() {
+  // visibleIds — when an account filter is active, pass only the currently
+  // visible transaction IDs so Select All operates on the filtered view.
+  function toggleSelectAll(visibleIds?: string[]) {
+    const ids = visibleIds ?? state.transactions.map((t) => t.id);
     setState((prev) => {
-      if (prev.selectedIds.size === prev.transactions.length) {
-        return { ...prev, selectedIds: new Set() };
+      const allVisible = ids.length > 0 && ids.every((id) => prev.selectedIds.has(id));
+      const next = new Set(prev.selectedIds);
+      if (allVisible) {
+        ids.forEach((id) => next.delete(id));
+      } else {
+        ids.forEach((id) => next.add(id));
       }
-      return { ...prev, selectedIds: new Set(prev.transactions.map((t) => t.id)) };
+      return { ...prev, selectedIds: next };
     });
   }
 
@@ -532,6 +573,7 @@ export function useReviewTransactions() {
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
     handleAutoCategorizeBatch,
+    handleCustomCategoryAdded,
     clearSelection,
     toggleSelect,
     toggleSelectAll,

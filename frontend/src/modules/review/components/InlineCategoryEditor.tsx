@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { TAX_CATEGORIES, CATEGORY_GROUPS } from "./CategoryDropdown";
+import { normalizeCategoryName } from "../../../utils/normalizeCategory";
 
-// Returns a filtered category list based on the entity's schedule type.
-// Business entities → Schedule C categories; Rental → Schedule E categories.
-// Falls back to full list when entityType is unset or personal.
+// ─── Entity-type filter ───────────────────────────────────────────────────────
+
 function categoriesForEntity(entityType?: "business" | "rental" | "personal" | null): string[] {
   if (!entityType || entityType === "personal") return TAX_CATEGORIES;
   if (entityType === "business") {
@@ -11,11 +11,12 @@ function categoriesForEntity(entityType?: "business" | "rental" | "personal" | n
       .filter((g) => g.group.startsWith("Income") || g.group.startsWith("Business"))
       .flatMap((g) => g.categories);
   }
-  // rental
   return CATEGORY_GROUPS
     .filter((g) => g.group.startsWith("Income") || g.group.startsWith("Rental") || g.group.startsWith("Deductions"))
     .flatMap((g) => g.categories);
 }
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type CategorySource = "rule" | "user_rule" | "ai" | null;
 
@@ -24,7 +25,9 @@ interface InlineCategoryEditorProps {
   source: CategorySource;
   disabled?: boolean;
   entityType?: "business" | "rental" | "personal" | null;
+  customCategories?: string[];
   onChange: (category: string) => void;
+  onCustomCategoryAdded?: (category: string) => void;
 }
 
 const SOURCE_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
@@ -33,12 +36,16 @@ const SOURCE_CONFIG: Record<string, { label: string; bg: string; color: string }
   ai:        { label: "AI",      bg: "#fff7ed", color: "#c2410c" },
 };
 
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export default function InlineCategoryEditor({
   value,
   source,
   disabled = false,
   entityType,
+  customCategories = [],
   onChange,
+  onCustomCategoryAdded,
 }: InlineCategoryEditorProps) {
   const [editing, setEditing]         = useState(false);
   const [inputValue, setInputValue]   = useState("");
@@ -48,30 +55,57 @@ export default function InlineCategoryEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
 
-  // Category pool filtered by entity type (Task 5 — assignment intelligence)
-  const categoryPool = useMemo(() => categoriesForEntity(entityType), [entityType]);
+  // ── Category pool ──────────────────────────────────────────────────────────
+  // Predefined list (filtered by entity type) + user custom categories,
+  // deduplicated by normalizedName so "business meals" won't duplicate "Business Meals".
+  const categoryPool = useMemo(() => {
+    const base = categoriesForEntity(entityType);
+    if (customCategories.length === 0) return base;
+    const baseNorms = new Set(base.map(normalizeCategoryName));
+    const extras = customCategories.filter((c) => !baseNorms.has(normalizeCategoryName(c)));
+    return extras.length > 0 ? [...base, ...extras] : base;
+  }, [entityType, customCategories]);
 
-  // ── Suggestions list ───────────────────────────────────────────────────────
   const typed = inputValue.trim();
+
+  // ── Exact match (normalized) ───────────────────────────────────────────────
+  // Treats "business meals", "Business Meals", "BusinessMeals" as the same.
+  const isExactMatch = typed
+    ? categoryPool.some((c) => normalizeCategoryName(c) === normalizeCategoryName(typed))
+    : false;
+
+  // ── Filtered suggestions ───────────────────────────────────────────────────
   const filtered = typed
     ? categoryPool.filter((c) => c.toLowerCase().includes(typed.toLowerCase()))
     : categoryPool;
 
-  // When there is an AI suggestion and the user hasn't typed, pin current value at top
+  // When AI suggestion exists and user hasn't typed: pin AI-suggested value at top.
   const baseList =
     source === "ai" && value && !typed
-      ? [value, ...TAX_CATEGORIES.filter((c) => c !== value)]
+      ? [value, ...categoryPool.filter((c) => c !== value)]
       : filtered;
 
-  // If typed text doesn't exactly match any suggestion, offer a custom-entry option
-  const isExactMatch = typed
-    ? TAX_CATEGORIES.some((c) => c.toLowerCase() === typed.toLowerCase())
-    : false;
   const showCustomOption = typed.length > 0 && !isExactMatch;
 
-  const suggestions = baseList;
+  // ── Close-match suggestion ─────────────────────────────────────────────────
+  // Fires when the user typed something that isn't an exact match but is a
+  // substring (normalized) of an existing category, or vice versa.
+  // Min 3 chars to avoid noisy false-positives.
+  const closeMatch = useMemo(() => {
+    if (!typed || typed.length < 3 || isExactMatch) return null;
+    const ni = normalizeCategoryName(typed);
+    return (
+      categoryPool.find((c) => {
+        const nc = normalizeCategoryName(c);
+        return nc.includes(ni) || ni.includes(nc);
+      }) ?? null
+    );
+  }, [typed, isExactMatch, categoryPool]);
 
-  // ── Dropdown positioning (fixed, escapes overflow:auto containers) ─────────
+  // ── Custom-category count warning ──────────────────────────────────────────
+  const showCustomWarning = showCustomOption && customCategories.length >= 5;
+
+  // ── Dropdown positioning ───────────────────────────────────────────────────
   const updateDropdownPosition = useCallback(() => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -104,12 +138,27 @@ export default function InlineCategoryEditor({
     setInputValue("");
   }
 
-  function select(cat: string) {
-    onChange(cat);
+  // ── Select ─────────────────────────────────────────────────────────────────
+  // Normalizes the chosen value against categoryPool so the canonical name is
+  // always used (e.g. typing "business meals" resolves to "Business Meals").
+  function select(raw: string) {
+    const ni = normalizeCategoryName(raw);
+    const canonical =
+      categoryPool.find((c) => normalizeCategoryName(c) === ni) ?? raw.trim();
+
+    onChange(canonical);
+
+    // Only fire the persistence callback when the category is genuinely absent
+    // from the current pool (i.e. it's a net-new custom category).
+    if (!categoryPool.some((c) => normalizeCategoryName(c) === ni)) {
+      onCustomCategoryAdded?.(canonical);
+    }
+
     closeEditor();
   }
 
   // ── Keyboard navigation ────────────────────────────────────────────────────
+  const suggestions = baseList;
   const totalOptions = suggestions.length + (showCustomOption ? 1 : 0);
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -123,18 +172,16 @@ export default function InlineCategoryEditor({
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (showCustomOption && highlighted === suggestions.length) {
-        // Custom entry selected
         select(typed);
       } else if (suggestions[highlighted]) {
         select(suggestions[highlighted]);
       } else if (showCustomOption && typed) {
-        // Nothing highlighted but user pressed Enter with typed text
         select(typed);
       }
     }
   }
 
-  // ── Click outside to close ─────────────────────────────────────────────────
+  // ── Click outside ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!editing) return;
     function handleMouseDown(e: MouseEvent) {
@@ -157,7 +204,7 @@ export default function InlineCategoryEditor({
     };
   }, [editing, updateDropdownPosition]);
 
-  // ── Auto-focus input ───────────────────────────────────────────────────────
+  // ── Auto-focus ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
@@ -189,6 +236,8 @@ export default function InlineCategoryEditor({
           }}
         />
         <div style={dropdownStyle}>
+
+          {/* AI suggestion header */}
           {showAILabel && (
             <div style={{
               padding: "5px 12px 3px",
@@ -202,6 +251,28 @@ export default function InlineCategoryEditor({
               ✦ AI SUGGESTION — click to accept or type to override
             </div>
           )}
+
+          {/* Close-match suggestion banner */}
+          {closeMatch && !showAILabel && (
+            <div
+              onMouseDown={(e) => { e.preventDefault(); select(closeMatch); }}
+              style={{
+                padding: "7px 12px",
+                backgroundColor: "#fefce8",
+                borderBottom: "1px solid #fef08a",
+                fontSize: "12px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              <span style={{ color: "#a16207" }}>💡 Use existing:</span>
+              <span style={{ fontWeight: 600, color: "#111827" }}>{closeMatch}</span>
+            </div>
+          )}
+
+          {/* Main list */}
           {suggestions.length === 0 && !showCustomOption ? (
             <div style={{ padding: "10px 12px", color: "#9ca3af", fontSize: "13px" }}>
               No matches — press Enter to use &ldquo;{typed}&rdquo; as a custom category
@@ -250,6 +321,8 @@ export default function InlineCategoryEditor({
                   </div>
                 );
               })}
+
+              {/* "+ Use as custom category" option */}
               {showCustomOption && (
                 <div
                   onMouseDown={(e) => { e.preventDefault(); select(typed); }}
@@ -269,6 +342,19 @@ export default function InlineCategoryEditor({
                 >
                   <span style={{ fontSize: "14px" }}>+</span>
                   Use &ldquo;{typed}&rdquo; as custom category
+                </div>
+              )}
+
+              {/* Custom category count warning */}
+              {showCustomWarning && (
+                <div style={{
+                  padding: "6px 12px",
+                  fontSize: "11px",
+                  color: "#92400e",
+                  backgroundColor: "#fffbeb",
+                  borderTop: "1px solid #fef3c7",
+                }}>
+                  ⚠ You have {customCategories.length} custom categories — consider reusing an existing one above.
                 </div>
               )}
             </>

@@ -217,6 +217,7 @@ type SortDir = "asc" | "desc";
 interface ReviewTableProps {
   transactions: ReviewTransaction[];
   entities: UserEntity[];
+  customCategories: string[];
   selectedIds: Set<string>;
   updating: Set<string>;
   allSelected: boolean;
@@ -231,6 +232,7 @@ interface ReviewTableProps {
   ) => void;
   onTypeChange: (id: string, type: "income" | "expense" | "transfer", subType?: "credit_card_payment" | "loan_payment" | null) => void;
   onConfirm: (id: string) => void;
+  onCustomCategoryAdded: (category: string) => void;
 }
 
 const TH: React.CSSProperties = {
@@ -264,6 +266,7 @@ function fmtDate(d: string): string {
 export default function ReviewTable({
   transactions,
   entities,
+  customCategories,
   selectedIds,
   updating,
   allSelected,
@@ -273,6 +276,7 @@ export default function ReviewTable({
   onEntityChange,
   onTypeChange,
   onConfirm,
+  onCustomCategoryAdded,
 }: ReviewTableProps) {
   const [sortCol, setSortCol] = useState<SortCol>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -466,7 +470,9 @@ export default function ReviewTable({
                     source={txn.source}
                     disabled={isUpdating}
                     entityType={txn.entityType ?? null}
+                    customCategories={customCategories}
                     onChange={(cat) => onCategoryChange(txn.id, cat)}
+                    onCustomCategoryAdded={onCustomCategoryAdded}
                   />
                 </td>
 

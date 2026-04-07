@@ -1,289 +1,561 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import {
   collection,
   query,
   where,
   orderBy,
-  limit,
   getDocs,
-  startAfter,
-  QueryDocumentSnapshot,
-  DocumentData,
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 import { db, auth } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { useTaxYear } from "../contexts/TaxYearContext";
-import { apiClient } from "../services/apiClient";
 import YearSelector from "../components/YearSelector";
 
-const TAX_CATEGORIES = [
-  "Income",
-  "Advertising",
-  "Meals & Entertainment",
-  "Travel",
-  "Office Supplies",
-  "Software & Subscriptions",
-  "Home Office",
-  "Vehicle & Mileage",
-  "Professional Services",
-  "Equipment",
-  "Other",
-];
+const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
-type FilterType = "all" | "needs_review" | "categorized";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface Transaction {
+interface TxnRow {
   id: string;
   date: string;
   description: string;
-  merchantName: string;
   amount: number;
-  category: string;
-  status: "categorized" | "needs_review";
+  type: "income" | "expense" | "transfer";
+  category: string | null;
+  entityName: string | null;
+  accountName: string | null;
+  status: "categorized" | "needs_review" | "transfer";
 }
 
-export default function TransactionsPage() {
+type TypeFilter   = "all" | "income" | "expense" | "transfer";
+type StatusFilter = "all" | "categorized" | "needs_review";
+type SortCol      = "date" | "description" | "amount" | "category" | null;
+type SortDir      = "asc" | "desc";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtDate(d: string): string {
+  if (!d) return "—";
+  const [year, m, day] = d.split("-");
+  if (!m || !day || !year) return d;
+  return `${parseInt(m)}/${parseInt(day)}/${year.slice(2)}`;
+}
+
+function fmtMoney(n: number): string {
+  return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function StatusBadge({ status }: { status: TxnRow["status"] }) {
+  const cfg: Record<string, { label: string; bg: string; color: string; border: string }> = {
+    categorized:  { label: "Confirmed",    bg: "#f0fdf4", color: "#15803d", border: "#bbf7d0" },
+    needs_review: { label: "Needs Review", bg: "#fefce8", color: "#92400e", border: "#fde68a" },
+    transfer:     { label: "Transfer",     bg: "#f3f4f6", color: "#6b7280", border: "#e5e7eb" },
+  };
+  const c = cfg[status] ?? cfg.needs_review;
+  return (
+    <span style={{
+      display: "inline-block",
+      padding: "2px 10px",
+      borderRadius: "999px",
+      fontSize: "11px",
+      fontWeight: 700,
+      backgroundColor: c.bg,
+      color: c.color,
+      border: `1px solid ${c.border}`,
+      whiteSpace: "nowrap",
+    }}>
+      {c.label}
+    </span>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default function TransactionHistoryPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { selectedYear } = useTaxYear();
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filter, setFilter] = useState<FilterType>("all");
-  const [loading, setLoading] = useState(true);
-  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [updating, setUpdating] = useState<string | null>(null);
+
+  const [rows, setRows]           = useState<TxnRow[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [search, setSearch]       = useState("");
+  const [typeFilter, setTypeFilter]     = useState<TypeFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [accountFilter, setAccountFilter] = useState("all");
+  const [sortCol, setSortCol]     = useState<SortCol>("date");
+  const [sortDir, setSortDir]     = useState<SortDir>("desc");
+
+  // ── Load ────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!user) return;
-    setLastDoc(null);
-    loadTransactions(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, filter, selectedYear]);
-
-  async function loadTransactions(reset: boolean) {
-    if (!user) return;
     setLoading(true);
-    try {
-      const yearStart = `${selectedYear}-01-01`;
-      const yearEnd = `${selectedYear}-12-31`;
-      const constraints: Parameters<typeof query>[1][] = [
-        where("uid", "==", user.uid),
-        ...(filter !== "all" ? [where("status", "==", filter)] : []),
-        where("date", ">=", yearStart),
-        where("date", "<=", yearEnd),
-        orderBy("date", "desc"),
-        limit(50),
-        ...(!reset && lastDoc ? [startAfter(lastDoc)] : []),
-      ];
 
-      const q = query(collection(db, "transactions"), ...constraints);
-      const snap = await getDocs(q);
-      const docs = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Transaction, "id">) }));
-      setTransactions(reset ? docs : (prev) => [...prev, ...docs]);
-      setLastDoc(snap.docs[snap.docs.length - 1] ?? null);
-      setHasMore(snap.docs.length === 50);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleCategoryChange(transactionId: string, category: string) {
-    setUpdating(transactionId);
-    try {
-      await apiClient.call("updateTransactionCategory", { transactionId, category });
-      setTransactions((prev) =>
-        prev.map((t) =>
-          t.id === transactionId ? { ...t, category, status: "categorized" } : t
+    Promise.all([
+      getDocs(
+        query(
+          collection(db, "transactions"),
+          where("uid", "==", user.uid),
+          where("date", ">=", `${selectedYear}-01-01`),
+          where("date", "<=", `${selectedYear}-12-31`),
+          orderBy("date", "desc")
         )
+      ),
+      getDocs(query(collection(db, "accounts"), where("uid", "==", user.uid))),
+    ]).then(([snap, accountSnap]) => {
+      const accountMap = new Map<string, string>();
+      accountSnap.docs.forEach((d) =>
+        accountMap.set(d.id, (d.data().name as string) ?? d.id)
       );
-    } finally {
-      setUpdating(null);
+
+      const data: TxnRow[] = snap.docs.map((d) => {
+        const txn = d.data();
+        return {
+          id:          d.id,
+          date:        (txn.date as string)        ?? "",
+          description: (txn.description as string) ?? "",
+          amount:      (txn.amount as number)      ?? 0,
+          type:        (txn.type as TxnRow["type"]) ?? "expense",
+          category:    (txn.category as string)    ?? null,
+          entityName:  (txn.entityName as string)  ?? null,
+          accountName: txn.accountId
+            ? (accountMap.get(txn.accountId as string) ?? null)
+            : null,
+          status: (txn.status as TxnRow["status"]) ?? "needs_review",
+        };
+      });
+
+      setRows(data);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [user, selectedYear]);
+
+  // ── Sort handler (3-state: ASC → DESC → reset to date desc) ─────────────────
+
+  function handleSort(col: Exclude<SortCol, null>) {
+    if (sortCol === col) {
+      if (sortDir === "asc") setSortDir("desc");
+      else { setSortCol("date"); setSortDir("desc"); }
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
     }
   }
 
-  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  function sortIcon(col: Exclude<SortCol, null>): string {
+    if (sortCol !== col) return " ↕";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
 
-  const navStyle: React.CSSProperties = {
-    backgroundColor: "#fff",
-    borderBottom: "1px solid #e5e7eb",
-    padding: "0 32px 10px",
-    height: "64px",
-    display: "flex",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    fontFamily: font,
+  // ── Derived data ─────────────────────────────────────────────────────────────
+
+  const accountOptions = useMemo(() =>
+    Array.from(new Set(rows.map((r) => r.accountName).filter((n): n is string => !!n))).sort(),
+  [rows]);
+
+  const filtered = useMemo(() => {
+    let list = rows;
+
+    if (typeFilter !== "all")
+      list = list.filter((r) => r.type === typeFilter);
+
+    if (statusFilter !== "all")
+      list = list.filter((r) =>
+        statusFilter === "needs_review"
+          ? r.status === "needs_review"
+          : r.status === "categorized"
+      );
+
+    if (accountFilter !== "all")
+      list = list.filter((r) => r.accountName === accountFilter);
+
+    if (search.trim())
+      list = list.filter((r) =>
+        r.description.toLowerCase().includes(search.toLowerCase()) ||
+        (r.category ?? "").toLowerCase().includes(search.toLowerCase())
+      );
+
+    if (!sortCol) return list;
+
+    return [...list].sort((a, b) => {
+      let av: string | number = "";
+      let bv: string | number = "";
+      if (sortCol === "date")        { av = a.date;                              bv = b.date; }
+      if (sortCol === "amount")      { av = a.amount;                            bv = b.amount; }
+      if (sortCol === "description") { av = a.description.toLowerCase();         bv = b.description.toLowerCase(); }
+      if (sortCol === "category")    { av = (a.category ?? "").toLowerCase();    bv = (b.category ?? "").toLowerCase(); }
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [rows, typeFilter, statusFilter, accountFilter, search, sortCol, sortDir]);
+
+  // ── Summary stats (over full unfiltered year) ─────────────────────────────
+
+  const stats = useMemo(() => {
+    let income = 0, expenses = 0, needsReview = 0;
+    rows.forEach((r) => {
+      if (r.type === "income")  income   += r.amount;
+      if (r.type === "expense") expenses += Math.abs(r.amount);
+      if (r.status === "needs_review") needsReview++;
+    });
+    return { income, expenses, net: income - expenses, needsReview };
+  }, [rows]);
+
+  // ── Styles ──────────────────────────────────────────────────────────────────
+
+  const navLink: React.CSSProperties = {
+    background: "none", border: "none", fontSize: "14px",
+    color: "#6b7280", cursor: "pointer", padding: "4px 0", fontFamily: font,
   };
+  const navLinkActive: React.CSSProperties = { ...navLink, color: "#16A34A", fontWeight: 700 };
 
-  const pageStyle: React.CSSProperties = {
-    minHeight: "100vh",
-    backgroundColor: "#f9fafb",
-    fontFamily: font,
-  };
-
-  const contentStyle: React.CSSProperties = {
-    maxWidth: "1100px",
-    margin: "0 auto",
-    padding: "40px 24px",
-  };
-
-  const filterBtnStyle = (active: boolean): React.CSSProperties => ({
-    padding: "8px 18px",
-    border: "none",
-    borderRadius: "8px",
-    cursor: "pointer",
-    fontSize: "14px",
-    fontWeight: 600,
-    backgroundColor: active ? "#16A34A" : "#f3f4f6",
-    color: active ? "#fff" : "#374151",
-  });
-
-  const tableStyle: React.CSSProperties = {
-    width: "100%",
-    borderCollapse: "collapse",
-    backgroundColor: "#fff",
-    borderRadius: "12px",
-    overflow: "hidden",
-    boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
-  };
-
-  const thStyle: React.CSSProperties = {
-    padding: "14px 16px",
+  const TH: React.CSSProperties = {
+    padding: "10px 14px",
     textAlign: "left",
-    fontSize: "12px",
-    fontWeight: 700,
-    color: "#9ca3af",
+    fontWeight: 600,
+    fontSize: "11px",
+    color: "#6b7280",
     textTransform: "uppercase",
     letterSpacing: "0.05em",
     borderBottom: "1px solid #e5e7eb",
+    whiteSpace: "nowrap",
     backgroundColor: "#f9fafb",
   };
 
-  const tdStyle: React.CSSProperties = {
-    padding: "14px 16px",
-    fontSize: "14px",
+  const TD: React.CSSProperties = {
+    padding: "10px 14px",
+    fontSize: "13px",
     color: "#374151",
+    verticalAlign: "middle",
     borderBottom: "1px solid #f3f4f6",
   };
 
-  const badgeStyle = (status: string): React.CSSProperties => ({
-    display: "inline-block",
-    padding: "3px 10px",
+  const pillBtn = (active: boolean): React.CSSProperties => ({
+    padding: "6px 16px",
     borderRadius: "999px",
-    fontSize: "12px",
-    fontWeight: 600,
-    backgroundColor: status === "categorized" ? "#DCFCE7" : "#fef3c7",
-    color: status === "categorized" ? "#15803D" : "#92400e",
-    border: status === "categorized" ? "1px solid #22C55E" : undefined,
+    border: "1px solid",
+    borderColor: active ? "#16A34A" : "#e5e7eb",
+    backgroundColor: active ? "#f0fdf4" : "#fff",
+    color: active ? "#15803d" : "#6b7280",
+    fontWeight: active ? 700 : 500,
+    fontSize: "13px",
+    cursor: "pointer",
+    fontFamily: font,
+    whiteSpace: "nowrap" as const,
   });
 
+  const sortableTH = (col: Exclude<SortCol, null>, label: string, extra?: React.CSSProperties) => (
+    <th
+      style={{ ...TH, ...extra, cursor: "pointer", userSelect: "none" }}
+      onClick={() => handleSort(col)}
+      title={`Sort by ${label}`}
+    >
+      {label}
+      <span style={{ opacity: sortCol === col ? 1 : 0.3, fontSize: "10px" }}>{sortIcon(col)}</span>
+    </th>
+  );
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
   return (
-    <div style={pageStyle}>
-      <nav style={navStyle}>
-        <div style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A" }}>DIYTax AI</div>
+    <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
+
+      {/* Nav */}
+      <nav style={{
+        backgroundColor: "#fff",
+        borderBottom: "1px solid #e5e7eb",
+        padding: "0 32px 10px",
+        height: "64px",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "28px" }}>
+          <div
+            style={{ fontSize: "20px", fontWeight: 800, color: "#16A34A", cursor: "pointer" }}
+            onClick={() => navigate("/dashboard")}
+          >
+            DIYTax AI
+          </div>
+          <button style={navLink}       onClick={() => navigate("/dashboard")}>Dashboard</button>
+          <button style={navLinkActive}>Transaction History</button>
+          <button style={navLink}       onClick={() => navigate("/review")}>Review</button>
+          <button style={navLink}       onClick={() => navigate("/import-csv")}>Import CSV</button>
+          <button style={navLink}       onClick={() => navigate("/tax-summary")}>Business Income & Expenses (Sch. C)</button>
+          <button style={navLink}       onClick={() => navigate("/schedule-e")}>Rental Properties (Sch. E)</button>
+          <button style={navLink}       onClick={() => navigate("/schedule-a")}>Deductions (Sch. A)</button>
+        </div>
         <div style={{ display: "flex", alignItems: "flex-end", gap: "16px" }}>
           <YearSelector variant="nav" />
+          <button style={navLink} onClick={() => navigate("/onboarding")}>Settings</button>
           <span style={{ fontSize: "14px", color: "#6b7280" }}>{user?.email}</span>
           <button
-            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
             onClick={() => signOut(auth).then(() => navigate("/login"))}
+            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
           >
             Sign Out
           </button>
         </div>
       </nav>
 
-      <div style={contentStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
-          <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827" }}>Transactions</h1>
-          <button
-            style={{ padding: "8px 16px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
-            onClick={() => navigate("/dashboard")}
-          >
-            ← Dashboard
-          </button>
-        </div>
+      <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "40px 24px" }}>
 
-        <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
-          {(["all", "needs_review", "categorized"] as FilterType[]).map((f) => (
-            <button key={f} style={filterBtnStyle(filter === f)} onClick={() => setFilter(f)}>
-              {f === "all" ? "All" : f === "needs_review" ? "Needs Review" : "Categorized"}
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "28px", flexWrap: "wrap", gap: "12px" }}>
+          <div>
+            <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
+              Transaction History
+            </h1>
+            <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
+              {loading ? "Loading…" : `${rows.length.toLocaleString()} transactions in ${selectedYear}`}
+            </p>
+          </div>
+          {stats.needsReview > 0 && (
+            <button
+              onClick={() => navigate("/review")}
+              style={{
+                padding: "10px 18px",
+                backgroundColor: "#fffbeb",
+                color: "#92400e",
+                border: "1px solid #fde68a",
+                borderRadius: "8px",
+                fontSize: "14px",
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ⚠ {stats.needsReview} need review →
             </button>
-          ))}
+          )}
         </div>
 
-        {loading && transactions.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#9ca3af", padding: "60px" }}>Loading transactions...</div>
-        ) : transactions.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#9ca3af", padding: "60px" }}>No transactions found.</div>
+        {/* Summary cards */}
+        {!loading && rows.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px", marginBottom: "28px" }}>
+            {[
+              { label: "Total Income",   value: fmtMoney(stats.income),   color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0" },
+              { label: "Total Expenses", value: fmtMoney(stats.expenses),  color: "#dc2626", bg: "#fef2f2", border: "#fecaca" },
+              { label: "Net",            value: fmtMoney(stats.net),       color: stats.net >= 0 ? "#15803d" : "#dc2626", bg: "#fff", border: "#e5e7eb" },
+            ].map((card) => (
+              <div key={card.label} style={{
+                backgroundColor: card.bg,
+                border: `1px solid ${card.border}`,
+                borderRadius: "12px",
+                padding: "20px 24px",
+              }}>
+                <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "6px" }}>
+                  {card.label}
+                </div>
+                <div style={{ fontSize: "24px", fontWeight: 800, color: card.color, fontVariantNumeric: "tabular-nums" }}>
+                  {card.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Filters row */}
+        {!loading && rows.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center", marginBottom: "16px" }}>
+
+            {/* Type filter */}
+            <div style={{ display: "flex", gap: "6px" }}>
+              {([
+                { key: "all",      label: "All" },
+                { key: "income",   label: "Income" },
+                { key: "expense",  label: "Expenses" },
+                { key: "transfer", label: "Transfers" },
+              ] as const).map(({ key, label }) => (
+                <button key={key} style={pillBtn(typeFilter === key)} onClick={() => setTypeFilter(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ width: "1px", height: "24px", backgroundColor: "#e5e7eb" }} />
+
+            {/* Status filter */}
+            <div style={{ display: "flex", gap: "6px" }}>
+              {([
+                { key: "all",         label: "All statuses" },
+                { key: "categorized", label: "Confirmed" },
+                { key: "needs_review",label: "Needs Review" },
+              ] as const).map(({ key, label }) => (
+                <button key={key} style={pillBtn(statusFilter === key)} onClick={() => setStatusFilter(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Account filter */}
+            {accountOptions.length > 0 && (
+              <>
+                <div style={{ width: "1px", height: "24px", backgroundColor: "#e5e7eb" }} />
+                <select
+                  value={accountFilter}
+                  onChange={(e) => setAccountFilter(e.target.value)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "8px",
+                    border: "1px solid #e5e7eb",
+                    backgroundColor: "#fff",
+                    fontSize: "13px",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontFamily: font,
+                    outline: "none",
+                  }}
+                >
+                  <option value="all">All Accounts</option>
+                  {accountOptions.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {/* Search */}
+            <div style={{ flex: 1, minWidth: "180px" }}>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by description or category…"
+                style={{
+                  width: "100%",
+                  padding: "7px 12px",
+                  borderRadius: "8px",
+                  border: "1px solid #e5e7eb",
+                  fontSize: "13px",
+                  fontFamily: font,
+                  outline: "none",
+                  color: "#111827",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Result count */}
+        {!loading && rows.length > 0 && (
+          <div style={{ fontSize: "12px", color: "#9ca3af", marginBottom: "8px" }}>
+            {filtered.length === rows.length
+              ? `${rows.length.toLocaleString()} transactions`
+              : `${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} transactions`}
+          </div>
+        )}
+
+        {/* Table */}
+        {loading ? (
+          <div style={{ padding: "60px 24px", textAlign: "center", color: "#9ca3af", fontSize: "14px", backgroundColor: "#fff", borderRadius: "12px" }}>
+            Loading your transaction history…
+          </div>
+        ) : rows.length === 0 ? (
+          <div style={{ padding: "64px 24px", textAlign: "center", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)" }}>
+            <div style={{ fontSize: "40px", marginBottom: "12px" }}>📂</div>
+            <div style={{ fontWeight: 700, color: "#111827", fontSize: "16px", marginBottom: "6px" }}>No transactions yet</div>
+            <div style={{ fontSize: "14px", color: "#6b7280", marginBottom: "20px" }}>Import a CSV file to get started.</div>
+            <button
+              onClick={() => navigate("/import-csv")}
+              style={{ padding: "10px 20px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+            >
+              Import CSV
+            </button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: "48px 24px", textAlign: "center", backgroundColor: "#fff", borderRadius: "12px", color: "#6b7280", fontSize: "14px" }}>
+            No transactions match your filters.{" "}
+            <button
+              onClick={() => { setTypeFilter("all"); setStatusFilter("all"); setAccountFilter("all"); setSearch(""); }}
+              style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, cursor: "pointer", fontFamily: font, fontSize: "14px" }}
+            >
+              Clear filters
+            </button>
+          </div>
         ) : (
-          <>
-            <table style={tableStyle}>
+          <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "800px" }}>
               <thead>
                 <tr>
-                  <th style={thStyle}>Date</th>
-                  <th style={thStyle}>Description</th>
-                  <th style={thStyle}>Merchant</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Amount</th>
-                  <th style={thStyle}>Category</th>
-                  <th style={thStyle}>Status</th>
+                  {sortableTH("date",        "Date",        { width: "80px" })}
+                  {sortableTH("description", "Description")}
+                  {sortableTH("amount",      "Amount",      { textAlign: "right" })}
+                  <th style={{ ...TH, width: "80px" }}>Type</th>
+                  {sortableTH("category",    "Category")}
+                  <th style={{ ...TH }}>Entity</th>
+                  <th style={{ ...TH, width: "110px" }}>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((t) => (
-                  <tr key={t.id}>
-                    <td style={tdStyle}>{t.date}</td>
-                    <td style={{ ...tdStyle, maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {t.description}
+                {filtered.map((row, idx) => (
+                  <tr
+                    key={row.id}
+                    style={{ backgroundColor: idx % 2 === 0 ? "#fff" : "#fafafa" }}
+                  >
+                    {/* Date */}
+                    <td style={{ ...TD, color: "#9ca3af", whiteSpace: "nowrap", fontSize: "12px" }}>
+                      {fmtDate(row.date)}
                     </td>
-                    <td style={tdStyle}>{t.merchantName}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: t.amount < 0 ? "#059669" : "#111827" }}>
-                      {t.amount < 0 ? "+" : ""}${Math.abs(t.amount).toFixed(2)}
+
+                    {/* Description */}
+                    <td style={{ ...TD, maxWidth: "300px" }}>
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#111827", fontWeight: 500 }} title={row.description}>
+                        {row.description || "—"}
+                      </div>
                     </td>
-                    <td style={tdStyle}>
-                      <select
-                        value={t.category || ""}
-                        onChange={(e) => handleCategoryChange(t.id, e.target.value)}
-                        disabled={updating === t.id}
-                        style={{
-                          padding: "6px 10px",
-                          border: "1px solid #d1d5db",
-                          borderRadius: "6px",
-                          fontSize: "13px",
-                          color: "#374151",
-                          backgroundColor: "#fff",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <option value="">Select...</option>
-                        {TAX_CATEGORIES.map((c) => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
+
+                    {/* Amount */}
+                    <td style={{
+                      ...TD,
+                      textAlign: "right",
+                      fontVariantNumeric: "tabular-nums",
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                      color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#9ca3af" : "#dc2626",
+                    }}>
+                      {row.type === "income" ? "+" : row.type === "expense" ? "−" : ""}
+                      {fmtMoney(row.amount)}
                     </td>
-                    <td style={tdStyle}>
-                      <span style={badgeStyle(t.status)}>
-                        {t.status === "categorized" ? "Categorized" : "Needs Review"}
+
+                    {/* Type */}
+                    <td style={TD}>
+                      <span style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        backgroundColor: row.type === "income" ? "#f0fdf4" : row.type === "transfer" ? "#f3f4f6" : "#fef2f2",
+                        color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#6b7280" : "#dc2626",
+                      }}>
+                        {row.type}
                       </span>
+                    </td>
+
+                    {/* Category */}
+                    <td style={{ ...TD, color: row.category ? "#374151" : "#d1d5db", fontStyle: row.category ? "normal" : "italic" }}>
+                      {row.category ?? "Uncategorized"}
+                    </td>
+
+                    {/* Entity */}
+                    <td style={{ ...TD, color: row.entityName ? "#374151" : "#d1d5db", fontSize: "12px" }}>
+                      {row.entityName ?? "Personal"}
+                    </td>
+
+                    {/* Status */}
+                    <td style={TD}>
+                      <StatusBadge status={row.status} />
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-
-            {hasMore && (
-              <div style={{ textAlign: "center", marginTop: "24px" }}>
-                <button
-                  style={{ padding: "10px 28px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer" }}
-                  onClick={() => loadTransactions(false)}
-                  disabled={loading}
-                >
-                  {loading ? "Loading..." : "Load More"}
-                </button>
-              </div>
-            )}
-          </>
+          </div>
         )}
       </div>
     </div>

@@ -292,7 +292,7 @@ export default function DashboardPage() {
             DIYTax AI
           </div>
           <button style={navLinkActive}>Dashboard</button>
-          <button style={navLink} onClick={() => navigate("/transactions")}>Transactions</button>
+          <button style={navLink} onClick={() => navigate("/transactions")}>Transaction History</button>
           <button style={navLink} onClick={() => navigate("/review")}>Review</button>
           <button style={navLink} onClick={() => navigate("/budget")}>Budget</button>
           <button style={navLink} onClick={() => navigate("/import-csv")}>Import CSV</button>
