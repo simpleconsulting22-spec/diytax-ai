@@ -438,7 +438,7 @@ export function useReviewTransactions() {
         : ids;
     if (targetIds.length === 0) return;
 
-    const CHUNK = 150;
+    const CHUNK = 40;
     const total = targetIds.length;
     let processed = 0;
 

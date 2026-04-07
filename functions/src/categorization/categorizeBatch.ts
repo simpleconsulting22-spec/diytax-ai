@@ -1,9 +1,13 @@
 import { onCall } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { requireAuth } from "../middleware/auth";
-import { categorizeTransaction } from "../services/categorizationService";
-
-const BATCH_SIZE = 150;
+import {
+  categorizeTransactionsBatch,
+  loadUserRules,
+  loadUserEntities,
+  TransactionInput,
+  CategorizationResult,
+} from "../services/categorizationService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,62 +18,37 @@ export interface BatchResult {
   skipped: number;
 }
 
-// ─── Entity name → ID resolver ────────────────────────────────────────────────
-
-async function loadEntityMap(
-  userId: string
-): Promise<Map<string, { id: string; name: string; type: string }>> {
-  const db = admin.firestore();
-  const snap = await db.collection("entities").where("userId", "==", userId).get();
-  const map = new Map<string, { id: string; name: string; type: string }>();
-  snap.docs.forEach((d) => {
-    map.set(d.data().name as string, {
-      id: d.id,
-      name: d.data().name as string,
-      type: d.data().type as string,
-    });
-  });
-  return map;
-}
-
 // ─── Core batch logic ─────────────────────────────────────────────────────────
 
-/**
- * Shared per-document categorization logic used by both "all" and "selected" batch flows.
- */
-async function categorizeSingleDoc(
-  docSnap: admin.firestore.QueryDocumentSnapshot | admin.firestore.DocumentSnapshot,
-  userId: string,
+interface TxnDoc {
+  uid: string;
+  description: string;
+  normalizedDescription?: string;
+  vendor?: string;
+  amount: number;
+  type: string;
+  category?: string | null;
+  isUserModified?: boolean;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: string;
+}
+
+async function applyResultToDoc(
+  docId: string,
+  txn: TxnDoc,
+  result: CategorizationResult,
   entityMap: Map<string, { id: string; name: string; type: string }>,
-  counters: { total: number; ruleMatched: number; aiMatched: number; skipped: number }
+  counters: BatchResult
 ): Promise<void> {
   const db = admin.firestore();
-  counters.total++;
-  const txn = docSnap.data();
-  if (!txn) { counters.skipped++; return; }
-
-  if (txn.isUserModified === true) { counters.skipped++; return; }
-  if (txn.category !== null && txn.category !== undefined && String(txn.category).trim() !== "") {
-    counters.skipped++; return;
-  }
-
-  const result = await categorizeTransaction(userId, {
-    description:           (txn.description as string) ?? "",
-    normalizedDescription: txn.normalizedDescription as string | undefined,
-    vendor:                (txn.vendor as string) ?? "",
-    amount:                (txn.amount as number) ?? 0,
-    type:                  (txn.type as string) ?? "expense",
-  });
-
-  if (!result.category) { counters.skipped++; return; }
 
   if (result.source === "rule" || result.source === "user_rule") {
     counters.ruleMatched++;
-  } else {
+  } else if (result.source === "ai") {
     counters.aiMatched++;
   }
 
-  // If AI flagged this as a transfer, treat it as one
   const isAITransfer = result.aiType === "transfer";
   const newStatus = isAITransfer
     ? "transfer"
@@ -84,21 +63,18 @@ async function categorizeSingleDoc(
     categorizationExplanation: result.categorizationExplanation,
     categorizedAt:             admin.firestore.FieldValue.serverTimestamp(),
     status:                    newStatus,
-    // AI flags (Task 2E)
     ...(result.source === "ai" ? { aiSuggested: true, aiSource: "ai" } : {}),
     ...(isAITransfer ? { type: "transfer" } : {}),
   };
 
-  // Entity assignment — priority: user rule entity > AI assignment by name > category frequency
+  // Entity assignment — only if not already user-set
   if (!txn.entityId) {
     if (result.entityId) {
-      // From user rule
       update.entityId          = result.entityId;
       update.entityName        = result.entityName ?? null;
       update.entityType        = result.entityType ?? "business";
       update.entityAutoAssigned = true;
     } else if (result.aiAssignment && result.aiAssignment !== "Personal") {
-      // From AI — resolve entity name to ID
       const entity = entityMap.get(result.aiAssignment);
       if (entity) {
         update.entityId          = entity.id;
@@ -109,105 +85,165 @@ async function categorizeSingleDoc(
     }
   }
 
-  await db.collection("transactions").doc(docSnap.id).update(update);
+  await db.collection("transactions").doc(docId).update(update);
 }
 
-/**
- * Queries all uncategorized needs_review transactions for a user and
- * categorizes them, writing results back to Firestore.
- *
- * Safety guarantees:
- *  - Skips transactions where isUserModified === true
- *  - Skips transactions that already have a non-empty category
- *  - Does NOT overwrite an existing entityId if the user already set one
- */
+// ─── Categorize all uncategorized transactions for a user ─────────────────────
+
 export async function categorizeUserTransactions(userId: string): Promise<BatchResult> {
   const db = admin.firestore();
+  const counters: BatchResult = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
 
-  const [snap, entityMap] = await Promise.all([
+  const [snap, userRules, entities] = await Promise.all([
     db.collection("transactions")
       .where("uid", "==", userId)
       .where("category", "==", null)
       .where("status", "==", "needs_review")
       .get(),
-    loadEntityMap(userId),
+    loadUserRules(userId),
+    loadUserEntities(userId),
   ]);
 
-  const docs = snap.docs;
-  const counters = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
-
-  for (let i = 0; i < docs.length; i += BATCH_SIZE) {
-    const chunk = docs.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      chunk.map((docSnap) => categorizeSingleDoc(docSnap, userId, entityMap, counters))
-    );
-    results.forEach((r, idx) => {
-      if (r.status === "rejected") {
-        console.error(`[CategorizeBatch] Failed doc ${chunk[idx]?.id ?? "?"}:`, r.reason);
-      }
+  // Build entity name→id map for assignment
+  const entityIdSnap = await db.collection("entities").where("userId", "==", userId).get();
+  const entityMap = new Map<string, { id: string; name: string; type: string }>();
+  entityIdSnap.docs.forEach((d) => {
+    entityMap.set(d.data().name as string, {
+      id: d.id,
+      name: d.data().name as string,
+      type: d.data().type as string,
     });
+  });
+
+  const docs = snap.docs;
+  counters.total = docs.length;
+
+  // Build input array, skip user-modified
+  const toProcess: Array<{ idx: number; docId: string; txn: TxnDoc }> = [];
+  for (let i = 0; i < docs.length; i++) {
+    const txn = docs[i].data() as TxnDoc;
+    if (txn.isUserModified === true) { counters.skipped++; continue; }
+    toProcess.push({ idx: i, docId: docs[i].id, txn });
   }
 
-  console.log(
-    `[CategorizeBatch] uid=${userId} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`
-  );
+  // Batch categorize
+  const inputs = toProcess.map(({ idx, txn }) => ({
+    idx,
+    txn: {
+      description:           txn.description ?? "",
+      normalizedDescription: txn.normalizedDescription,
+      vendor:                txn.vendor ?? "",
+      amount:                txn.amount ?? 0,
+      type:                  txn.type ?? "expense",
+    } as TransactionInput,
+  }));
 
+  const results = await categorizeTransactionsBatch(inputs, userRules, entities);
+
+  // Write results back
+  const writes = toProcess.map(({ idx, docId, txn }) => {
+    const result = results.get(idx);
+    if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
+    return applyResultToDoc(docId, txn, result, entityMap, counters);
+  });
+
+  await Promise.allSettled(writes);
+
+  console.log(`[CategorizeBatch] uid=${userId} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
   return counters;
 }
 
-/**
- * Categorize a specific list of transaction IDs (used for "categorize selected" and
- * client-side batching with progress tracking).
- */
+// ─── Categorize a specific list of transaction IDs ────────────────────────────
+
 export async function categorizeSpecificTransactions(
   userId: string,
   transactionIds: string[]
 ): Promise<BatchResult> {
   const db = admin.firestore();
-  const entityMap = await loadEntityMap(userId);
-  const counters = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
+  const counters: BatchResult = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
 
-  for (let i = 0; i < transactionIds.length; i += BATCH_SIZE) {
-    const chunk = transactionIds.slice(i, i + BATCH_SIZE);
-    const results = await Promise.allSettled(
-      chunk.map(async (docId) => {
-        const docSnap = await db.collection("transactions").doc(docId).get();
-        // Security: skip docs that don't belong to this user
-        if (!docSnap.exists || (docSnap.data()?.uid as string) !== userId) {
-          counters.skipped++; return;
-        }
-        await categorizeSingleDoc(docSnap, userId, entityMap, counters);
-      })
-    );
-    results.forEach((r, idx) => {
-      if (r.status === "rejected") {
-        console.error(`[CategorizeSelected] Failed doc ${chunk[idx] ?? "?"}:`, r.reason);
-      }
+  // Load context ONCE for the whole batch
+  const [userRules, entities] = await Promise.all([
+    loadUserRules(userId),
+    loadUserEntities(userId),
+  ]);
+
+  // Build entity name→id map
+  const entityIdSnap = await db.collection("entities").where("userId", "==", userId).get();
+  const entityMap = new Map<string, { id: string; name: string; type: string }>();
+  entityIdSnap.docs.forEach((d) => {
+    entityMap.set(d.data().name as string, {
+      id: d.id,
+      name: d.data().name as string,
+      type: d.data().type as string,
     });
+  });
+
+  // Fetch all transaction docs in parallel
+  const docSnaps = await Promise.all(
+    transactionIds.map((id) => db.collection("transactions").doc(id).get())
+  );
+
+  const toProcess: Array<{ idx: number; docId: string; txn: TxnDoc }> = [];
+
+  for (let i = 0; i < docSnaps.length; i++) {
+    counters.total++;
+    const snap = docSnaps[i];
+    if (!snap.exists) { counters.skipped++; continue; }
+    const txn = snap.data() as TxnDoc;
+    // Security: verify ownership
+    if (txn.uid !== userId) { counters.skipped++; continue; }
+    // Respect explicit user edits
+    if (txn.isUserModified === true) { counters.skipped++; continue; }
+    toProcess.push({ idx: i, docId: snap.id, txn });
   }
 
+  // Batch categorize all at once (keyword → user rule → AI in groups of 10)
+  const inputs = toProcess.map(({ idx, txn }) => ({
+    idx,
+    txn: {
+      description:           txn.description ?? "",
+      normalizedDescription: txn.normalizedDescription,
+      vendor:                txn.vendor ?? "",
+      amount:                txn.amount ?? 0,
+      type:                  txn.type ?? "expense",
+    } as TransactionInput,
+  }));
+
+  const results = await categorizeTransactionsBatch(inputs, userRules, entities);
+
+  // Write results back
+  const writes = toProcess.map(({ idx, docId, txn }) => {
+    const result = results.get(idx);
+    if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
+    return applyResultToDoc(docId, txn, result, entityMap, counters);
+  });
+
+  await Promise.allSettled(writes);
+
+  console.log(`[CategorizeSelected] uid=${userId} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
   return counters;
 }
 
 // ─── Cloud Functions ──────────────────────────────────────────────────────────
 
-export const categorizeBatch = onCall({ cors: true, invoker: "public" }, async (request) => {
-  const uid = await requireAuth(request);
-  return categorizeUserTransactions(uid);
-});
-
-/**
- * Categorize a specific list of transaction IDs.
- * Used by the frontend for "Auto Categorize Selected" and progress-tracked "Auto Categorize All"
- * (frontend splits IDs into chunks of ~150 and calls this per chunk).
- */
-export const categorizeSelected = onCall({ cors: true, invoker: "public" }, async (request) => {
-  const uid = await requireAuth(request);
-  const { transactionIds } = request.data as { transactionIds?: string[] };
-  if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
-    return { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
+export const categorizeBatch = onCall(
+  { cors: true, invoker: "public", timeoutSeconds: 540 },
+  async (request) => {
+    const uid = await requireAuth(request);
+    return categorizeUserTransactions(uid);
   }
-  // Cap at 200 per call to stay within function timeout
-  const safeIds = transactionIds.slice(0, 200);
-  return categorizeSpecificTransactions(uid, safeIds);
-});
+);
+
+export const categorizeSelected = onCall(
+  { cors: true, invoker: "public", timeoutSeconds: 540 },
+  async (request) => {
+    const uid = await requireAuth(request);
+    const { transactionIds } = request.data as { transactionIds?: string[] };
+    if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
+      return { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
+    }
+    const safeIds = transactionIds.slice(0, 200);
+    return categorizeSpecificTransactions(uid, safeIds);
+  }
+);
