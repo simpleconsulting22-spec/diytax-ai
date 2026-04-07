@@ -8,7 +8,7 @@ import { useTaxYear, matchesTaxYear } from "../../contexts/TaxYearContext";
 
 interface TxnRecord {
   amount: number;
-  type: "income" | "expense";
+  type: "income" | "expense" | "refund";
   category: string | null;
   taxCategory: string | null;
   taxSchedule: string | null;
@@ -103,14 +103,19 @@ function aggregate(txns: TxnRecord[]): DashboardData {
     if (txn.status !== "transfer") {
       if (txn.type === "income") {
         ytdIncome += txn.amount > 0 ? txn.amount : Math.abs(txn.amount);
+      } else if (txn.type === "refund") {
+        ytdExpenses -= absAmount; // refund reduces total expenses
       } else {
-        ytdExpenses += Math.abs(txn.amount);
+        ytdExpenses += absAmount;
       }
     }
 
     // Category totals — expense transactions with a known category
     if (txn.type === "expense" && txn.category) {
       categoryMap.set(txn.category, (categoryMap.get(txn.category) ?? 0) + absAmount);
+    }
+    if (txn.type === "refund" && txn.category) {
+      categoryMap.set(txn.category, (categoryMap.get(txn.category) ?? 0) - absAmount);
     }
 
     // Schedule C — income and expense breakdown

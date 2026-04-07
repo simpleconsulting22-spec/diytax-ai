@@ -5,13 +5,14 @@ import InlineCategoryEditor from "./InlineCategoryEditor";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-type ReviewType = "income" | "expense" | "transfer";
+type ReviewType = "income" | "expense" | "transfer" | "refund";
 type ReviewSubType = "credit_card_payment" | "loan_payment" | null;
 
 // All selectable options including transfer subtypes
 const TYPE_OPTIONS: Array<{ type: ReviewType; subType: ReviewSubType; label: string }> = [
   { type: "income",   subType: null,           label: "income" },
   { type: "expense",  subType: null,           label: "expense" },
+  { type: "refund",   subType: null,           label: "refund" },
   { type: "transfer", subType: null,           label: "transfer" },
   { type: "transfer", subType: "credit_card_payment", label: "credit card payment" },
   { type: "transfer", subType: "loan_payment", label: "loan payment" },
@@ -21,6 +22,7 @@ function typeBadgeStyle(type: ReviewType): React.CSSProperties {
   switch (type) {
     case "transfer": return { backgroundColor: "#f3f4f6", color: "#6b7280" };
     case "expense":  return { backgroundColor: "#fef2f2", color: "#dc2626" };
+    case "refund":   return { backgroundColor: "#f5f3ff", color: "#7c3aed" };
     default:         return { backgroundColor: "#f0fdf4", color: "#16A34A" };
   }
 }
@@ -259,7 +261,7 @@ interface ReviewTableProps {
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) => void;
-  onTypeChange: (id: string, type: "income" | "expense" | "transfer", subType?: "credit_card_payment" | "loan_payment" | null) => void;
+  onTypeChange: (id: string, type: "income" | "expense" | "transfer" | "refund", subType?: "credit_card_payment" | "loan_payment" | null) => void;
   onConfirm: (id: string) => void;
   onCustomCategoryAdded: (category: string) => void;
 }
@@ -475,7 +477,7 @@ export default function ReviewTable({
                   fontVariantNumeric: "tabular-nums",
                   fontWeight: 600,
                   whiteSpace: "nowrap",
-                  color: txn.type === "expense" ? "#dc2626" : txn.type === "transfer" ? "#9ca3af" : "#16A34A",
+                  color: txn.type === "expense" ? "#dc2626" : txn.type === "transfer" ? "#9ca3af" : txn.type === "refund" ? "#7c3aed" : "#16A34A",
                 }}>
                   {txn.type === "expense" ? "−" : txn.type === "transfer" ? "" : "+"}$
                   {Math.abs(txn.amount ?? 0).toFixed(2)}
@@ -484,7 +486,7 @@ export default function ReviewTable({
                 {/* Type — clickable badge */}
                 <td style={TD}>
                   <TypeBadge
-                    type={txn.type as "income" | "expense" | "transfer"}
+                    type={txn.type as "income" | "expense" | "transfer" | "refund"}
                     subType={txn.subType ?? null}
                     id={txn.id}
                     disabled={isUpdating}

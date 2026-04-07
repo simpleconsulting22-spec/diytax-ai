@@ -80,7 +80,7 @@ function formatLineNumber(key: string): string {
 interface RawTxn {
   entityId?: string | null;
   entityName?: string;
-  type: "income" | "expense";
+  type: "income" | "expense" | "refund";
   amount: number;
   category: string | null;
   taxYear?: number | null;
@@ -107,6 +107,9 @@ function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
 
     if (txn.type === "income") {
       entry.income += absAmount;
+    } else if (txn.type === "refund" && txn.category) {
+      const lineKey = CATEGORY_TO_LINE_E[txn.category] ?? "line19";
+      entry.lineAmounts.set(lineKey, (entry.lineAmounts.get(lineKey) ?? 0) - absAmount);
     } else if (txn.category) {
       const lineKey = CATEGORY_TO_LINE_E[txn.category] ?? "line19";
       entry.lineAmounts.set(lineKey, (entry.lineAmounts.get(lineKey) ?? 0) + absAmount);

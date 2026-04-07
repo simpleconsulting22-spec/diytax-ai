@@ -27,7 +27,7 @@ export interface ReviewTransaction {
   normalizedDescription: string;
   vendor: string | null;
   amount: number;
-  type: "income" | "expense" | "transfer";
+  type: "income" | "expense" | "transfer" | "refund";
   accountId: string | null;
   accountName: string | null;
   subType: "credit_card_payment" | "loan_payment" | null;
@@ -505,7 +505,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
   async function handleTypeChange(
     id: string,
-    newType: "income" | "expense" | "transfer",
+    newType: "income" | "expense" | "transfer" | "refund",
     newSubType?: "credit_card_payment" | "loan_payment" | null
   ) {
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
