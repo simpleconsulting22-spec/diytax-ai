@@ -1,58 +1,223 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    //
+    // Shared-access model:
+    //   users/{ownerUid}.sharedUids  = string[]  — flat uid list for hasAny check
+    //   users/{ownerUid}.sharedRoles = map        — { [uid]: "spouse"|"accountant" }
+    //
+    // Both fields are maintained by the acceptInvite Cloud Function.
+
+    function ownerDoc(ownerUid) {
+      return get(/databases/$(database)/documents/users/$(ownerUid));
+    }
+
+    function isOwner(ownerUid) {
+      return request.auth != null && request.auth.uid == ownerUid;
+    }
+
+    function isSharedUser(ownerUid) {
+      let od = ownerDoc(ownerUid);
+      return request.auth != null
+          && od.data.sharedUids != null
+          && od.data.sharedUids.hasAny([request.auth.uid]);
+    }
+
+    function sharedRole(ownerUid) {
+      let od = ownerDoc(ownerUid);
+      return od.data.sharedRoles != null
+           ? od.data.sharedRoles[request.auth.uid]
+           : null;
+    }
+
+    // Any owner or shared user may read.
+    function canRead(ownerUid) {
+      return isOwner(ownerUid) || isSharedUser(ownerUid);
+    }
+
+    // Fields an accountant is allowed to change on an existing transaction.
+    function accountantTxnKeys() {
+      return [
+        'category', 'taxCategory', 'taxSchedule',
+        'entityId', 'entityName', 'entityType',
+        'notes',
+        'categorizationSource', 'categorizationConfidence', 'categorizationExplanation',
+        'isUserModified', 'aiSuggested', 'aiSource',
+        'updatedBy', 'updatedByRole', 'updatedAt'
+      ];
+    }
+
+    // Owners and spouses: full write.
+    // Accountants: only the fields listed above.
+    function canUpdateTransaction(ownerUid) {
+      return isOwner(ownerUid)
+          || (isSharedUser(ownerUid) && sharedRole(ownerUid) == 'spouse')
+          || (isSharedUser(ownerUid) && sharedRole(ownerUid) == 'accountant'
+              && request.resource.data.diff(resource.data).affectedKeys()
+                   .hasOnly(accountantTxnKeys()));
+    }
+
+    // Generic write helper for non-transaction collections (no field restrictions).
+    function canWrite(ownerUid) {
+      return isOwner(ownerUid)
+          || (isSharedUser(ownerUid) && sharedRole(ownerUid) == 'spouse');
+    }
+
+    // Only owners may delete or run destructive ops.
+    function canDelete(ownerUid) {
+      return isOwner(ownerUid);
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────────
+    // Each user can only read/write their own doc.
+    // Cloud Functions (admin SDK) write sharedAccess/sharedUids/sharedRoles
+    // and ownerUid/role when invites are accepted — no client rule needed.
+
     match /users/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
-    match /taxProfiles/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
-    }
-    match /accounts/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
-    }
+
+    // ── Transactions ──────────────────────────────────────────────────────────
+
     match /transactions/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow read:   if canRead(resource.data.uid);
+      allow update: if canUpdateTransaction(resource.data.uid);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.uid
+                        || (isSharedUser(request.resource.data.uid)
+                            && sharedRole(request.resource.data.uid) == 'spouse'));
+      allow delete: if canDelete(resource.data.uid);
     }
+
+    // ── Accounts ──────────────────────────────────────────────────────────────
+
+    match /accounts/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow update: if canWrite(resource.data.uid);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.uid
+                        || (isSharedUser(request.resource.data.uid)
+                            && sharedRole(request.resource.data.uid) == 'spouse'));
+      allow delete: if canDelete(resource.data.uid);
+    }
+
+    // ── Category Rules ────────────────────────────────────────────────────────
+    // Accountants can create rules (they edit categories/assignments).
+
     match /categoryRules/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow read:   if canRead(resource.data.uid);
+      allow create: if request.auth != null && isSharedUser(request.resource.data.uid)
+                    || request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow update: if canWrite(resource.data.uid);
+      allow delete: if canDelete(resource.data.uid);
     }
-    match /taxSessions/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
-    }
-    match /userProfiles/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-    }
+
+    // ── Entities ──────────────────────────────────────────────────────────────
+    // Accountants cannot create or delete entities.
+
     match /entities/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.userId
+                        || (isSharedUser(request.resource.data.userId)
+                            && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete: if canDelete(resource.data.userId);
     }
-    match /imports/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-    }
-    match /budgets/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-    }
-    match /deductions/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-    }
-    // Structured category metadata — one document per user-defined category.
-    // System (predefined) categories are not stored here; only custom ones are.
-    match /categories/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.uid;
+
+    // ── Tax Profiles ──────────────────────────────────────────────────────────
+
+    match /taxProfiles/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow update: if canWrite(resource.data.uid);
       allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow delete: if canDelete(resource.data.uid);
     }
+
+    // ── Tax Sessions ──────────────────────────────────────────────────────────
+
+    match /taxSessions/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow update: if canWrite(resource.data.uid);
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow delete: if canDelete(resource.data.uid);
+    }
+
+    // ── User Profiles ─────────────────────────────────────────────────────────
+
+    match /userProfiles/{doc} {
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow delete: if canDelete(resource.data.userId);
+    }
+
+    // ── Budgets ───────────────────────────────────────────────────────────────
+
+    match /budgets/{doc} {
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.userId
+                        || (isSharedUser(request.resource.data.userId)
+                            && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete: if canDelete(resource.data.userId);
+    }
+
+    // ── Deductions ────────────────────────────────────────────────────────────
+
+    match /deductions/{doc} {
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.userId
+                        || (isSharedUser(request.resource.data.userId)
+                            && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete: if canDelete(resource.data.userId);
+    }
+
+    // ── Imports ───────────────────────────────────────────────────────────────
+    // Accountants cannot import data.
+
+    match /imports/{doc} {
+      allow read:          if canRead(resource.data.userId);
+      allow create, update: if request.auth != null
+                            && (request.auth.uid == request.resource.data.userId
+                                || (isSharedUser(request.resource.data.userId)
+                                    && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete:        if canDelete(resource.data.userId);
+    }
+
+    // ── Custom Categories ─────────────────────────────────────────────────────
+    // Accountants can add categories (needed when saving edits).
+
+    match /categories/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow create: if request.auth != null && isSharedUser(request.resource.data.uid)
+                    || request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow update: if canWrite(resource.data.uid);
+      allow delete: if canDelete(resource.data.uid);
+    }
+
+    // ── Invites ───────────────────────────────────────────────────────────────
+    // Written by Cloud Functions (admin SDK) only.
+    // Invited users may read their own invite to display invite details.
+
+    match /invites/{doc} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.ownerUid
+                      || request.auth.token.email == resource.data.email);
+      allow write: if false;
+    }
+
+    // ── Blocked ───────────────────────────────────────────────────────────────
+
     match /userSecurity/{uid} {
       allow read, write: if false;
     }
+
     match /mail/{doc} {
       allow read, write: if false;
     }

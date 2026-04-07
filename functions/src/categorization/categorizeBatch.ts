@@ -1,6 +1,6 @@
 import { onCall } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import { requireAuth } from "../middleware/auth";
+import { resolveEffectiveOwner } from "../middleware/auth";
 import {
   categorizeTransactionsBatch,
   loadUserRules,
@@ -39,7 +39,9 @@ async function applyResultToDoc(
   txn: TxnDoc,
   result: CategorizationResult,
   entityMap: Map<string, { id: string; name: string; type: string }>,
-  counters: BatchResult
+  counters: BatchResult,
+  callerUid: string,
+  callerRole: string
 ): Promise<void> {
   const db = admin.firestore();
 
@@ -63,6 +65,10 @@ async function applyResultToDoc(
     categorizationExplanation: result.categorizationExplanation,
     categorizedAt:             admin.firestore.FieldValue.serverTimestamp(),
     status:                    newStatus,
+    // Audit fields — updatedBy is the logged-in user (not ownerUid)
+    updatedBy:                 callerUid,
+    updatedByRole:             callerRole,
+    updatedAt:                 admin.firestore.FieldValue.serverTimestamp(),
     ...(result.source === "ai" ? { aiSuggested: true, aiSource: "ai" } : {}),
     ...(isAITransfer ? { type: "transfer" } : {}),
   };
@@ -92,7 +98,11 @@ async function applyResultToDoc(
 
 // ─── Categorize all uncategorized transactions for a user ─────────────────────
 
-export async function categorizeUserTransactions(userId: string): Promise<BatchResult> {
+export async function categorizeUserTransactions(
+  userId: string,
+  callerUid: string,
+  callerRole: string
+): Promise<BatchResult> {
   const db = admin.firestore();
   const counters: BatchResult = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
 
@@ -146,12 +156,12 @@ export async function categorizeUserTransactions(userId: string): Promise<BatchR
   const writes = toProcess.map(({ idx, docId, txn }) => {
     const result = results.get(idx);
     if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
-    return applyResultToDoc(docId, txn, result, entityMap, counters);
+    return applyResultToDoc(docId, txn, result, entityMap, counters, callerUid, callerRole);
   });
 
   await Promise.allSettled(writes);
 
-  console.log(`[CategorizeBatch] uid=${userId} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
+  console.log(`[CategorizeBatch] uid=${userId} caller=${callerUid} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
   return counters;
 }
 
@@ -159,7 +169,9 @@ export async function categorizeUserTransactions(userId: string): Promise<BatchR
 
 export async function categorizeSpecificTransactions(
   userId: string,
-  transactionIds: string[]
+  transactionIds: string[],
+  callerUid: string,
+  callerRole: string
 ): Promise<BatchResult> {
   const db = admin.firestore();
   const counters: BatchResult = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
@@ -193,7 +205,7 @@ export async function categorizeSpecificTransactions(
     const snap = docSnaps[i];
     if (!snap.exists) { counters.skipped++; continue; }
     const txn = snap.data() as TxnDoc;
-    // Security: verify ownership
+    // Security: verify ownership (shared users operate on owner's transactions)
     if (txn.uid !== userId) { counters.skipped++; continue; }
     // Respect explicit user edits
     if (txn.isUserModified === true) { counters.skipped++; continue; }
@@ -218,12 +230,12 @@ export async function categorizeSpecificTransactions(
   const writes = toProcess.map(({ idx, docId, txn }) => {
     const result = results.get(idx);
     if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
-    return applyResultToDoc(docId, txn, result, entityMap, counters);
+    return applyResultToDoc(docId, txn, result, entityMap, counters, callerUid, callerRole);
   });
 
   await Promise.allSettled(writes);
 
-  console.log(`[CategorizeSelected] uid=${userId} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
+  console.log(`[CategorizeSelected] uid=${userId} caller=${callerUid} total=${counters.total} rule=${counters.ruleMatched} ai=${counters.aiMatched} skipped=${counters.skipped}`);
   return counters;
 }
 
@@ -232,20 +244,20 @@ export async function categorizeSpecificTransactions(
 export const categorizeBatch = onCall(
   { cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
-    const uid = await requireAuth(request);
-    return categorizeUserTransactions(uid);
+    const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
+    return categorizeUserTransactions(effectiveOwnerUid, callerUid, role);
   }
 );
 
 export const categorizeSelected = onCall(
   { cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
-    const uid = await requireAuth(request);
+    const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
     const { transactionIds } = request.data as { transactionIds?: string[] };
     if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
       return { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
     }
     const safeIds = transactionIds.slice(0, 200);
-    return categorizeSpecificTransactions(uid, safeIds);
+    return categorizeSpecificTransactions(effectiveOwnerUid, safeIds, callerUid, role);
   }
 );

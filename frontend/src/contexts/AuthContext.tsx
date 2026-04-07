@@ -38,6 +38,8 @@ function clearMfaSession() {
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
+export type UserRole = "owner" | "spouse" | "accountant";
+
 interface AuthContextValue {
   user: User | null;
   userDoc: DocumentData | null;
@@ -45,6 +47,14 @@ interface AuthContextValue {
   mfaVerified: boolean;
   setMfaVerified: (v: boolean) => void;
   refreshUserDoc: () => Promise<void>;
+  /** "owner" for normal users; "spouse" or "accountant" for shared users. */
+  role: UserRole;
+  /**
+   * The UID whose Firestore data should be read/written.
+   * - Owner:       same as user.uid
+   * - Shared user: the ownerUid stored in their users/{uid} doc
+   */
+  effectiveOwnerUid: string | null;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -54,13 +64,17 @@ const AuthContext = createContext<AuthContextValue>({
   mfaVerified: false,
   setMfaVerified: () => {},
   refreshUserDoc: async () => {},
+  role: "owner",
+  effectiveOwnerUid: null,
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser]         = useState<User | null>(null);
-  const [userDoc, setUserDoc]   = useState<DocumentData | null>(null);
-  const [loading, setLoading]   = useState(true);
-  const [mfaVerified, setMfaVerifiedState] = useState(false);
+  const [user, setUser]                       = useState<User | null>(null);
+  const [userDoc, setUserDoc]                 = useState<DocumentData | null>(null);
+  const [loading, setLoading]                 = useState(true);
+  const [mfaVerified, setMfaVerifiedState]    = useState(false);
+  const [role, setRole]                       = useState<UserRole>("owner");
+  const [effectiveOwnerUid, setEffectiveOwnerUid] = useState<string | null>(null);
 
   // Wrap setter so it also writes / clears the localStorage session.
   function setMfaVerified(v: boolean) {
@@ -75,7 +89,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function refreshUserDoc() {
     if (!user) return;
     const snap = await getDoc(doc(db, "users", user.uid));
-    setUserDoc(snap.exists() ? snap.data() : null);
+    const data = snap.exists() ? snap.data() : null;
+    setUserDoc(data);
+    // Re-resolve role and effective owner in case sharedAccess changed.
+    const ownerUid = data?.ownerUid as string | undefined;
+    setRole((data?.role as UserRole) ?? "owner");
+    setEffectiveOwnerUid(ownerUid ?? user.uid);
   }
 
   useEffect(() => {
@@ -88,11 +107,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setMfaVerifiedState(alreadyVerified);
 
         const snap = await getDoc(doc(db, "users", firebaseUser.uid));
-        setUserDoc(snap.exists() ? snap.data() : null);
+        const data = snap.exists() ? snap.data() : null;
+        setUserDoc(data);
+
+        // Resolve role + effectiveOwnerUid.
+        // Shared users (spouse/accountant) have ownerUid written to their user doc
+        // when they accept an invite. Owners have no ownerUid field.
+        const ownerUid = data?.ownerUid as string | undefined;
+        setRole((data?.role as UserRole) ?? "owner");
+        setEffectiveOwnerUid(ownerUid ?? firebaseUser.uid);
       } else {
         // User signed out — clear everything.
         setUserDoc(null);
         setMfaVerifiedState(false);
+        setRole("owner");
+        setEffectiveOwnerUid(null);
         clearMfaSession();
       }
 
@@ -102,7 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userDoc, loading, mfaVerified, setMfaVerified, refreshUserDoc }}>
+    <AuthContext.Provider value={{ user, userDoc, loading, mfaVerified, setMfaVerified, refreshUserDoc, role, effectiveOwnerUid }}>
       {children}
     </AuthContext.Provider>
   );

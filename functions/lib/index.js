@@ -48,4 +48,7 @@ __exportStar(require("./categorization/updateTransactionCategory"), exports);
 __exportStar(require("./categorization/categorizeBatch"), exports);
 __exportStar(require("./categorization/backfillTransactions"), exports);
 __exportStar(require("./tax/generateTaxSummary"), exports);
+__exportStar(require("./modules/categories/mergeCategories"), exports);
+__exportStar(require("./invite/sendInvite"), exports);
+__exportStar(require("./invite/acceptInvite"), exports);
 //# sourceMappingURL=index.js.map

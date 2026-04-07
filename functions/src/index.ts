@@ -13,3 +13,5 @@ export * from "./categorization/categorizeBatch";
 export * from "./categorization/backfillTransactions";
 export * from "./tax/generateTaxSummary";
 export * from "./modules/categories/mergeCategories";
+export * from "./invite/sendInvite";
+export * from "./invite/acceptInvite";

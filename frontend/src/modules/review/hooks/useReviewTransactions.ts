@@ -68,7 +68,7 @@ interface ReviewState {
 }
 
 export function useReviewTransactions(statusFilter: "needs_review" | "categorized" = "needs_review") {
-  const { user } = useAuth();
+  const { user, role, effectiveOwnerUid } = useAuth();
   const { selectedYear } = useTaxYear();
 
   const [state, setState] = useState<ReviewState>({
@@ -84,23 +84,23 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
   const loadTransactions = useCallback(async () => {
-    if (!user) return;
+    if (!user || !effectiveOwnerUid) return;
     setState((prev) => ({ ...prev, loading: true, error: "" }));
     try {
       const [snap, entities, accountSnap, customCategories] = await Promise.all([
         getDocs(
           query(
             collection(db, "transactions"),
-            where("uid", "==", user.uid),
+            where("uid", "==", effectiveOwnerUid),
             where("status", "==", statusFilter),
             orderBy("createdAt", "desc")
           )
         ),
-        getUserEntities(user.uid),
+        getUserEntities(effectiveOwnerUid),
         getDocs(
-          query(collection(db, "accounts"), where("uid", "==", user.uid))
+          query(collection(db, "accounts"), where("uid", "==", effectiveOwnerUid))
         ),
-        getCustomCategories(user.uid),
+        getCustomCategories(effectiveOwnerUid),
       ]);
 
       const accountMap = new Map<string, string>();
@@ -157,10 +157,12 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           const batch = writeBatch(db);
           for (const t of unassigned) {
             batch.update(doc(db, "transactions", t.id), {
-              entityId: singleBusiness.id,
-              entityType: "business",
-              entityName: singleBusiness.name,
-              updatedAt: serverTimestamp(),
+              entityId:      singleBusiness.id,
+              entityType:    "business",
+              entityName:    singleBusiness.name,
+              updatedBy:     user.uid,
+              updatedByRole: role,
+              updatedAt:     serverTimestamp(),
             });
             t.entityId = singleBusiness.id;
             t.entityType = "business";
@@ -184,7 +186,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         error: e instanceof Error ? e.message : "Failed to load transactions.",
       }));
     }
-  }, [user, selectedYear, statusFilter]);
+  }, [user, effectiveOwnerUid, selectedYear, statusFilter]);
 
   useEffect(() => {
     loadTransactions();
@@ -198,14 +200,16 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) {
-    if (!user) return;
+    if (!user || !effectiveOwnerUid) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       await updateDoc(doc(db, "transactions", id), {
         entityId,
         entityType,
         entityName: entityName ?? null,
-        updatedAt: serverTimestamp(),
+        updatedBy:     user.uid,
+        updatedByRole: role,
+        updatedAt:     serverTimestamp(),
       });
 
       // Save a learned rule so AI uses this entity assignment for the same
@@ -217,7 +221,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         );
         if (vendorName) {
           await addDoc(collection(db, "categoryRules"), {
-            uid:        user.uid,
+            uid:        effectiveOwnerUid,
             vendorName,
             category:   txn.category   ?? "",
             taxCategory: txn.taxCategory ?? "",
@@ -247,7 +251,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   // ── Category change ────────────────────────────────────────────────────────
 
   async function handleCategoryChange(id: string, newCategory: string) {
-    if (!user) return;
+    if (!user || !effectiveOwnerUid) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       // 1. Call existing Cloud Function — updates category, status, and any
@@ -260,7 +264,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       // 2. Mark as user-modified so the batch categorizer skips it in future runs
       await updateDoc(doc(db, "transactions", id), {
         isUserModified: true,
-        updatedAt: serverTimestamp(),
+        updatedBy:     user.uid,
+        updatedByRole: role,
+        updatedAt:     serverTimestamp(),
       });
 
       // 3. Learning loop: write a categoryRule keyed on the leading vendor word.
@@ -272,7 +278,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         );
         if (vendorName) {
           await addDoc(collection(db, "categoryRules"), {
-            uid:        user.uid,
+            uid:        effectiveOwnerUid,
             vendorName,
             category:   newCategory,
             taxCategory: txn.taxCategory ?? "",
@@ -306,8 +312,10 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       await updateDoc(doc(db, "transactions", id), {
-        status: "categorized",
-        updatedAt: serverTimestamp(),
+        status:        "categorized",
+        updatedBy:     user?.uid ?? "",
+        updatedByRole: role,
+        updatedAt:     serverTimestamp(),
       });
       // Remove from list — it's no longer "needs_review"
       setState((prev) => ({
@@ -334,8 +342,10 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       const batch = writeBatch(db);
       for (const id of ids) {
         batch.update(doc(db, "transactions", id), {
-          status: "categorized",
-          updatedAt: serverTimestamp(),
+          status:        "categorized",
+          updatedBy:     user?.uid ?? "",
+          updatedByRole: role,
+          updatedAt:     serverTimestamp(),
         });
       }
       await batch.commit();
@@ -356,7 +366,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   // ── Bulk category assign ───────────────────────────────────────────────────
 
   async function handleBulkCategoryAssign(ids: string[], category: string) {
-    if (!user || ids.length === 0) return;
+    if (!user || !effectiveOwnerUid || ids.length === 0) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
     try {
       // Batch-write category to all selected transactions
@@ -366,14 +376,16 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           batch.update(doc(db, "transactions", id), {
             category,
             categorizationSource: "user_rule",
-            isUserModified: true,
-            updatedAt: serverTimestamp(),
+            isUserModified:       true,
+            updatedBy:            user.uid,
+            updatedByRole:        role,
+            updatedAt:            serverTimestamp(),
           });
         }
         await batch.commit();
       }
 
-      // Learning loop: write a categoryRule for each unique vendor, with entity (Task 3)
+      // Learning loop: write a categoryRule for each unique vendor
       const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
@@ -383,13 +395,13 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         if (vendorName && !seen.has(vendorName)) {
           seen.add(vendorName);
           await addDoc(collection(db, "categoryRules"), {
-            uid: user.uid,
+            uid:        effectiveOwnerUid,
             vendorName,
             category,
             entityId:   txn.entityId   ?? null,
             entityName: txn.entityName ?? null,
             entityType: txn.entityType ?? null,
-            createdAt: serverTimestamp(),
+            createdAt:  serverTimestamp(),
           });
         }
       }
@@ -419,7 +431,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) {
-    if (!user || ids.length === 0) return;
+    if (!user || !effectiveOwnerUid || ids.length === 0) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
     try {
       for (let i = 0; i < ids.length; i += 499) {
@@ -428,15 +440,16 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           batch.update(doc(db, "transactions", id), {
             entityId,
             entityType,
-            entityName: entityName ?? null,
-            updatedAt: serverTimestamp(),
+            entityName:    entityName ?? null,
+            updatedBy:     user.uid,
+            updatedByRole: role,
+            updatedAt:     serverTimestamp(),
           });
         }
         await batch.commit();
       }
 
-      // Learning loop: save a rule per unique vendor so AI uses this entity
-      // assignment for the same vendor in future runs.
+      // Learning loop: save a rule per unique vendor
       const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
@@ -446,7 +459,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         if (vendorName && !seen.has(vendorName)) {
           seen.add(vendorName);
           await addDoc(collection(db, "categoryRules"), {
-            uid:        user.uid,
+            uid:        effectiveOwnerUid,
             vendorName,
             category:   txn.category   ?? "",
             taxCategory: txn.taxCategory ?? "",
@@ -511,8 +524,10 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       const updates: Record<string, unknown> = {
-        type: newType,
-        updatedAt: serverTimestamp(),
+        type:          newType,
+        updatedBy:     user?.uid ?? "",
+        updatedByRole: role,
+        updatedAt:     serverTimestamp(),
       };
       if (newType === "transfer") {
         updates.status = "transfer";
