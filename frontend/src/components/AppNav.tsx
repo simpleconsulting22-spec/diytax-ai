@@ -30,17 +30,14 @@ export default function AppNav() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerRef   = useRef<HTMLDivElement>(null);
 
-  // Close drawer on route change
   useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
 
-  // Close drawer on outside click / Escape
   useEffect(() => {
     if (!drawerOpen) return;
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") setDrawerOpen(false); }
     function onOutside(e: MouseEvent) {
-      if (drawerRef.current && !drawerRef.current.contains(e.target as Node)) {
+      if (drawerRef.current && !drawerRef.current.contains(e.target as Node))
         setDrawerOpen(false);
-      }
     }
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onOutside);
@@ -57,80 +54,140 @@ export default function AppNav() {
 
   const isActive = (path: string) => location.pathname === path;
 
-  // ── Shared styles ──────────────────────────────────────────────────────────
-
-  const navLinkStyle = (active: boolean): React.CSSProperties => ({
-    background: "none",
-    border: "none",
-    fontSize: "14px",
-    fontWeight: active ? 700 : 400,
-    color: active ? "#16A34A" : "#6b7280",
-    cursor: "pointer",
-    padding: "4px 0",
-    fontFamily: font,
-    whiteSpace: "nowrap",
-    textDecoration: "none",
-  });
-
-  const signOutBtnStyle: React.CSSProperties = {
-    padding: "7px 14px",
-    backgroundColor: "transparent",
-    color: "#dc2626",
-    border: "1.5px solid #fca5a5",
-    borderRadius: "8px",
-    fontSize: "13px",
-    fontWeight: 600,
-    cursor: "pointer",
-    fontFamily: font,
-    whiteSpace: "nowrap",
-  };
-
-  // ── Desktop nav ────────────────────────────────────────────────────────────
+  // ── Desktop nav — 2-row layout ─────────────────────────────────────────────
 
   if (!isMobile) {
     return (
       <nav style={{
         backgroundColor: "#fff",
         borderBottom: "1px solid #e5e7eb",
-        padding: "0 24px",
-        height: "56px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
+        boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
         position: "sticky",
         top: 0,
         zIndex: 100,
         fontFamily: font,
       }}>
-        {/* Left: logo + links */}
-        <div style={{ display: "flex", alignItems: "center", gap: "20px", overflow: "hidden" }}>
+
+        {/* ── Row 1: logo + account actions ── */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "10px 24px 8px",
+          borderBottom: "1px solid #f3f4f6",
+        }}>
+          {/* Logo */}
           <button
             onClick={() => navigate("/dashboard")}
-            style={{ background: "none", border: "none", fontSize: "18px", fontWeight: 800, color: "#16A34A", cursor: "pointer", fontFamily: font, whiteSpace: "nowrap", padding: 0 }}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: "17px",
+              fontWeight: 800,
+              color: "#16A34A",
+              cursor: "pointer",
+              fontFamily: font,
+              padding: 0,
+              letterSpacing: "-0.01em",
+            }}
           >
             DIYTax AI
           </button>
-          <div style={{ display: "flex", alignItems: "center", gap: "16px", overflow: "auto", scrollbarWidth: "none" }}>
-            {NAV_LINKS.map(({ path, label }) => (
-              <button key={path} style={navLinkStyle(isActive(path))} onClick={() => navigate(path)}>
-                {label}
-              </button>
-            ))}
+
+          {/* Right: year selector + settings + email + sign out */}
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            <YearSelector variant="nav" />
+
+            <button
+              onClick={() => navigate("/onboarding")}
+              style={{
+                background: "none",
+                border: "none",
+                fontSize: "13px",
+                fontWeight: isActive("/onboarding") ? 700 : 500,
+                color: isActive("/onboarding") ? "#16A34A" : "#6b7280",
+                cursor: "pointer",
+                fontFamily: font,
+                padding: 0,
+              }}
+            >
+              Settings
+            </button>
+
+            {/* Divider */}
+            <span style={{ width: "1px", height: "16px", backgroundColor: "#e5e7eb", display: "inline-block" }} />
+
+            <span style={{
+              fontSize: "12px",
+              color: "#9ca3af",
+              maxWidth: "180px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
+              {user?.email}
+            </span>
+
+            <button
+              onClick={handleSignOut}
+              style={{
+                padding: "5px 12px",
+                backgroundColor: "transparent",
+                color: "#dc2626",
+                border: "1.5px solid #fca5a5",
+                borderRadius: "6px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Sign Out
+            </button>
           </div>
         </div>
 
-        {/* Right: year, settings, sign out */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0, marginLeft: "16px" }}>
-          <YearSelector variant="nav" />
-          <button style={navLinkStyle(isActive("/onboarding"))} onClick={() => navigate("/onboarding")}>
-            Settings
-          </button>
-          <span style={{ fontSize: "13px", color: "#9ca3af", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {user?.email}
-          </span>
-          <button onClick={handleSignOut} style={signOutBtnStyle}>
-            Sign Out
-          </button>
+        {/* ── Row 2: nav links ── */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "2px",
+          padding: "0 20px",
+          overflowX: "auto",
+          scrollbarWidth: "none",
+        }}>
+          {NAV_LINKS.map(({ path, label }) => {
+            const active = isActive(path);
+            return (
+              <button
+                key={path}
+                onClick={() => navigate(path)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  borderBottom: active ? "2px solid #16A34A" : "2px solid transparent",
+                  fontSize: "12.5px",
+                  fontWeight: active ? 700 : 500,
+                  color: active ? "#16A34A" : "#4b5563",
+                  cursor: "pointer",
+                  padding: "10px 10px 8px",
+                  fontFamily: font,
+                  whiteSpace: "nowrap",
+                  transition: "color 0.15s, border-color 0.15s",
+                  flexShrink: 0,
+                }}
+                onMouseEnter={e => {
+                  if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#111827";
+                }}
+                onMouseLeave={e => {
+                  if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#4b5563";
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
       </nav>
     );
@@ -144,6 +201,7 @@ export default function AppNav() {
       <nav style={{
         backgroundColor: "#fff",
         borderBottom: "1px solid #e5e7eb",
+        boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
         padding: "0 16px",
         height: "52px",
         display: "flex",
@@ -154,17 +212,28 @@ export default function AppNav() {
         zIndex: 100,
         fontFamily: font,
       }}>
-        {/* Logo */}
         <button
           onClick={() => navigate("/dashboard")}
-          style={{ background: "none", border: "none", fontSize: "18px", fontWeight: 800, color: "#16A34A", cursor: "pointer", fontFamily: font, padding: 0 }}
+          style={{ background: "none", border: "none", fontSize: "17px", fontWeight: 800, color: "#16A34A", cursor: "pointer", fontFamily: font, padding: 0 }}
         >
           DIYTax AI
         </button>
 
-        {/* Right: sign out + hamburger */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <button onClick={handleSignOut} style={{ ...signOutBtnStyle, padding: "5px 10px", fontSize: "12px" }}>
+          <button
+            onClick={handleSignOut}
+            style={{
+              padding: "5px 10px",
+              backgroundColor: "transparent",
+              color: "#dc2626",
+              border: "1.5px solid #fca5a5",
+              borderRadius: "6px",
+              fontSize: "12px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: font,
+            }}
+          >
             Sign Out
           </button>
           <button
@@ -189,12 +258,7 @@ export default function AppNav() {
       {/* Backdrop */}
       {drawerOpen && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0,0,0,0.4)",
-            zIndex: 200,
-          }}
+          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.4)", zIndex: 200 }}
           onClick={() => setDrawerOpen(false)}
         />
       )}
@@ -236,7 +300,7 @@ export default function AppNav() {
         </div>
 
         {/* Nav links */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "12px 0" }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
           {NAV_LINKS.map(({ path, label }) => (
             <button
               key={path}
@@ -293,10 +357,16 @@ export default function AppNav() {
           <button
             onClick={handleSignOut}
             style={{
-              ...signOutBtnStyle,
               width: "100%",
               padding: "10px",
+              backgroundColor: "transparent",
+              color: "#dc2626",
+              border: "1.5px solid #fca5a5",
+              borderRadius: "8px",
               fontSize: "14px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: font,
             }}
           >
             Sign Out
