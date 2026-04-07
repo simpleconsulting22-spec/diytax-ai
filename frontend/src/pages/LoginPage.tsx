@@ -45,6 +45,7 @@ export default function LoginPage() {
     setError("");
     try {
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
       const result = await signInWithPopup(auth, provider);
       await ensureUserDoc(result.user.uid, result.user.email);
       navigate("/dashboard");
