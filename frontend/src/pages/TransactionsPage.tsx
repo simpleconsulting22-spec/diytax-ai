@@ -74,7 +74,8 @@ function StatusBadge({ status }: { status: TxnRow["status"] }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TransactionHistoryPage() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const isMobile = useIsMobile();
@@ -100,13 +101,13 @@ export default function TransactionHistoryPage() {
       getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("date", ">=", `${selectedYear}-01-01`),
           where("date", "<=", `${selectedYear}-12-31`),
           orderBy("date", "desc")
         )
       ),
-      getDocs(query(collection(db, "accounts"), where("uid", "==", user.uid))),
+      getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid))),
     ]).then(([snap, accountSnap]) => {
       const accountMap = new Map<string, string>();
       accountSnap.docs.forEach((d) =>

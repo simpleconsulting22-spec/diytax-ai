@@ -133,7 +133,8 @@ function CategorySelect({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TransfersPage() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const isMobile = useIsMobile();
 
@@ -156,12 +157,12 @@ export default function TransfersPage() {
       getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("type", "==", "transfer"),
           orderBy("date", "desc")
         )
       ),
-      getDocs(query(collection(db, "accounts"), where("uid", "==", user.uid))),
+      getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid))),
     ]).then(([snap, accountSnap]) => {
       const accountMap = new Map<string, string>();
       accountSnap.docs.forEach((d) =>

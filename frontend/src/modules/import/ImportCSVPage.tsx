@@ -42,7 +42,8 @@ interface ImportRecord {
 }
 
 function useImportHistory(refreshKey: number) {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const [history, setHistory] = useState<ImportRecord[]>([]);
 
   const load = useCallback(async () => {
@@ -51,7 +52,7 @@ function useImportHistory(refreshKey: number) {
       const snap = await getDocs(
         query(
           collection(db, "imports"),
-          where("userId", "==", user.uid),
+          where("userId", "==", ownerUid),
           orderBy("createdAt", "desc"),
           limit(10)
         )
@@ -62,7 +63,7 @@ function useImportHistory(refreshKey: number) {
     } catch {
       // index may not exist yet — fail silently
     }
-  }, [user]);
+  }, [user, ownerUid]);
 
   useEffect(() => {
     load();

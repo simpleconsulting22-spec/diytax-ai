@@ -35,7 +35,8 @@ const STEPS = [
 ];
 
 export default function TaxFlowPage() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -197,10 +198,10 @@ export default function TaxFlowPage() {
     setSaving(true);
     setError("");
     try {
-      const sessionId = `${user.uid}_2025`;
+      const sessionId = `${ownerUid}_2025`;
       await setDoc(doc(db, "taxSessions", sessionId), {
         sessionId,
-        uid: user.uid,
+        uid: ownerUid,
         taxYear: 2025,
         status: "completed",
         answers,
