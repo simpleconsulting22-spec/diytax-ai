@@ -158,7 +158,8 @@ function aggregate(txns: RawTxn[]): EntityScheduleC[] {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useScheduleC() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [entities, setEntities] = useState<EntityScheduleC[]>([]);
   const [loading, setLoading] = useState(true);
@@ -172,7 +173,7 @@ export function useScheduleC() {
       const snap = await getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("taxSchedule", "==", "Schedule C")
         )
       );
@@ -187,7 +188,7 @@ export function useScheduleC() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();

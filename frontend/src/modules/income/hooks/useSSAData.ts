@@ -22,18 +22,19 @@ export interface SSAForm {
 const TAX_YEAR = new Date().getFullYear();
 
 export function useSSAData() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const [forms, setForms] = useState<SSAForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     setLoading(true);
     setError("");
     try {
       const snap = await getDocs(
-        query(collection(db, "ssaForms"), where("userId", "==", user.uid))
+        query(collection(db, "ssaForms"), where("userId", "==", ownerUid))
       );
       setForms(snap.docs.map((d) => ({ id: d.id, ...d.data() } as SSAForm)));
     } catch (e: unknown) {
@@ -41,15 +42,15 @@ export function useSSAData() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, ownerUid]);
 
   useEffect(() => { load(); }, [load]);
 
   async function addForm(totalBenefits: number): Promise<void> {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     if (totalBenefits < 0) throw new Error("Amount cannot be negative.");
     await addDoc(collection(db, "ssaForms"), {
-      userId: user.uid,
+      userId: ownerUid,
       totalBenefits,
       taxYear: TAX_YEAR,
       createdAt: serverTimestamp(),

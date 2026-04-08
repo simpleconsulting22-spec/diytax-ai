@@ -158,7 +158,8 @@ function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useScheduleE() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [properties, setProperties] = useState<PropertyScheduleE[]>([]);
   const [loading, setLoading] = useState(true);
@@ -172,7 +173,7 @@ export function useScheduleE() {
       const snap = await getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("taxSchedule", "==", "Schedule E")
         )
       );
@@ -187,7 +188,7 @@ export function useScheduleE() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();

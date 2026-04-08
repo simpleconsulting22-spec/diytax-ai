@@ -45,7 +45,8 @@ function round2(n: number) {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useScheduleA() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [data, setData] = useState<ScheduleAData>(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -60,19 +61,19 @@ export function useScheduleA() {
         getDocs(
           query(
             collection(db, "transactions"),
-            where("uid", "==", user.uid),
+            where("uid", "==", ownerUid),
             where("taxCategory", "==", "Charitable Contribution")
           )
         ),
         getDocs(
           query(
             collection(db, "transactions"),
-            where("uid", "==", user.uid),
+            where("uid", "==", ownerUid),
             where("taxCategory", "==", "Medical Expense")
           )
         ),
         getDocs(
-          query(collection(db, "deductions"), where("userId", "==", user.uid))
+          query(collection(db, "deductions"), where("userId", "==", ownerUid))
         ),
       ]);
 
@@ -143,7 +144,7 @@ export function useScheduleA() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();

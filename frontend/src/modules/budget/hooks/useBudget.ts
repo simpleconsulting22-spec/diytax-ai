@@ -83,7 +83,8 @@ const INITIAL_STATE: BudgetState = {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useBudget() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [state, setState] = useState<BudgetState>(INITIAL_STATE);
 
@@ -113,7 +114,7 @@ export function useBudget() {
     try {
       // 1. Fetch budget settings
       const budgetSnap = await getDocs(
-        query(collection(db, "budgets"), where("userId", "==", user.uid))
+        query(collection(db, "budgets"), where("userId", "==", ownerUid))
       );
       const budgetDoc = budgetSnap.docs[0] ?? null;
       const budget: Budget | null = budgetDoc
@@ -133,7 +134,7 @@ export function useBudget() {
       const txnSnap = await getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("date", ">=", fetchFrom),
           where("date", "<=", yearEnd)
         )
@@ -169,7 +170,7 @@ export function useBudget() {
         error: e instanceof Error ? e.message : "Failed to load budget data.",
       }));
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();
@@ -206,7 +207,7 @@ export function useBudget() {
         });
       } else {
         await addDoc(collection(db, "budgets"), {
-          userId: user.uid,
+          userId: ownerUid,
           periodType,
           categories,
           createdAt: serverTimestamp(),

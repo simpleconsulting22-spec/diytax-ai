@@ -26,18 +26,19 @@ export interface Deduction {
 const TAX_YEAR = new Date().getFullYear();
 
 export function useDeductions() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const [deductions, setDeductions] = useState<Deduction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     setLoading(true);
     setError("");
     try {
       const snap = await getDocs(
-        query(collection(db, "deductions"), where("userId", "==", user.uid))
+        query(collection(db, "deductions"), where("userId", "==", ownerUid))
       );
       setDeductions(
         snap.docs.map((d) => ({ id: d.id, ...d.data() } as Deduction))
@@ -47,7 +48,7 @@ export function useDeductions() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, ownerUid]);
 
   useEffect(() => {
     load();
@@ -61,7 +62,7 @@ export function useDeductions() {
     if (!user) return;
     if (amount <= 0) throw new Error("Amount must be positive.");
     await addDoc(collection(db, "deductions"), {
-      userId: user.uid,
+      userId: ownerUid,
       type,
       description: description.trim(),
       amount,

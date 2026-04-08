@@ -755,7 +755,8 @@ interface ImportState {
 }
 
 export function useCSVImport() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const lastFileRef = useRef<File | null>(null);
 
   const [state, setState] = useState<ImportState>({
@@ -784,7 +785,7 @@ export function useCSVImport() {
     }));
     try {
       let rows = await parseCSVFile(file, { accountType: state.accountType });
-      if (user) rows = await applyTypeRules(user.uid, rows);
+      if (user) rows = await applyTypeRules(ownerUid, rows);
       const signWarning = state.accountType === "bank" && detectSignIssue(rows);
       setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
@@ -804,7 +805,7 @@ export function useCSVImport() {
         flipSign: nextFlip,
         accountType: state.accountType,
       });
-      if (user) rows = await applyTypeRules(user.uid, rows);
+      if (user) rows = await applyTypeRules(ownerUid, rows);
       setState((prev) => ({ ...prev, rows }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -822,7 +823,7 @@ export function useCSVImport() {
         flipSign: state.flipSign,
         accountType,
       });
-      if (user) rows = await applyTypeRules(user.uid, rows);
+      if (user) rows = await applyTypeRules(ownerUid, rows);
       const signWarning = accountType === "bank" && detectSignIssue(rows);
       setState((prev) => ({ ...prev, rows, signWarning }));
     } catch (e: unknown) {
@@ -852,11 +853,11 @@ export function useCSVImport() {
     // Persist as a learned type rule for future imports
     try {
       const vendor = extractVendor(normalize(row.description));
-      const ruleRef = doc(db, "typeRules", `${user.uid}_${vendor}`);
+      const ruleRef = doc(db, "typeRules", `${ownerUid}_${vendor}`);
       await setDoc(
         ruleRef,
         {
-          uid: user.uid,
+          uid: ownerUid,
           vendorName: vendor,
           type: newType,
           usageCount: increment(1),
@@ -873,7 +874,7 @@ export function useCSVImport() {
     if (!user || state.rows.length === 0) return;
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      const result = await writeTransactions(user.uid, state.rows, state.fileName, state.accountType, defaultAccountName);
+      const result = await writeTransactions(ownerUid, state.rows, state.fileName, state.accountType, defaultAccountName);
       setState((prev) => ({
         ...prev,
         importing: false,
@@ -910,7 +911,7 @@ export function useCSVImport() {
     const txnSnap = await getDocs(
       query(
         collection(db, "transactions"),
-        where("uid", "==", user.uid),
+        where("uid", "==", ownerUid),
         where("importId", "==", importId)
       )
     );

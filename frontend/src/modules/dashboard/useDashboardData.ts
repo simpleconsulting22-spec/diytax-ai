@@ -252,19 +252,20 @@ const EMPTY_DATA: DashboardData = {
 };
 
 export function useDashboardData() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [data, setData] = useState<DashboardData>(EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     setLoading(true);
     setError("");
     try {
       const snap = await getDocs(
-        query(collection(db, "transactions"), where("uid", "==", user.uid))
+        query(collection(db, "transactions"), where("uid", "==", ownerUid))
       );
       const allTxns = snap.docs.map((d) => d.data() as TxnRecord);
       const txns = allTxns.filter((t) => matchesTaxYear(t, selectedYear));
@@ -274,7 +275,7 @@ export function useDashboardData() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();
