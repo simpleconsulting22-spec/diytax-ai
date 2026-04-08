@@ -206,9 +206,12 @@ service cloud.firestore {
     // Invited users may read their own invite to display invite details.
 
     match /invites/{doc} {
-      allow read: if request.auth != null
-                  && (request.auth.uid == resource.data.ownerUid
-                      || request.auth.token.email == resource.data.email);
+      // Pending invites are readable without auth — the invite ID is a secret token.
+      // Accepted/expired invites still require the owner or invited email to read.
+      allow read: if resource.data.status == "pending"
+                  || (request.auth != null
+                      && (request.auth.uid == resource.data.ownerUid
+                          || request.auth.token.email == resource.data.email));
       allow write: if false;
     }
 

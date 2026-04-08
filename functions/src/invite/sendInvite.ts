@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import sgMail from "@sendgrid/mail";
 import { requireAuth } from "../middleware/auth";
 
 /**
@@ -10,10 +11,11 @@ import { requireAuth } from "../middleware/auth";
  * Firestore extension to be installed and configured.
  */
 export const sendInvite = onCall(
-  { cors: true, invoker: "public" },
+  { cors: true, invoker: "public", secrets: ["SENDGRID_API_KEY"] },
   async (request) => {
     const ownerUid = await requireAuth(request);
     const { email, role } = request.data as { email?: string; role?: string };
+    console.log("[sendInvite] called", { email, role, ownerUid });
 
     if (!email || typeof email !== "string") {
       throw new HttpsError("invalid-argument", "A valid email is required.");
@@ -25,7 +27,7 @@ export const sendInvite = onCall(
     const normalizedEmail = email.toLowerCase().trim();
     const db = admin.firestore();
 
-    // Prevent duplicate pending invites for the same email+owner.
+    // Check for an existing pending invite for this email+owner.
     const existing = await db.collection("invites")
       .where("ownerUid", "==", ownerUid)
       .where("email", "==", normalizedEmail)
@@ -33,38 +35,52 @@ export const sendInvite = onCall(
       .limit(1)
       .get();
 
-    if (!existing.empty) {
-      // Return the existing invite id so the caller can re-send if needed.
-      return { inviteId: existing.docs[0].id, alreadyPending: true };
-    }
+    console.log("[sendInvite] existing check done, empty:", existing.empty);
 
     // Fetch owner's display name for the email body.
-    const ownerDoc = await db.collection("users").doc(ownerUid).get();
-    const ownerName: string = (ownerDoc.data()?.displayName as string) ?? "Your account owner";
-    const appUrl = process.env.APP_URL ?? "https://diytax.ai";
+    const ownerDoc = await db.collection("userProfiles").doc(ownerUid).get();
+    const ownerName: string = (ownerDoc.data()?.ownerName as string) ?? "Your account owner";
 
-    const inviteRef = await db.collection("invites").add({
-      email: normalizedEmail,
-      role,
-      ownerUid,
-      ownerName,
-      status: "pending",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    let inviteId: string;
+    let alreadyPending: boolean;
 
-    // Send invite email via Firebase Email Extension (writes to /mail collection).
-    // If the extension is not installed the write is a no-op for the user experience
-    // (invite doc still exists and can be accepted via direct link).
+    if (!existing.empty) {
+      // Reuse the existing invite doc and resend the email.
+      inviteId = existing.docs[0].id;
+      alreadyPending = true;
+      console.log("[sendInvite] resending to existing invite", inviteId);
+    } else {
+      const inviteRef = await db.collection("invites").add({
+        email: normalizedEmail,
+        role,
+        ownerUid,
+        ownerName,
+        status: "pending",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      inviteId = inviteRef.id;
+      alreadyPending = false;
+      console.log("[sendInvite] invite doc created:", inviteId);
+    }
+
+    // Send invite email via SendGrid.
     try {
-      await db.collection("mail").add({
-        to: normalizedEmail,
-        message: {
+      const sgApiKey = process.env.SENDGRID_API_KEY;
+      const fromEmail = "noreply@diytaxai.com";
+      const appUrl = "https://diytaxai.com";
+      if (!sgApiKey) {
+        console.warn("[sendInvite] SENDGRID_API_KEY not set — skipping email send.");
+      } else {
+        sgMail.setApiKey(sgApiKey);
+        await sgMail.send({
+          to: normalizedEmail,
+          from: fromEmail,
           subject: `${ownerName} invited you to DIYTax AI`,
           html: `
             <p>Hi,</p>
             <p><strong>${ownerName}</strong> has invited you to access their DIYTax AI account as a <strong>${role}</strong>.</p>
             <p>
-              <a href="${appUrl}/accept-invite/${inviteRef.id}"
+              <a href="${appUrl}/accept-invite/${inviteId}"
                  style="display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none">
                 Accept Invitation
               </a>
@@ -72,13 +88,14 @@ export const sendInvite = onCall(
             <p>If you don't have an account yet, you'll be prompted to create one first.</p>
             <p style="color:#6b7280;font-size:12px">This link expires in 7 days.</p>
           `,
-        },
-      });
+        });
+        console.log("[sendInvite] email sent to", normalizedEmail);
+      }
     } catch (err) {
       // Non-fatal: invite doc exists; owner can share the link manually.
-      console.warn("[sendInvite] mail write failed:", err);
+      console.warn("[sendInvite] email send failed:", err);
     }
 
-    return { inviteId: inviteRef.id, alreadyPending: false };
+    return { inviteId, alreadyPending };
   }
 );
