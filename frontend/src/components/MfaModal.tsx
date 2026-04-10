@@ -1,27 +1,12 @@
 import React, { useState } from "react";
-import { doc, updateDoc } from "firebase/firestore";
-import { db } from "../firebase";
 import { apiClient } from "../services/apiClient";
 import { useAuth } from "../contexts/AuthContext";
 
-// ─── Phone normalisation ──────────────────────────────────────────────────────
-
-/**
- * Converts common US/international formats to E.164.
- * 10-digit US → +1XXXXXXXXXX
- * 11-digit starting with 1 → +1XXXXXXXXXX
- * Already has + prefix → strip non-digits and re-prefix
- */
-function toE164(raw: string): string {
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits[0] === "1") return `+${digits}`;
-  return `+${digits}`;
-}
-
-function maskPhone(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
-  return digits.length >= 4 ? `••••••${digits.slice(-4)}` : "••••••••••";
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return "****";
+  const masked = local.length <= 2 ? "**" : `${local[0]}***`;
+  return `${masked}@${domain}`;
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -62,10 +47,12 @@ const subtitleStyle: React.CSSProperties = {
   lineHeight: 1.5,
 };
 
-const inputStyle: React.CSSProperties = {
+const codeInputStyle: React.CSSProperties = {
   width: "100%",
   padding: "12px 14px",
-  fontSize: "15px",
+  fontSize: "22px",
+  letterSpacing: "8px",
+  textAlign: "center",
   border: "1.5px solid #d1d5db",
   borderRadius: "8px",
   outline: "none",
@@ -73,13 +60,6 @@ const inputStyle: React.CSSProperties = {
   marginBottom: "16px",
   fontFamily: font,
   color: "#111827",
-};
-
-const codeInputStyle: React.CSSProperties = {
-  ...inputStyle,
-  fontSize: "22px",
-  letterSpacing: "8px",
-  textAlign: "center",
 };
 
 const btnPrimary: React.CSSProperties = {
@@ -115,18 +95,15 @@ interface MfaModalProps {
   onVerified: () => void;
 }
 
-type Step = "phone" | "code";
+type Step = "send" | "code";
 
 export default function MfaModal({ onVerified }: MfaModalProps) {
-  const { user, userDoc } = useAuth();
+  const { user } = useAuth();
 
-  const savedPhone: string = (userDoc?.phoneNumber as string) ?? "";
+  const email = user?.email ?? "";
 
-  const [step, setStep] = useState<Step>("phone");
-  const [phoneInput, setPhoneInput] = useState(savedPhone);
-  const [resolvedPhone, setResolvedPhone] = useState(savedPhone);
+  const [step, setStep] = useState<Step>("send");
   const [code, setCode] = useState("");
-
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState("");
@@ -134,26 +111,13 @@ export default function MfaModal({ onVerified }: MfaModalProps) {
   // ── Send code ──────────────────────────────────────────────────────────────
 
   async function handleSendCode() {
-    const phone = toE164(phoneInput.trim());
-    if (!phone || phone.length < 9) {
-      setError("Please enter a valid phone number.");
-      return;
-    }
-
     setSending(true);
     setError("");
-
     try {
-      // Persist phone to user doc so we don't ask again on next login
-      if (user && phone !== savedPhone) {
-        await updateDoc(doc(db, "users", user.uid), { phoneNumber: phone });
-      }
-
-      await apiClient.call("sendMfaCode", { phoneNumber: phone });
-      setResolvedPhone(phone);
+      await apiClient.call("sendMfaCode", {});
       setStep("code");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to send code. Check your number and try again.");
+      setError(e instanceof Error ? e.message : "Failed to send code. Please try again.");
     } finally {
       setSending(false);
     }
@@ -181,7 +145,7 @@ export default function MfaModal({ onVerified }: MfaModalProps) {
     setError("");
     setSending(true);
     try {
-      await apiClient.call("sendMfaCode", { phoneNumber: resolvedPhone });
+      await apiClient.call("sendMfaCode", {});
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to resend code.");
     } finally {
@@ -196,39 +160,23 @@ export default function MfaModal({ onVerified }: MfaModalProps) {
       <div style={cardStyle}>
         <div style={{ fontSize: "28px", marginBottom: "16px" }}>🔐</div>
 
-        {step === "phone" ? (
+        {step === "send" ? (
           <>
             <div style={titleStyle}>Two-Factor Authentication</div>
             <div style={subtitleStyle}>
-              {savedPhone
-                ? `We'll send a 6-digit code to ${maskPhone(savedPhone)}. You can update your number below.`
-                : "Enter your mobile number. We'll send a 6-digit code each time you sign in."}
-            </div>
-
-            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
-              Mobile number
-            </label>
-            <input
-              style={inputStyle}
-              type="tel"
-              placeholder="+1 (555) 000-0000"
-              value={phoneInput}
-              onChange={(e) => setPhoneInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendCode()}
-              autoFocus
-            />
-            <div style={{ fontSize: "12px", color: "#9ca3af", marginBottom: "20px", marginTop: "-8px" }}>
-              US numbers: enter 10 digits. International: include country code (e.g. +44…)
+              We'll send a 6-digit verification code to{" "}
+              <strong>{email ? maskEmail(email) : "your email"}</strong>.
             </div>
 
             <button
               style={{
                 ...btnPrimary,
-                opacity: sending || !phoneInput.trim() ? 0.65 : 1,
-                cursor: sending || !phoneInput.trim() ? "not-allowed" : "pointer",
+                opacity: sending ? 0.65 : 1,
+                cursor: sending ? "not-allowed" : "pointer",
               }}
               onClick={handleSendCode}
-              disabled={sending || !phoneInput.trim()}
+              disabled={sending}
+              autoFocus
             >
               {sending ? "Sending code…" : "Send Verification Code"}
             </button>
@@ -237,12 +185,12 @@ export default function MfaModal({ onVerified }: MfaModalProps) {
           <>
             <div style={titleStyle}>Enter your code</div>
             <div style={subtitleStyle}>
-              We texted a 6-digit code to {maskPhone(resolvedPhone)}.{" "}
+              We emailed a 6-digit code to {email ? maskEmail(email) : "your email"}.{" "}
               <button
-                onClick={() => { setStep("phone"); setCode(""); setError(""); }}
+                onClick={() => { setStep("send"); setCode(""); setError(""); }}
                 style={{ background: "none", border: "none", color: "#16A34A", fontSize: "14px", cursor: "pointer", padding: 0, fontFamily: font, textDecoration: "underline" }}
               >
-                Change number
+                Resend
               </button>
             </div>
 

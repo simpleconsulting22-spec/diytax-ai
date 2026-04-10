@@ -1,68 +1,72 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import * as dotenv from "dotenv";
+import sgMail from "@sendgrid/mail";
 import { requireAuth } from "../middleware/auth";
-import twilio from "twilio";
 
-dotenv.config();
+function generateCode(): string {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return "****";
+  const masked = local.length <= 2 ? "**" : `${local[0]}***`;
+  return `${masked}@${domain}`;
+}
 
 /**
- * Sends a verification code via Twilio Verify (purpose-built OTP service —
- * faster and more reliable than the generic Messages API).
+ * Generates a 6-digit OTP and emails it to the user's registered address via SendGrid.
  *
- * Required environment variables (functions/.env):
- *   TWILIO_ACCOUNT_SID
- *   TWILIO_AUTH_TOKEN
- *   TWILIO_VERIFY_SERVICE_SID   — starts with "VA", from Twilio Console → Verify → Services
+ * Required environment variable (functions/.env):
+ *   SENDGRID_API_KEY
  */
 export const sendMfaCode = onCall(
-  { cors: true, invoker: "public" },
+  { cors: true, invoker: "public", secrets: ["SENDGRID_API_KEY"] },
   async (request) => {
     const uid = await requireAuth(request);
 
-    const data = request.data as { phoneNumber?: string };
-    if (!data.phoneNumber) {
-      throw new HttpsError("invalid-argument", "Phone number is required.");
+    const userRecord = await admin.auth().getUser(uid);
+    const email = userRecord.email;
+    if (!email) {
+      throw new HttpsError("failed-precondition", "No email address on record.");
     }
 
-    const phone = data.phoneNumber.trim();
+    const code = generateCode();
+    const expiry = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
-      throw new HttpsError(
-        "invalid-argument",
-        "Phone number must be in E.164 format (e.g. +15551234567)."
-      );
-    }
-
-    const accountSid      = process.env.TWILIO_ACCOUNT_SID;
-    const authToken       = process.env.TWILIO_AUTH_TOKEN;
-    const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
-
-    if (!accountSid || !authToken || !verifyServiceSid) {
-      console.error("Missing Twilio environment variables");
-      throw new HttpsError("internal", "SMS service is not configured.");
-    }
-
-    // Store the phone on userSecurity so verifyMfaCode can use it
     const db = admin.firestore();
     await db.collection("userSecurity").doc(uid).set(
-      { mfaPhone: phone, mfaVerified: false },
+      { mfaCode: code, mfaCodeExpiry: expiry, mfaVerified: false },
       { merge: true }
     );
 
-    const client = twilio(accountSid, authToken);
+    const sgApiKey = process.env.SENDGRID_API_KEY;
+    if (!sgApiKey) {
+      console.error("Missing SENDGRID_API_KEY");
+      throw new HttpsError("internal", "Email service is not configured.");
+    }
 
+    sgMail.setApiKey(sgApiKey);
     try {
-      await client.verify.v2
-        .services(verifyServiceSid)
-        .verifications.create({ to: phone, channel: "sms" });
-
-      console.log(`Verify SMS dispatched to ${phone.slice(0, 6)}****`);
-      return { sent: true };
+      await sgMail.send({
+        to: email,
+        from: "noreply@diytaxai.com",
+        subject: "Your DIYTax AI verification code",
+        html: `
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;padding:32px">
+            <h2 style="color:#111827;margin-bottom:8px">Verification Code</h2>
+            <p style="color:#6b7280;margin-bottom:24px">Use the code below to complete sign-in. It expires in 10 minutes.</p>
+            <div style="font-size:36px;font-weight:700;letter-spacing:10px;font-family:monospace;color:#16A34A;background:#f0fdf4;border-radius:8px;padding:16px 24px;display:inline-block">${code}</div>
+            <p style="color:#9ca3af;font-size:13px;margin-top:24px">If you didn't request this code, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+      console.log(`MFA code sent to ${maskEmail(email)}`);
+      return { sent: true, maskedEmail: maskEmail(email) };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Unknown error";
-      console.error("Twilio Verify error:", msg);
-      throw new HttpsError("internal", "Failed to send SMS verification code.");
+      console.error("SendGrid MFA error:", msg);
+      throw new HttpsError("internal", "Failed to send verification email.");
     }
   }
 );
