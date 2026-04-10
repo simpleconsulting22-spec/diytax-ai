@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { NormalizedRow, TransactionType } from "../hooks/useCSVImport";
 
 const ALL_TYPES: TransactionType[] = ["income", "expense", "transfer", "refund"];
@@ -156,8 +156,44 @@ function TypeBadge({
 
 // ─── Table ────────────────────────────────────────────────────────────────────
 
+type SortCol = "date" | "description" | "amount" | "type";
+type SortDir = "asc" | "desc";
+
+const COLUMNS: { key: SortCol; label: string; align: "left" | "right" }[] = [
+  { key: "date",        label: "Date",        align: "left"  },
+  { key: "description", label: "Description", align: "left"  },
+  { key: "amount",      label: "Amount",      align: "right" },
+  { key: "type",        label: "Type",        align: "left"  },
+];
+
 export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVPreviewTableProps) {
-  const preview = rows;
+  const [sortCol, setSortCol] = useState<SortCol | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function handleSort(col: SortCol) {
+    if (sortCol === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  }
+
+  const sortedIndices = useMemo(() => {
+    const indices = rows.map((_, i) => i);
+    if (!sortCol) return indices;
+    return [...indices].sort((a, b) => {
+      const ra = rows[a], rb = rows[b];
+      let cmp = 0;
+      if (sortCol === "date")        cmp = ra.date.localeCompare(rb.date);
+      if (sortCol === "description") cmp = ra.description.localeCompare(rb.description);
+      if (sortCol === "amount")      cmp = ra.amount - rb.amount;
+      if (sortCol === "type")        cmp = ra.type.localeCompare(rb.type);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [rows, sortCol, sortDir]);
+
+  const preview = sortedIndices.map((i) => ({ row: rows[i], originalIndex: i }));
   const transferCount = rows.filter((r) => r.isTransfer).length;
   const refundCount   = rows.filter((r) => r.type === "refund").length;
   const modifiedCount = rows.filter((r) => r.userModified).length;
@@ -199,31 +235,42 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
           <thead>
             <tr style={{ backgroundColor: "#f9fafb" }}>
-              {["Date", "Description", "Amount", "Type"].map((col) => (
-                <th
-                  key={col}
-                  style={{
-                    padding: "10px 14px",
-                    textAlign: col === "Amount" ? "right" : "left",
-                    fontWeight: 600,
-                    color: "#374151",
-                    borderBottom: "1px solid #e5e7eb",
-                    whiteSpace: "nowrap",
-                    position: "sticky",
-                    top: 0,
-                    backgroundColor: "#f9fafb",
-                    zIndex: 1,
-                  }}
-                >
-                  {col}
-                </th>
-              ))}
+              {COLUMNS.map(({ key, label, align }) => {
+                const active = sortCol === key;
+                return (
+                  <th
+                    key={key}
+                    style={{
+                      padding: "10px 14px",
+                      textAlign: align,
+                      fontWeight: 600,
+                      color: active ? "#111827" : "#374151",
+                      borderBottom: "1px solid #e5e7eb",
+                      whiteSpace: "nowrap",
+                      position: "sticky",
+                      top: 0,
+                      backgroundColor: "#f9fafb",
+                      zIndex: 1,
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                    onClick={() => handleSort(key)}
+                  >
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      {label}
+                      <span style={{ fontSize: "10px", color: active ? "#16A34A" : "#d1d5db" }}>
+                        {active ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
+                      </span>
+                    </span>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
-            {preview.map((row, i) => (
+            {preview.map(({ row, originalIndex }, i) => (
               <tr
-                key={i}
+                key={originalIndex}
                 style={{
                   borderBottom: i < preview.length - 1 ? "1px solid #f3f4f6" : "none",
                   backgroundColor: row.userModified
@@ -262,7 +309,7 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
                 <td style={{ padding: "10px 14px" }}>
                   <TypeBadge
                     type={row.type}
-                    index={i}
+                    index={originalIndex}
                     userModified={row.userModified}
                     onTypeChange={onTypeChange}
                   />
