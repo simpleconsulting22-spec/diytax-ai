@@ -204,6 +204,7 @@ export default function ReviewPage() {
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
     handleAutoCategorizeBatch,
+    handleApplySimilar,
     handleCustomCategoryAdded,
     clearSelection,
     toggleSelect,
@@ -270,6 +271,76 @@ export default function ReviewPage() {
     );
     return [...TAX_CATEGORIES, ...extras];
   }, [customCategories]);
+
+  // Compute vendor groups for "Apply to Similar" panel.
+  // Shows groups with 2+ transactions where a majority share the same category suggestion.
+  const similarGroups = useMemo(() => {
+    if (isCategorizedView || loading) return [];
+
+    const groups = new Map<string, typeof filteredTransactions>();
+    for (const txn of filteredTransactions) {
+      const key = txn.vendor?.trim().toLowerCase();
+      if (!key || key.length < 2) continue;
+      const arr = groups.get(key) ?? [];
+      arr.push(txn);
+      groups.set(key, arr);
+    }
+
+    const result: Array<{
+      vendor: string;
+      ids: string[];
+      suggestedCategory: string;
+      suggestedEntityId: string | null;
+      suggestedEntityType: "business" | "rental" | "personal";
+      suggestedEntityName: string | undefined;
+      totalCount: number;
+    }> = [];
+
+    for (const [vendor, txns] of groups) {
+      if (txns.length < 2) continue;
+
+      // Derive suggestion from transactions that already have a category
+      const withCat = txns.filter((t) => t.category);
+      if (withCat.length === 0) continue;
+
+      // Most common category
+      const catCounts = new Map<string, number>();
+      for (const t of withCat) {
+        if (t.category) catCounts.set(t.category, (catCounts.get(t.category) ?? 0) + 1);
+      }
+      const topCat = [...catCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (!topCat || topCat[1] < withCat.length * 0.5) continue;
+
+      // Most common entity
+      const entityCounts = new Map<string, number>();
+      for (const t of withCat) {
+        const ek = t.entityId ?? "__personal__";
+        entityCounts.set(ek, (entityCounts.get(ek) ?? 0) + 1);
+      }
+      const topEntityKey = [...entityCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const topEntityObj = (topEntityKey && topEntityKey !== "__personal__")
+        ? entities.find((e) => e.id === topEntityKey) ?? null
+        : null;
+
+      // Only surface rows that still need category or entity applied
+      const needsAction = txns.filter(
+        (t) => !t.category || (entities.length > 0 && !t.entityId)
+      );
+      if (needsAction.length === 0) continue;
+
+      result.push({
+        vendor,
+        ids: needsAction.map((t) => t.id),
+        suggestedCategory: topCat[0],
+        suggestedEntityId: topEntityObj?.id ?? null,
+        suggestedEntityType: topEntityObj?.type ?? "personal",
+        suggestedEntityName: topEntityObj?.name,
+        totalCount: txns.length,
+      });
+    }
+
+    return result.sort((a, b) => b.ids.length - a.ids.length).slice(0, 8);
+  }, [filteredTransactions, entities, isCategorizedView, loading]);
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font, paddingBottom: hasSelection ? (isMobile ? "160px" : "80px") : "0" }}>
@@ -411,6 +482,70 @@ export default function ReviewPage() {
         {error && (
           <div style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "16px" }}>
             {error}
+          </div>
+        )}
+
+        {/* Apply to Similar panel */}
+        {similarGroups.length > 0 && (
+          <div style={{
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: "10px",
+            padding: "12px 16px",
+            marginBottom: "16px",
+          }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#1e40af", marginBottom: "10px" }}>
+              Apply to similar — one click to confirm matching transactions
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {similarGroups.map((group) => (
+                <div key={group.vendor} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "12px", color: "#1e3a5f", fontWeight: 700, minWidth: "90px" }}>
+                    {group.vendor}
+                  </span>
+                  <span style={{ fontSize: "11px", color: "#6b7280" }}>
+                    {group.ids.length} of {group.totalCount} transactions
+                  </span>
+                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>→</span>
+                  <span style={{
+                    fontSize: "11px", color: "#374151",
+                    backgroundColor: "#fff", padding: "2px 9px",
+                    borderRadius: "5px", border: "1px solid #e5e7eb", fontWeight: 500,
+                  }}>
+                    {group.suggestedCategory}
+                  </span>
+                  {entities.length > 0 && (
+                    <>
+                      <span style={{ fontSize: "11px", color: "#94a3b8" }}>|</span>
+                      <span style={{
+                        fontSize: "11px", color: "#374151",
+                        backgroundColor: "#fff", padding: "2px 9px",
+                        borderRadius: "5px", border: "1px solid #e5e7eb", fontWeight: 500,
+                      }}>
+                        {group.suggestedEntityName ?? "Personal"}
+                      </span>
+                    </>
+                  )}
+                  <button
+                    onClick={() => handleApplySimilar(
+                      group.ids,
+                      group.suggestedCategory,
+                      group.suggestedEntityId,
+                      group.suggestedEntityType,
+                      group.suggestedEntityName
+                    )}
+                    style={{
+                      fontSize: "11px", padding: "4px 12px",
+                      backgroundColor: "#1d4ed8", color: "#fff",
+                      border: "none", borderRadius: "6px",
+                      cursor: "pointer", fontWeight: 600, fontFamily: font,
+                    }}
+                  >
+                    Apply to all
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -10,6 +10,8 @@ import {
   addDoc,
   writeBatch,
   serverTimestamp,
+  limit,
+  increment,
 } from "firebase/firestore";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
@@ -48,11 +50,53 @@ export interface ReviewTransaction {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Extract the most meaningful leading word from a normalised description.
-// Used as vendorName when writing categoryRules.
-function extractVendor(normalizedDescription: string): string {
-  const words = normalizedDescription.trim().split(/\s+/);
+// Prefer the pre-extracted vendor field; fall back to first meaningful word.
+function extractVendor(txnOrDesc: ReviewTransaction | string): string {
+  if (typeof txnOrDesc !== "string") {
+    if (txnOrDesc.vendor?.trim()) return txnOrDesc.vendor.trim().toLowerCase();
+    return extractVendor(txnOrDesc.normalizedDescription || txnOrDesc.description || "");
+  }
+  const words = txnOrDesc.trim().split(/\s+/);
   return words.find((w) => w.length >= 3 && !/^\d/.test(w)) ?? words[0] ?? "";
+}
+
+// Upsert a categoryRule by vendor — avoids duplicate documents.
+async function upsertVendorRule(
+  uid: string,
+  vendorName: string,
+  fields: {
+    category?: string;
+    taxCategory?: string;
+    taxSchedule?: string;
+    entityId?: string | null;
+    entityName?: string | null;
+    entityType?: string | null;
+  }
+) {
+  if (!vendorName) return;
+  const existingSnap = await getDocs(
+    query(
+      collection(db, "categoryRules"),
+      where("uid", "==", uid),
+      where("vendorName", "==", vendorName),
+      limit(1)
+    )
+  );
+  if (!existingSnap.empty) {
+    await updateDoc(existingSnap.docs[0].ref, {
+      ...fields,
+      usageCount: increment(1),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await addDoc(collection(db, "categoryRules"), {
+      uid,
+      vendorName,
+      ...fields,
+      usageCount: 1,
+      createdAt: serverTimestamp(),
+    });
+  }
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -212,25 +256,18 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         updatedAt:     serverTimestamp(),
       });
 
-      // Save a learned rule so AI uses this entity assignment for the same
-      // vendor in future runs.
+      // Upsert a learned rule so AI uses this entity assignment for the same vendor.
       const txn = state.transactions.find((t) => t.id === id);
       if (txn) {
-        const vendorName = extractVendor(
-          txn.normalizedDescription || txn.description || ""
-        );
-        if (vendorName) {
-          await addDoc(collection(db, "categoryRules"), {
-            uid:        effectiveOwnerUid,
-            vendorName,
-            category:   txn.category   ?? "",
-            taxCategory: txn.taxCategory ?? "",
-            entityId:   entityId        ?? null,
-            entityName: entityName      ?? null,
-            entityType: entityType      ?? null,
-            createdAt:  serverTimestamp(),
-          });
-        }
+        const vendorName = extractVendor(txn);
+        await upsertVendorRule(effectiveOwnerUid, vendorName, {
+          category:    txn.category    ?? "",
+          taxCategory: txn.taxCategory ?? "",
+          taxSchedule: txn.taxSchedule ?? "",
+          entityId:    entityId        ?? null,
+          entityName:  entityName      ?? null,
+          entityType:  entityType      ?? null,
+        });
       }
 
       setState((prev) => ({
@@ -254,48 +291,24 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     if (!user || !effectiveOwnerUid) return;
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
-      // 1. Call existing Cloud Function — updates category, status, and any
-      //    vendorName-based rule for Plaid transactions
+      const txn = state.transactions.find((t) => t.id === id);
+
+      // Cloud function handles transaction update + rule upsert (no duplicate addDoc needed)
       await apiClient.call("updateTransactionCategory", {
         transactionId: id,
-        category: newCategory,
+        category:      newCategory,
+        taxCategory:   txn?.taxCategory  ?? undefined,
+        taxSchedule:   txn?.taxSchedule  ?? undefined,
+        entityId:      txn?.entityId     ?? undefined,
+        entityType:    txn?.entityType   ?? undefined,
+        entityName:    txn?.entityName   ?? undefined,
       });
 
-      // 2. Mark as user-modified so the batch categorizer skips it in future runs
-      await updateDoc(doc(db, "transactions", id), {
-        isUserModified: true,
-        updatedBy:     user.uid,
-        updatedByRole: role,
-        updatedAt:     serverTimestamp(),
-      });
-
-      // 3. Learning loop: write a categoryRule keyed on the leading vendor word.
-      //    Capture entity at write-time (use setState callback to read latest state).
-      const txn = state.transactions.find((t) => t.id === id);
-      if (txn) {
-        const vendorName = extractVendor(
-          txn.normalizedDescription || txn.description || ""
-        );
-        if (vendorName) {
-          await addDoc(collection(db, "categoryRules"), {
-            uid:        effectiveOwnerUid,
-            vendorName,
-            category:   newCategory,
-            taxCategory: txn.taxCategory ?? "",
-            entityId:   txn.entityId   ?? null,
-            entityName: txn.entityName ?? null,
-            entityType: txn.entityType ?? null,
-            createdAt:  serverTimestamp(),
-          });
-        }
-      }
-
-      // Optimistic local update — row stays in list (still needs_review until confirmed)
       setState((prev) => ({
         ...prev,
         updating: new Set([...prev.updating].filter((i) => i !== id)),
         transactions: prev.transactions.map((t) =>
-          t.id === id ? { ...t, category: newCategory } : t
+          t.id === id ? { ...t, category: newCategory, source: "user_rule" as const } : t
         ),
       }));
     } catch {
@@ -385,23 +398,20 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         await batch.commit();
       }
 
-      // Learning loop: write a categoryRule for each unique vendor
+      // Upsert a categoryRule for each unique vendor (no duplicates)
       const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
-        const vendorName = extractVendor(
-          txn.normalizedDescription || txn.description || ""
-        );
+        const vendorName = extractVendor(txn);
         if (vendorName && !seen.has(vendorName)) {
           seen.add(vendorName);
-          await addDoc(collection(db, "categoryRules"), {
-            uid:        effectiveOwnerUid,
-            vendorName,
+          await upsertVendorRule(effectiveOwnerUid, vendorName, {
             category,
-            entityId:   txn.entityId   ?? null,
-            entityName: txn.entityName ?? null,
-            entityType: txn.entityType ?? null,
-            createdAt:  serverTimestamp(),
+            taxCategory: txn.taxCategory ?? "",
+            taxSchedule: txn.taxSchedule ?? "",
+            entityId:    txn.entityId   ?? null,
+            entityName:  txn.entityName ?? null,
+            entityType:  txn.entityType ?? null,
           });
         }
       }
@@ -449,24 +459,20 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         await batch.commit();
       }
 
-      // Learning loop: save a rule per unique vendor
+      // Upsert a rule per unique vendor (no duplicates)
       const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
-        const vendorName = extractVendor(
-          txn.normalizedDescription || txn.description || ""
-        );
+        const vendorName = extractVendor(txn);
         if (vendorName && !seen.has(vendorName)) {
           seen.add(vendorName);
-          await addDoc(collection(db, "categoryRules"), {
-            uid:        effectiveOwnerUid,
-            vendorName,
-            category:   txn.category   ?? "",
+          await upsertVendorRule(effectiveOwnerUid, vendorName, {
+            category:    txn.category    ?? "",
             taxCategory: txn.taxCategory ?? "",
-            entityId:   entityId        ?? null,
-            entityName: entityName      ?? null,
-            entityType: entityType      ?? null,
-            createdAt:  serverTimestamp(),
+            taxSchedule: txn.taxSchedule ?? "",
+            entityId:    entityId        ?? null,
+            entityName:  entityName      ?? null,
+            entityType:  entityType      ?? null,
           });
         }
       }
@@ -591,6 +597,71 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     }
   }
 
+  // ── Apply to similar (one-click bulk confirm for vendor groups) ───────────
+
+  async function handleApplySimilar(
+    ids: string[],
+    category: string,
+    entityId: string | null,
+    entityType: "business" | "rental" | "personal",
+    entityName: string | undefined
+  ) {
+    if (!user || !effectiveOwnerUid || ids.length === 0) return;
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
+    try {
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 499)) {
+          batch.update(doc(db, "transactions", id), {
+            category,
+            categorizationSource: "user_rule",
+            isUserModified:       true,
+            entityId:             entityId   ?? null,
+            entityType:           entityType,
+            entityName:           entityName ?? null,
+            updatedBy:            user.uid,
+            updatedByRole:        role,
+            updatedAt:            serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      }
+
+      // Upsert rules for unique vendors in this group
+      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
+      const seen = new Set<string>();
+      for (const txn of selectedTxns) {
+        const vendorName = extractVendor(txn);
+        if (vendorName && !seen.has(vendorName)) {
+          seen.add(vendorName);
+          await upsertVendorRule(effectiveOwnerUid, vendorName, {
+            category,
+            taxCategory: txn.taxCategory ?? "",
+            taxSchedule: txn.taxSchedule ?? "",
+            entityId:    entityId   ?? null,
+            entityName:  entityName ?? null,
+            entityType:  entityType ?? null,
+          });
+        }
+      }
+
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        transactions: prev.transactions.map((t) =>
+          ids.includes(t.id)
+            ? { ...t, category, entityId, entityType, entityName, source: "user_rule" as const }
+            : t
+        ),
+      }));
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+      }));
+    }
+  }
+
   // ── Selection helpers ──────────────────────────────────────────────────────
 
   function clearSelection() {
@@ -636,6 +707,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
     handleAutoCategorizeBatch,
+    handleApplySimilar,
     handleCustomCategoryAdded,
     clearSelection,
     toggleSelect,

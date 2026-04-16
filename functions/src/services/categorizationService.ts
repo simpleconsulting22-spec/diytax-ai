@@ -232,11 +232,17 @@ async function callAIBatch(
       ? `\nUser entities:\n${entityLines.join("\n")}\n  - "Personal"\n`
       : `\nAssign to: "Personal" (no entities configured)\n`;
 
-  // Show a sample of user rules for context (max 5)
-  const rulesSample = userRules.slice(0, 5);
+  // Show up to 20 most-used rules (sorted by usageCount) so AI learns from history.
+  // Include entity assignment so AI can replicate entity choices for known vendors.
+  const rulesSample = [...userRules]
+    .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0))
+    .slice(0, 20);
   const rulesContext =
     rulesSample.length > 0
-      ? `\nUser's past categorizations:\n${rulesSample.map((r) => `  - "${r.vendorName}" → ${r.category}`).join("\n")}\n`
+      ? `\nUser's past categorizations (most-used first):\n${rulesSample.map((r) => {
+          const entityPart = r.entityName ? ` [${r.entityName}]` : r.entityType === "personal" ? " [Personal]" : "";
+          return `  - "${r.vendorName}" → ${r.category}${entityPart}`;
+        }).join("\n")}\n`
       : "";
 
   const txnLines = transactions.map(({ idx, txn }) =>
@@ -327,20 +333,21 @@ export async function categorizeTransactionsBatch(
   const results = new Map<number, CategorizationResult>();
   const needsAI: Array<{ idx: number; txn: TransactionInput }> = [];
 
-  // Phase 1: keyword rules + user rules (no Firestore reads, no AI)
+  // Phase 1: user rules first (explicit user choices beat built-in keywords),
+  // then keyword rules for everything not yet matched.
   for (const { idx, txn } of transactions) {
     const normalizedDesc = (txn.normalizedDescription ?? txn.description).toLowerCase();
     const vendor = txn.vendor ?? "";
 
-    const keywordResult = applyKeywordRules(normalizedDesc);
-    if (keywordResult) {
-      results.set(idx, keywordResult);
+    const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
+    if (userRuleResult && userRuleResult.category) {
+      results.set(idx, userRuleResult);
       continue;
     }
 
-    const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
-    if (userRuleResult) {
-      results.set(idx, userRuleResult);
+    const keywordResult = applyKeywordRules(normalizedDesc);
+    if (keywordResult) {
+      results.set(idx, keywordResult);
       continue;
     }
 

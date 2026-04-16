@@ -52,25 +52,30 @@ async function applyResultToDoc(
   }
 
   const isAITransfer = result.aiType === "transfer";
+  // If the user already set a category (isUserModified), keep it — only fill entity.
+  const keepExistingCategory = txn.isUserModified === true && !!txn.category;
+
   const newStatus = isAITransfer
     ? "transfer"
     : result.confidence >= 0.8 ? "categorized" : "needs_review";
 
   const update: Record<string, unknown> = {
-    category:                  result.category,
-    taxCategory:               result.taxCategory,
-    taxSchedule:               result.taxSchedule,
     categorizationConfidence:  result.confidence,
     categorizationSource:      result.source,
     categorizationExplanation: result.categorizationExplanation,
     categorizedAt:             admin.firestore.FieldValue.serverTimestamp(),
-    status:                    newStatus,
-    // Audit fields — updatedBy is the logged-in user (not ownerUid)
     updatedBy:                 callerUid,
     updatedByRole:             callerRole,
     updatedAt:                 admin.firestore.FieldValue.serverTimestamp(),
     ...(result.source === "ai" ? { aiSuggested: true, aiSource: "ai" } : {}),
     ...(isAITransfer ? { type: "transfer" } : {}),
+    // Only overwrite category if user hasn't already explicitly set one
+    ...(!keepExistingCategory ? {
+      category:    result.category,
+      taxCategory: result.taxCategory,
+      taxSchedule: result.taxSchedule,
+      status:      newStatus,
+    } : {}),
   };
 
   // Entity assignment — only if not already user-set
@@ -109,7 +114,6 @@ export async function categorizeUserTransactions(
   const [snap, userRules, entities] = await Promise.all([
     db.collection("transactions")
       .where("uid", "==", userId)
-      .where("category", "==", null)
       .where("status", "==", "needs_review")
       .get(),
     loadUserRules(userId),
@@ -130,11 +134,13 @@ export async function categorizeUserTransactions(
   const docs = snap.docs;
   counters.total = docs.length;
 
-  // Build input array, skip user-modified
+  // Build input array.
+  // Skip only if the user has explicitly set BOTH category and entity — nothing left to do.
+  // If category is set but entity is missing, still process so entity gets assigned.
   const toProcess: Array<{ idx: number; docId: string; txn: TxnDoc }> = [];
   for (let i = 0; i < docs.length; i++) {
     const txn = docs[i].data() as TxnDoc;
-    if (txn.isUserModified === true) { counters.skipped++; continue; }
+    if (txn.isUserModified === true && txn.entityId) { counters.skipped++; continue; }
     toProcess.push({ idx: i, docId: docs[i].id, txn });
   }
 
@@ -152,10 +158,14 @@ export async function categorizeUserTransactions(
 
   const results = await categorizeTransactionsBatch(inputs, userRules, entities);
 
-  // Write results back
+  // Write results back. Allow through even if category is empty (entity-only fill).
   const writes = toProcess.map(({ idx, docId, txn }) => {
     const result = results.get(idx);
-    if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
+    if (!result) { counters.skipped++; return Promise.resolve(); }
+    // If we have neither category nor entity assignment, nothing to do
+    const hasCategory = !!result.category;
+    const hasEntity   = !!result.entityId || (!!result.aiAssignment && result.aiAssignment !== "Personal");
+    if (!hasCategory && !hasEntity) { counters.skipped++; return Promise.resolve(); }
     return applyResultToDoc(docId, txn, result, entityMap, counters, callerUid, callerRole);
   });
 
@@ -207,8 +217,8 @@ export async function categorizeSpecificTransactions(
     const txn = snap.data() as TxnDoc;
     // Security: verify ownership (shared users operate on owner's transactions)
     if (txn.uid !== userId) { counters.skipped++; continue; }
-    // Respect explicit user edits
-    if (txn.isUserModified === true) { counters.skipped++; continue; }
+    // Skip only if user has explicitly set BOTH category and entity
+    if (txn.isUserModified === true && txn.entityId) { counters.skipped++; continue; }
     toProcess.push({ idx: i, docId: snap.id, txn });
   }
 
@@ -226,10 +236,13 @@ export async function categorizeSpecificTransactions(
 
   const results = await categorizeTransactionsBatch(inputs, userRules, entities);
 
-  // Write results back
+  // Write results back. Allow through even if category is empty (entity-only fill).
   const writes = toProcess.map(({ idx, docId, txn }) => {
     const result = results.get(idx);
-    if (!result || !result.category) { counters.skipped++; return Promise.resolve(); }
+    if (!result) { counters.skipped++; return Promise.resolve(); }
+    const hasCategory = !!result.category;
+    const hasEntity   = !!result.entityId || (!!result.aiAssignment && result.aiAssignment !== "Personal");
+    if (!hasCategory && !hasEntity) { counters.skipped++; return Promise.resolve(); }
     return applyResultToDoc(docId, txn, result, entityMap, counters, callerUid, callerRole);
   });
 
