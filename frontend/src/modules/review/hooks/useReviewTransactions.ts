@@ -497,27 +497,40 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   async function handleAutoCategorizeBatch(
     ids: string[] | "all",
     onProgress?: (processed: number, total: number) => void
-  ) {
-    if (!user) return;
+  ): Promise<{ categorized: number; skipped: number; error?: string }> {
+    if (!user) return { categorized: 0, skipped: 0 };
     const targetIds =
       ids === "all"
         ? state.transactions.map((t) => t.id)
         : ids;
-    if (targetIds.length === 0) return;
+    if (targetIds.length === 0) return { categorized: 0, skipped: 0 };
 
     const CHUNK = 40;
     const total = targetIds.length;
     let processed = 0;
+    let totalCategorized = 0;
+    let totalSkipped = 0;
 
-    for (let i = 0; i < targetIds.length; i += CHUNK) {
-      const chunk = targetIds.slice(i, i + CHUNK);
-      await apiClient.call("categorizeSelected", { transactionIds: chunk });
-      processed = Math.min(i + CHUNK, total);
-      onProgress?.(processed, total);
+    try {
+      for (let i = 0; i < targetIds.length; i += CHUNK) {
+        const chunk = targetIds.slice(i, i + CHUNK);
+        const result = await apiClient.call<{ total: number; ruleMatched: number; aiMatched: number; skipped: number }>(
+          "categorizeSelected", { transactionIds: chunk }
+        );
+        totalCategorized += (result.ruleMatched ?? 0) + (result.aiMatched ?? 0);
+        totalSkipped += result.skipped ?? 0;
+        processed = Math.min(i + CHUNK, total);
+        onProgress?.(processed, total);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      await loadTransactions();
+      return { categorized: totalCategorized, skipped: totalSkipped, error: message };
     }
 
     // Reload so the UI reflects newly categorized rows
     await loadTransactions();
+    return { categorized: totalCategorized, skipped: totalSkipped };
   }
 
   // ── Type change ────────────────────────────────────────────────────────────

@@ -220,24 +220,44 @@ export default function ReviewPage() {
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [autoToast, setAutoToast] = useState<{ message: string; isError: boolean } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showToast(message: string, isError = false) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setAutoToast({ message, isError });
+    toastTimerRef.current = setTimeout(() => setAutoToast(null), 6000);
+  }
 
   const handleAutoAll = useCallback(async () => {
     setAutoProgress({ processed: 0, total: transactions.length });
-    await handleAutoCategorizeBatch("all", (processed, total) =>
+    const result = await handleAutoCategorizeBatch("all", (processed, total) =>
       setAutoProgress({ processed, total })
     );
     setAutoProgress(null);
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else if (result.categorized === 0 && result.skipped === 0) {
+      showToast("No transactions to categorize.");
+    } else {
+      showToast(`Categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}. ${result.skipped > 0 ? `${result.skipped} skipped.` : ""}`);
+    }
   }, [handleAutoCategorizeBatch, transactions.length]);
 
   const handleAutoSelected = useCallback(async () => {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     setAutoProgress({ processed: 0, total: ids.length });
-    await handleAutoCategorizeBatch(ids, (processed, total) =>
+    const result = await handleAutoCategorizeBatch(ids, (processed, total) =>
       setAutoProgress({ processed, total })
     );
     setAutoProgress(null);
     clearSelection();
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else {
+      showToast(`Categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}. ${result.skipped > 0 ? `${result.skipped} skipped.` : ""}`);
+    }
   }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
 
   const hasSelection = selectedIds.size > 0;
@@ -275,7 +295,7 @@ export default function ReviewPage() {
   // Compute vendor groups for "Apply to Similar" panel.
   // Shows groups with 2+ transactions where a majority share the same category suggestion.
   const similarGroups = useMemo(() => {
-    if (isCategorizedView || loading) return [];
+    if (loading) return [];
 
     const groups = new Map<string, typeof filteredTransactions>();
     for (const txn of filteredTransactions) {
@@ -322,10 +342,12 @@ export default function ReviewPage() {
         ? entities.find((e) => e.id === topEntityKey) ?? null
         : null;
 
-      // Only surface rows that still need category or entity applied
-      const needsAction = txns.filter(
-        (t) => !t.category || (entities.length > 0 && !t.entityId)
-      );
+      // Surface rows missing a category, or whose entity doesn't match the majority entity
+      const needsAction = txns.filter((t) => {
+        if (!t.category) return true;
+        if (topEntityObj && t.entityId !== topEntityObj.id) return true;
+        return false;
+      });
       if (needsAction.length === 0) continue;
 
       result.push({
@@ -420,6 +442,27 @@ export default function ReviewPage() {
             </button>
           </div>
         </div>
+
+        {/* Auto-categorize result toast */}
+        {autoToast && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "12px 16px",
+            borderRadius: "8px",
+            backgroundColor: autoToast.isError ? "#fef2f2" : "#f0fdf4",
+            border: `1px solid ${autoToast.isError ? "#fca5a5" : "#86efac"}`,
+            color: autoToast.isError ? "#b91c1c" : "#15803d",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontFamily: font,
+          }}>
+            <span>{autoToast.message}</span>
+            <button onClick={() => setAutoToast(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: "inherit", lineHeight: 1, padding: "0 0 0 12px" }}>×</button>
+          </div>
+        )}
 
         {/* Legend */}
         {!loading && !isCategorizedView && transactions.length > 0 && (
