@@ -1,0 +1,27 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Receipts ─────────────────────────────────────────────────────────────���─
+    // Each user may read and write only their own receipts folder.
+    // The Cloud Function (Admin SDK) bypasses these rules when reading for OCR.
+    // Owners may also read receipts uploaded by their shared users (spouse /
+    // accountant) so receipt thumbnails render for the account owner.
+
+    match /receipts/{userId}/{allPaths=**} {
+      // Uploader can read and write their own folder
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      // Account owner can read receipts their shared users uploaded
+      allow read: if request.auth != null
+        && firestore.get(
+             /databases/(default)/documents/users/$(request.auth.uid)
+           ).data.sharedUids.hasAny([userId]);
+    }
+
+    // ── Everything else is denied ──────────────────────────────────────────────
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

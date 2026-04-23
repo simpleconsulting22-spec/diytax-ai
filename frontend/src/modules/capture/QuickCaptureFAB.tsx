@@ -229,9 +229,11 @@ export default function QuickCaptureFAB() {
     reader.readAsDataURL(file);
 
     try {
-      // Upload to Firebase Storage
+      // Upload to Firebase Storage under the actual caller's uid so the path
+      // matches the extractReceiptData security check (which validates against
+      // the caller's auth uid, not the effective owner uid).
       const ext = file.type === "image/png" ? "png" : "jpg";
-      const path = `receipts/${ownerUid}/${Date.now()}.${ext}`;
+      const path = `receipts/${user!.uid}/${Date.now()}.${ext}`;
       const sref = storageRef(storage, path);
       await uploadBytes(sref, file);
       const url = await getDownloadURL(sref);
