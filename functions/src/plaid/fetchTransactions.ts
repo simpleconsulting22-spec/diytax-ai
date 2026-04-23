@@ -60,27 +60,36 @@ export async function fetchTransactionsForAccount(
     const transactionId = db.collection("transactions").doc().id;
     const merchantName = txn.merchant_name ?? txn.name ?? "";
     const description = txn.name ?? "";
+    // Plaid: positive = debit (expense), negative = credit (income)
+    const type = txn.amount >= 0 ? "expense" : "income";
+    const amount = Math.abs(txn.amount);
+    const taxYear = txn.date.split("-")[0];
 
     const txnData = {
       transactionId,
       uid,
       accountId,
       plaidTransactionId: txn.transaction_id,
-      amount: txn.amount,
+      amount,
+      type,
+      taxYear,
       date: txn.date,
       description,
       merchantName,
       category: "",
+      taxCategory: "",
+      taxSchedule: "",
       aiCategory: "",
       confidenceScore: 0,
       status: "needs_review",
+      source: "plaid",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await db.collection("transactions").doc(transactionId).set(txnData);
 
     // Categorize
-    await categorizeTransactionLogic(uid, transactionId, merchantName, description, txn.amount);
+    await categorizeTransactionLogic(uid, transactionId, merchantName, description, amount);
 
     imported++;
   }

@@ -32,6 +32,7 @@ import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
+import BankAccountsPage from "./modules/bank/BankAccountsPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
@@ -192,6 +193,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <ManageAccessPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/bank-accounts"
+        element={
+          <AuthGuard>
+            <BankAccountsPage />
           </AuthGuard>
         }
       />

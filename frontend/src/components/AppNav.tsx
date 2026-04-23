@@ -15,6 +15,7 @@ const NAV_LINKS = [
   { path: "/transactions", label: "Transaction History" },
   { path: "/review",       label: "Review" },
   { path: "/import-csv",   label: "Import CSV" },
+  { path: "/bank-accounts", label: "Bank Accounts" },
   { path: "/tax-summary",  label: "Business (Sch. C)" },
   { path: "/schedule-e",   label: "Rental Properties (Sch. E)" },
   { path: "/schedule-a",   label: "Deductions (Sch. A)" },

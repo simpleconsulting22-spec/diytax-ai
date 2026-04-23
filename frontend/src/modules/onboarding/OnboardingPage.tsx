@@ -115,7 +115,7 @@ const EXPENSE_OPTIONS: { value: ExpenseType; label: string }[] = [
 
 const DATA_SOURCE_OPTIONS: { value: DataSourcePreference; label: string; sublabel?: string }[] = [
   { value: "csv", label: "Upload a file (CSV)" },
-  { value: "bank_future", label: "Connect bank", sublabel: "Coming soon" },
+  { value: "bank", label: "Connect bank", sublabel: "Automatic sync via Plaid" },
   { value: "manual", label: "Enter manually" },
 ];
 

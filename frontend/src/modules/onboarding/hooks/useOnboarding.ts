@@ -30,7 +30,7 @@ export type ExpenseType =
   | "software"
   | "professional_services";
 
-export type DataSourcePreference = "csv" | "bank_future" | "manual";
+export type DataSourcePreference = "csv" | "bank" | "manual";
 
 export type FilingStatus =
   | "single"
@@ -324,8 +324,12 @@ export function useOnboarding() {
       await refreshUserDoc();
       if (state.isEditing) {
         navigate("/dashboard");
+      } else if (state.dataSourcePreference === "csv") {
+        navigate("/import-csv");
+      } else if (state.dataSourcePreference === "bank") {
+        navigate("/bank-accounts");
       } else {
-        navigate(state.dataSourcePreference === "csv" ? "/import-csv" : "/dashboard");
+        navigate("/dashboard");
       }
     } catch (e: unknown) {
       setState((prev) => ({
