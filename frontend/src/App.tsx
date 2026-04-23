@@ -30,6 +30,7 @@ import AcceptInvitePage from "./pages/AcceptInvitePage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
+import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
@@ -204,6 +205,7 @@ export default function App() {
       <AuthProvider>
         <TaxYearProvider>
           <AppRoutes />
+          <QuickCaptureFAB />
         </TaxYearProvider>
       </AuthProvider>
     </BrowserRouter>

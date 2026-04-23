@@ -15,3 +15,5 @@ export * from "./tax/generateTaxSummary";
 export * from "./modules/categories/mergeCategories";
 export * from "./invite/sendInvite";
 export * from "./invite/acceptInvite";
+export * from "./categorization/suggestCategory";
+export * from "./receipts/extractReceiptData";
