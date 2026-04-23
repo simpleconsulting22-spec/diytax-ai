@@ -31,6 +31,7 @@ import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
+import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
@@ -191,6 +192,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <ManageAccessPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/notifications"
+        element={
+          <AuthGuard>
+            <NotificationSettingsPage />
           </AuthGuard>
         }
       />

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
@@ -6,6 +6,7 @@ import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEPr
 import { useScheduleA } from "../tax/hooks/useScheduleA";
 import AppNav from "../../components/AppNav";
 import LiveTaxMeter from "./LiveTaxMeter";
+import { useNotifications } from "../../hooks/useNotifications";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -270,6 +271,10 @@ export default function DashboardPage() {
   const { selectedYear } = useTaxYear();
   const { data, loading, error, reload } = useDashboardData();
   const { data: scheduleAData, loading: scheduleALoading } = useScheduleA();
+  const { permission, requestPermission } = useNotifications();
+  const [notifDismissed, setNotifDismissed] = useState(
+    () => localStorage.getItem("notif_prompt_dismissed") === "1"
+  );
 
   const progress =
     data.total > 0 ? Math.round((data.categorized / data.total) * 100) : 0;
@@ -311,6 +316,33 @@ export default function DashboardPage() {
 
         {/* ── Live Tax Meter ───────────────────────────────────────────────── */}
         <LiveTaxMeter />
+
+        {/* ── Notification prompt ──────────────────────────────────────────── */}
+        {permission === "default" && !notifDismissed && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px",
+            padding: "12px 16px", backgroundColor: "#f0fdf4", border: "1px solid #86efac",
+            borderRadius: "10px", marginBottom: "20px",
+          }}>
+            <span style={{ fontSize: "13px", color: "#15803d" }}>
+              Get morning tax snapshots, expense reminders & quarterly deadline alerts.
+            </span>
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              <button
+                onClick={requestPermission}
+                style={{ padding: "6px 14px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "7px", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: font }}
+              >
+                Enable
+              </button>
+              <button
+                onClick={() => { setNotifDismissed(true); localStorage.setItem("notif_prompt_dismissed", "1"); }}
+                style={{ padding: "6px 10px", backgroundColor: "transparent", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "12px", cursor: "pointer", fontFamily: font }}
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Section 1: Overview ──────────────────────────────────────────── */}
 

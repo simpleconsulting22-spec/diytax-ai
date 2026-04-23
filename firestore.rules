@@ -215,6 +215,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Notification History ──────────────────────────────────────────────────
+    // Written by Cloud Functions (admin SDK) only; owners may read their own history.
+
+    match /notificationHistory/{doc} {
+      allow read:  if request.auth != null && request.auth.uid == resource.data.uid;
+      allow write: if false;
+    }
+
     // ── Blocked ───────────────────────────────────────────────────────────────
 
     match /userSecurity/{uid} {

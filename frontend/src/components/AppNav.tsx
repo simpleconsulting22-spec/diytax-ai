@@ -119,6 +119,22 @@ export default function AppNav() {
             )}
 
             <button
+              onClick={() => navigate("/settings/notifications")}
+              style={{
+                background: "none",
+                border: "none",
+                fontSize: "13px",
+                fontWeight: isActive("/settings/notifications") ? 700 : 500,
+                color: isActive("/settings/notifications") ? "#16A34A" : "#6b7280",
+                cursor: "pointer",
+                fontFamily: font,
+                padding: 0,
+              }}
+            >
+              Notifications
+            </button>
+
+            <button
               onClick={() => navigate("/onboarding")}
               style={{
                 background: "none",
@@ -364,6 +380,25 @@ export default function AppNav() {
               Team
             </button>
           )}
+          <button
+            onClick={() => navigate("/settings/notifications")}
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              padding: "12px 20px",
+              background: isActive("/settings/notifications") ? "#f0fdf4" : "none",
+              border: "none",
+              borderLeft: isActive("/settings/notifications") ? "3px solid #16A34A" : "3px solid transparent",
+              fontSize: "14px",
+              fontWeight: isActive("/settings/notifications") ? 700 : 400,
+              color: isActive("/settings/notifications") ? "#15803d" : "#374151",
+              cursor: "pointer",
+              fontFamily: font,
+            }}
+          >
+            Notifications
+          </button>
           <button
             onClick={() => navigate("/onboarding")}
             style={{
