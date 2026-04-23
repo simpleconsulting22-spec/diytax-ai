@@ -5,6 +5,7 @@ import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEProperty } from "./useDashboardData";
 import { useScheduleA } from "../tax/hooks/useScheduleA";
 import AppNav from "../../components/AppNav";
+import LiveTaxMeter from "./LiveTaxMeter";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -307,6 +308,9 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        {/* ── Live Tax Meter ───────────────────────────────────────────────── */}
+        <LiveTaxMeter />
 
         {/* ── Section 1: Overview ──────────────────────────────────────────── */}
 
