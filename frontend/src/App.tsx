@@ -33,6 +33,7 @@ import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
 import BankAccountsPage from "./modules/bank/BankAccountsPage";
+import PWAInstallBanner from "./components/PWAInstallBanner";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
@@ -224,6 +225,7 @@ export default function App() {
         <TaxYearProvider>
           <AppRoutes />
           <QuickCaptureFAB />
+          <PWAInstallBanner />
         </TaxYearProvider>
       </AuthProvider>
     </BrowserRouter>

@@ -274,15 +274,26 @@ export default function TaxSummaryPage() {
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
             {!loading && entities.length > 0 && (
-              <button
-                onClick={() => exportCSV(entities)}
-                style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-              >
-                Export CSV
-              </button>
+              <>
+                <button
+                  onClick={() => exportCSV(entities)}
+                  className="no-print"
+                  style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                >
+                  Export CSV
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="no-print"
+                  style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                >
+                  Print / PDF
+                </button>
+              </>
             )}
             <button
               onClick={reload}
+              className="no-print"
               style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
             >
               Refresh

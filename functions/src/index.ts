@@ -22,3 +22,4 @@ export * from "./notifications/eveningCapture";
 export * from "./notifications/quarterlyDeadline";
 export * from "./notifications/uncategorizedAlert";
 export * from "./notifications/deductionMilestone";
+export * from "./plaid/plaidWebhook";

@@ -43,6 +43,7 @@ export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, asy
   });
 
   const accessToken = exchangeResponse.data.access_token;
+  const itemId      = exchangeResponse.data.item_id;
 
   const accountId = admin.firestore().collection("accounts").doc().id;
   const db = admin.firestore();
@@ -51,6 +52,7 @@ export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, asy
     accountId,
     uid,
     plaidAccessToken: accessToken,
+    plaidItemId: itemId,
     institutionName: data.institutionName ?? "Unknown Bank",
     accountName: data.accountName ?? "Account",
     mask: data.mask ?? "",

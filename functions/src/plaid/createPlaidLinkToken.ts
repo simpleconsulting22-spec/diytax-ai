@@ -31,12 +31,15 @@ export const createPlaidLinkToken = onCall({ cors: true, invoker: "public" }, as
 
   const plaidClient = new PlaidApi(configuration);
 
+  const webhookUrl = process.env.PLAID_WEBHOOK_URL;
+
   const response = await plaidClient.linkTokenCreate({
     user: { client_user_id: uid },
     client_name: "DIYTax AI",
     products: [Products.Transactions],
     country_codes: [CountryCode.Us],
     language: "en",
+    ...(webhookUrl ? { webhook: webhookUrl } : {}),
   });
 
   return { linkToken: response.data.link_token };
