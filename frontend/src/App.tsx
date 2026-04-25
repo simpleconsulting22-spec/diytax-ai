@@ -33,6 +33,7 @@ import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
 import BankAccountsPage from "./modules/bank/BankAccountsPage";
+import AIParserPage from "./modules/parser/AIParserPage";
 import PWAInstallBanner from "./components/PWAInstallBanner";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -210,6 +211,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <NotificationSettingsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/ai-parser"
+        element={
+          <AuthGuard>
+            <AIParserPage />
           </AuthGuard>
         }
       />

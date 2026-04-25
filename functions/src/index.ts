@@ -23,3 +23,4 @@ export * from "./notifications/quarterlyDeadline";
 export * from "./notifications/uncategorizedAlert";
 export * from "./notifications/deductionMilestone";
 export * from "./plaid/plaidWebhook";
+export * from "./parser/parseFinancialData";
