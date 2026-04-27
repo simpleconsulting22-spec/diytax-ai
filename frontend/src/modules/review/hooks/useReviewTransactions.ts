@@ -19,6 +19,7 @@ import { useTaxYear, matchesTaxYear } from "../../../contexts/TaxYearContext";
 import { apiClient } from "../../../services/apiClient";
 import { getUserEntities, UserEntity } from "../../../services/entityService";
 import { getCustomCategories, addCustomCategory, AddCategoryResult } from "../../../services/customCategoriesService";
+import { findOrCreateAccountByName } from "../../../services/accountService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ export interface ReviewTransaction {
   type: "income" | "expense" | "transfer" | "refund";
   accountId: string | null;
   accountName: string | null;
+  importFile: string | null;
   subType: "credit_card_payment" | "loan_payment" | null;
   category: string | null;
   taxCategory: string | null;
@@ -147,10 +149,45 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         getCustomCategories(effectiveOwnerUid),
       ]);
 
+      // Two-pass account map: Plaid accounts first, then imported accounts
+      // resolve to their linked Plaid display name if one is set.
+      const plaidDisplayMap = new Map<string, string>();
       const accountMap = new Map<string, string>();
+
       accountSnap.docs.forEach((d) => {
-        accountMap.set(d.id, (d.data().name as string) ?? d.id);
+        const data = d.data();
+        if (data.institutionName) {
+          // Plaid account — build display name: "Chase – Checking ····1234"
+          const mask = data.mask ? ` ····${data.mask}` : "";
+          const display = `${data.institutionName} – ${data.accountName ?? d.id}${mask}`;
+          plaidDisplayMap.set(d.id, display);
+          accountMap.set(d.id, display);
+        }
       });
+
+      accountSnap.docs.forEach((d) => {
+        const data = d.data();
+        if (!data.institutionName) {
+          // Imported account — use linked Plaid display name if available
+          const linkedId = data.linkedPlaidAccountId as string | undefined;
+          const display = linkedId && plaidDisplayMap.has(linkedId)
+            ? plaidDisplayMap.get(linkedId)!
+            : (data.name as string) ?? d.id;
+          accountMap.set(d.id, display);
+        }
+      });
+
+      const importMap = new Map<string, string>();
+      try {
+        const importSnap = await getDocs(
+          query(collection(db, "imports"), where("userId", "==", effectiveOwnerUid))
+        );
+        importSnap.docs.forEach((d) => {
+          importMap.set(d.id, (d.data().fileName as string) ?? d.id);
+        });
+      } catch {
+        // imports index may not exist — fail silently
+      }
 
       const docs: ReviewTransaction[] = snap.docs.filter((d) =>
         matchesTaxYear(
@@ -168,7 +205,14 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           amount: data.amount ?? 0,
           type: data.type ?? "expense",
           accountId: (data.accountId as string) ?? null,
-          accountName: data.accountId ? (accountMap.get(data.accountId as string) ?? null) : null,
+          accountName: (data.accountName as string | undefined)?.trim()
+            ? (data.accountName as string)
+            : data.accountId
+            ? (accountMap.get(data.accountId as string) ?? null)
+            : null,
+          importFile: data.importId
+            ? (importMap.get(data.importId as string) ?? null)
+            : null,
           subType: (data.subType as ReviewTransaction["subType"]) ?? null,
           category: data.category ?? null,
           taxCategory: data.taxCategory ?? null,
@@ -492,6 +536,36 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     }
   }
 
+  // ── Bulk account name assign ───────────────────────────────────────────────
+
+  async function handleBulkAccountAssign(ids: string[], accountName: string) {
+    if (!user || !effectiveOwnerUid || ids.length === 0 || !accountName.trim()) return;
+    const trimmed = accountName.trim();
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
+    try {
+      const { id: accountId } = await findOrCreateAccountByName(effectiveOwnerUid, trimmed);
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 499)) {
+          batch.update(doc(db, "transactions", id), { accountName: trimmed, accountId });
+        }
+        await batch.commit();
+      }
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((id) => !ids.includes(id))),
+        transactions: prev.transactions.map((t) =>
+          ids.includes(t.id) ? { ...t, accountName: trimmed, accountId } : t
+        ),
+      }));
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((id) => !ids.includes(id))),
+      }));
+    }
+  }
+
   // ── Auto-categorize with progress (Task 2B) ────────────────────────────────
 
   async function handleAutoCategorizeBatch(
@@ -719,6 +793,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     handleBulkConfirm,
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
+    handleBulkAccountAssign,
     handleAutoCategorizeBatch,
     handleApplySimilar,
     handleCustomCategoryAdded,

@@ -1,8 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { collection, query, where, getDocs, orderBy, limit } from "firebase/firestore";
+import { collection, query, where, getDocs, orderBy, limit, getDoc, doc, writeBatch } from "firebase/firestore";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
+import { findOrCreateAccountByName } from "../../services/accountService";
 import CSVPreviewTable from "./components/CSVPreviewTable";
 import { useCSVImport } from "./hooks/useCSVImport";
 import AppNav from "../../components/AppNav";
@@ -39,6 +40,7 @@ interface ImportRecord {
   importedCount: number;
   skippedCount: number;
   createdAt: { seconds: number } | null;
+  source?: string;
 }
 
 function useImportHistory(refreshKey: number) {
@@ -54,7 +56,7 @@ function useImportHistory(refreshKey: number) {
           collection(db, "imports"),
           where("userId", "==", ownerUid),
           orderBy("createdAt", "desc"),
-          limit(10)
+          limit(100)
         )
       );
       setHistory(
@@ -79,12 +81,32 @@ function fmtDate(record: ImportRecord): string {
   });
 }
 
+// ─── Import expansion ─────────────────────────────────────────────────────────
+
+interface TxnRow {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+  type: string;
+  accountName: string | null; // resolved from accountId or raw accountName
+  hasAccountId: boolean;
+}
+
+interface Expansion {
+  txns: TxnRow[];
+  loading: boolean;
+  applying: boolean;
+  input: string;        // current value of the "set account" text box
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ImportCSVPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning, accountType } = state;
@@ -92,6 +114,112 @@ export default function ImportCSVPage() {
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
   const [accountName, setAccountName] = useState("");
+
+  // ── Import expansion ───────────────────────────────────────────────────────
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expansions, setExpansions] = useState<Map<string, Expansion>>(new Map());
+
+  function setExpansion(importId: string, patch: Partial<Expansion>) {
+    setExpansions((prev) => {
+      const current = prev.get(importId) ?? { txns: [], loading: false, applying: false, input: "" };
+      return new Map([...prev, [importId, { ...current, ...patch }]]);
+    });
+  }
+
+  async function loadExpansion(importId: string) {
+    const existing = expansions.get(importId);
+    if ((existing?.txns.length ?? 0) > 0 || existing?.loading) return;
+    setExpansion(importId, { loading: true });
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, "transactions"),
+          where("uid", "==", ownerUid),
+          where("importId", "==", importId)
+        )
+      );
+
+      // Collect distinct accountIds to resolve names
+      const accountIdSet = new Set<string>();
+      snap.docs.forEach((d) => {
+        const aid = d.data().accountId as string | null;
+        if (aid) accountIdSet.add(aid);
+      });
+
+      const accountNameMap = new Map<string, string>();
+      await Promise.all(
+        [...accountIdSet].map(async (aid) => {
+          const accDoc = await getDoc(doc(db, "accounts", aid));
+          if (accDoc.exists()) accountNameMap.set(aid, accDoc.data().name as string);
+        })
+      );
+
+      const txns: TxnRow[] = snap.docs.map((d) => {
+        const data = d.data();
+        const accountId = data.accountId as string | null;
+        const rawAccountName = (data.accountName as string) ?? null;
+        const resolvedAccount = rawAccountName?.trim()
+          ? rawAccountName
+          : accountId
+          ? (accountNameMap.get(accountId) ?? null)
+          : null;
+        return {
+          id: d.id,
+          date: data.date as string,
+          description: data.description as string,
+          amount: data.amount as number,
+          type: data.type as string,
+          accountName: resolvedAccount,
+          hasAccountId: !!accountId,
+        };
+      });
+
+      txns.sort((a, b) => a.date.localeCompare(b.date));
+
+      // Pre-fill input with existing account name if consistent across all
+      const names = [...new Set(txns.map((t) => t.accountName).filter(Boolean))];
+      const prefill = names.length === 1 ? names[0]! : "";
+
+      setExpansion(importId, { txns, loading: false, input: prefill });
+    } catch {
+      setExpansion(importId, { loading: false });
+    }
+  }
+
+  async function applyAccountName(importId: string) {
+    const exp = expansions.get(importId);
+    const name = exp?.input.trim();
+    if (!name || !ownerUid || !exp) return;
+    setExpansion(importId, { applying: true });
+    try {
+      const { id: accountId } = await findOrCreateAccountByName(ownerUid, name);
+      const ids = exp.txns.map((t) => t.id);
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        ids.slice(i, i + 499).forEach((id) =>
+          batch.update(doc(db, "transactions", id), { accountName: name, accountId })
+        );
+        await batch.commit();
+      }
+      // Update local state so the panel reflects the change immediately
+      setExpansion(importId, {
+        applying: false,
+        txns: exp.txns.map((t) => ({ ...t, accountName: name, hasAccountId: true })),
+        input: name,
+      });
+    } catch {
+      setExpansion(importId, { applying: false });
+    }
+  }
+
+  function toggleExpand(importId: string) {
+    if (expandedId === importId) {
+      setExpandedId(null);
+    } else {
+      setExpandedId(importId);
+      loadExpansion(importId);
+    }
+  }
 
   // Refresh history after a successful import
   useEffect(() => {
@@ -381,53 +509,166 @@ export default function ImportCSVPage() {
             <div style={{ padding: "16px 24px", borderBottom: "1px solid #e5e7eb", fontWeight: 700, fontSize: "14px", color: "#111827" }}>
               Import History
             </div>
-            {importHistory.map((record) => (
-              <div
-                key={record.id}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 24px", borderBottom: "1px solid #f9fafb", fontSize: "14px" }}
-              >
-                <div>
-                  <div style={{ fontWeight: 500, color: "#111827" }}>{record.fileName}</div>
-                  <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px" }}>{fmtDate(record)}</div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ fontWeight: 600, color: "#16A34A" }}>{record.importedCount} imported</span>
-                    {record.skippedCount > 0 && (
-                      <span style={{ color: "#9ca3af", marginLeft: "10px" }}>{record.skippedCount} skipped</span>
-                    )}
-                  </div>
-                  {deletingId === record.id ? (
-                    <div style={{ display: "flex", gap: "6px" }}>
-                      <button
-                        onClick={async () => {
-                          await deleteImport(record.id);
-                          setDeletingId(null);
-                          setHistoryRefreshKey((k) => k + 1);
-                        }}
-                        style={{ padding: "5px 12px", backgroundColor: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-                      >
-                        Confirm Delete
-                      </button>
-                      <button
-                        onClick={() => setDeletingId(null)}
-                        style={{ padding: "5px 10px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setDeletingId(record.id)}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px 8px", borderRadius: "4px" }}
-                      title="Delete import"
+            {importHistory.map((record) => {
+              const exp = expansions.get(record.id);
+              const isExpanded = expandedId === record.id;
+              const withAccount = exp?.txns.filter((t) => t.accountName).length ?? 0;
+              const withoutAccount = (exp?.txns.length ?? 0) - withAccount;
+
+              return (
+                <div key={record.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                  {/* ── Row header ── */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 24px", fontSize: "14px" }}>
+                    <div
+                      onClick={() => toggleExpand(record.id)}
+                      style={{ cursor: "pointer", flex: 1 }}
                     >
-                      🗑 Delete
-                    </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "11px", color: "#9ca3af", transition: "transform 0.15s", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+                        <span style={{ fontWeight: 500, color: "#111827" }}>{record.fileName}</span>
+                        {record.source === "ai_parser" && (
+                          <span style={{ fontSize: "10px", fontWeight: 700, padding: "1px 6px", borderRadius: "999px", backgroundColor: "#eff6ff", color: "#1d4ed8", whiteSpace: "nowrap" }}>AI Parser</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px", paddingLeft: "18px" }}>{fmtDate(record)}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ fontWeight: 600, color: "#16A34A" }}>{record.importedCount} imported</span>
+                        {record.skippedCount > 0 && (
+                          <span style={{ color: "#9ca3af", marginLeft: "10px" }}>{record.skippedCount} skipped</span>
+                        )}
+                      </div>
+                      {deletingId === record.id ? (
+                        <div style={{ display: "flex", gap: "6px" }}>
+                          <button
+                            onClick={async () => {
+                              await deleteImport(record.id);
+                              setDeletingId(null);
+                              setHistoryRefreshKey((k) => k + 1);
+                            }}
+                            style={{ padding: "5px 12px", backgroundColor: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                          >
+                            Confirm Delete
+                          </button>
+                          <button
+                            onClick={() => setDeletingId(null)}
+                            style={{ padding: "5px 10px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setDeletingId(record.id)}
+                          style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px 8px", borderRadius: "4px" }}
+                          title="Delete import"
+                        >
+                          🗑 Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── Expanded panel ── */}
+                  {isExpanded && (
+                    <div style={{ borderTop: "1px solid #f3f4f6", backgroundColor: "#f9fafb", padding: "16px 24px" }}>
+                      {exp?.loading ? (
+                        <div style={{ fontSize: "13px", color: "#9ca3af" }}>Loading transactions…</div>
+                      ) : exp && exp.txns.length > 0 ? (
+                        <>
+                          {/* Summary + set account */}
+                          <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px", flexWrap: "wrap" }}>
+                            <div style={{ fontSize: "13px", color: "#374151" }}>
+                              <strong>{exp.txns.length}</strong> transactions —{" "}
+                              {withoutAccount > 0 ? (
+                                <span style={{ color: "#d97706", fontWeight: 600 }}>{withoutAccount} have no account name</span>
+                              ) : (
+                                <span style={{ color: "#16A34A", fontWeight: 600 }}>all have account names ✓</span>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginLeft: "auto" }}>
+                              <span style={{ fontSize: "12px", color: "#6b7280", whiteSpace: "nowrap" }}>Set account for all:</span>
+                              <input
+                                type="text"
+                                value={exp.input}
+                                onChange={(e) => setExpansion(record.id, { input: e.target.value })}
+                                placeholder="e.g. Chase Checking"
+                                style={{
+                                  padding: "5px 10px",
+                                  borderRadius: "6px",
+                                  border: "1px solid #d1d5db",
+                                  fontSize: "12px",
+                                  fontFamily: font,
+                                  outline: "none",
+                                  width: "160px",
+                                }}
+                              />
+                              <button
+                                onClick={() => applyAccountName(record.id)}
+                                disabled={!exp.input.trim() || exp.applying}
+                                style={{
+                                  padding: "5px 14px",
+                                  backgroundColor: exp.input.trim() && !exp.applying ? "#16A34A" : "#d1d5db",
+                                  color: "#fff",
+                                  border: "none",
+                                  borderRadius: "6px",
+                                  fontSize: "12px",
+                                  fontWeight: 600,
+                                  cursor: exp.input.trim() && !exp.applying ? "pointer" : "not-allowed",
+                                  fontFamily: font,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {exp.applying ? "Applying…" : "Apply to all"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Transaction mini-table */}
+                          <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e5e7eb", backgroundColor: "#fff" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                              <thead>
+                                <tr style={{ backgroundColor: "#f9fafb" }}>
+                                  {["Date", "Description", "Amount", "Account"].map((h) => (
+                                    <th key={h} style={{ padding: "7px 10px", textAlign: h === "Amount" ? "right" : "left", fontWeight: 600, color: "#6b7280", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {exp.txns.slice(0, 50).map((t, i) => (
+                                  <tr key={t.id} style={{ borderBottom: "1px solid #f3f4f6", backgroundColor: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                                    <td style={{ padding: "6px 10px", color: "#9ca3af", whiteSpace: "nowrap" }}>{t.date}</td>
+                                    <td style={{ padding: "6px 10px", color: "#111827", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, whiteSpace: "nowrap", color: t.type === "expense" ? "#dc2626" : t.type === "transfer" ? "#9ca3af" : "#16A34A" }}>
+                                      {t.type === "expense" ? "−" : t.type === "transfer" ? "" : "+"}${Math.abs(t.amount ?? 0).toFixed(2)}
+                                    </td>
+                                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                                      {t.accountName ? (
+                                        <span style={{ color: "#374151" }}>{t.accountName}</span>
+                                      ) : (
+                                        <span style={{ color: "#d1d5db" }}>—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {exp.txns.length > 50 && (
+                              <div style={{ padding: "8px 12px", fontSize: "12px", color: "#9ca3af", borderTop: "1px solid #f3f4f6", textAlign: "center" }}>
+                                Showing 50 of {exp.txns.length} — <span style={{ color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }} onClick={() => navigate("/review")}>view all on Review page</span>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: "13px", color: "#9ca3af" }}>No transactions found for this import.</div>
+                      )}
+                    </div>
                   )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
