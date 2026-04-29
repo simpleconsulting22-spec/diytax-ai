@@ -7,6 +7,7 @@ export * from "./auth/verifyMfaCode";
 export * from "./plaid/createPlaidLinkToken";
 export * from "./plaid/exchangePublicToken";
 export * from "./plaid/fetchTransactions";
+export * from "./plaid/backfillTransactionTypes";
 export * from "./categorization/categorizeTransaction";
 export * from "./categorization/updateTransactionCategory";
 export * from "./categorization/categorizeBatch";

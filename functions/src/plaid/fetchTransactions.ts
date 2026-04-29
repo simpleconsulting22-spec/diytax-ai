@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { requireAuth } from "../middleware/auth";
 import { categorizeTransactionLogic } from "../categorization/categorizeTransaction";
+import { classifyTransactionType } from "./classifyTransactionType";
 
 function getPlaidClient(): PlaidApi {
   const clientId = process.env.PLAID_CLIENT_ID;
@@ -104,23 +105,46 @@ export async function fetchTransactionsForAccount(
   const db = admin.firestore();
 
   const endDate = new Date().toISOString().split("T")[0];
-  // Default to 90 days back for ongoing syncs; caller can pass an exact start date
-  const defaultStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-  const resolvedStart = startDate ?? defaultStart;
 
-  const response = await plaidClient.transactionsGet({
-    access_token: accessToken,
-    start_date: resolvedStart,
-    end_date: endDate,
-    options: {
-      count: 500,
-      offset: 0,
-      // Filter to this specific account when provided — avoids mixing accounts
-      ...(plaidAccountId ? { account_ids: [plaidAccountId] } : {}),
-    },
-  });
+  // First sync (no prior transactions for this account) → 24 months of history.
+  // Ongoing syncs → 90 days. Caller can override via startDate.
+  let resolvedStart: string;
+  if (startDate) {
+    resolvedStart = startDate;
+  } else {
+    const existing = await db.collection("transactions")
+      .where("uid", "==", uid)
+      .where("accountId", "==", accountId)
+      .limit(1)
+      .get();
+    const isFirstSync = existing.empty;
+    const daysBack = isFirstSync ? 730 : 90;
+    resolvedStart = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
+      .toISOString().split("T")[0];
+  }
 
-  const plaidTransactions = response.data.transactions;
+  // Plaid caps each call at 500 transactions — paginate until we've fetched all.
+  const plaidTransactions: Awaited<ReturnType<typeof plaidClient.transactionsGet>>["data"]["transactions"] = [];
+  let offset = 0;
+  let totalAvailable = Infinity;
+  while (offset < totalAvailable) {
+    const response = await plaidClient.transactionsGet({
+      access_token: accessToken,
+      start_date: resolvedStart,
+      end_date: endDate,
+      options: {
+        count: 500,
+        offset,
+        ...(plaidAccountId ? { account_ids: [plaidAccountId] } : {}),
+      },
+    });
+    plaidTransactions.push(...response.data.transactions);
+    totalAvailable = response.data.total_transactions;
+    if (response.data.transactions.length === 0) break;
+    offset += response.data.transactions.length;
+  }
+
+  console.log(`[PLAID_FETCH] uid=${uid} acct=${accountId} from=${resolvedStart} to=${endDate} fetched=${plaidTransactions.length}/${totalAvailable}`);
 
   // Create an import record so this batch can be found / deleted later
   const importRef = db.collection("imports").doc();
@@ -176,49 +200,10 @@ export async function fetchTransactionsForAccount(
     const transactionId = db.collection("transactions").doc().id;
     const merchantName = txn.merchant_name ?? txn.name ?? "";
 
-    // Determine income vs expense using three layers, in priority order.
-    //
-    // Layer 1 — personal_finance_category (Plaid's ML-derived label, institution-agnostic).
-    //   Some institutions (e.g. PenFed) do not populate this field → it will be null.
-    //
-    // Layer 2 — legacy category array (always populated by Plaid for every institution).
-    //   Plaid's taxonomy reliably distinguishes direction for transfers:
-    //     ["Transfer", "Credit"] = money coming IN  → income
-    //     ["Transfer", "Debit"]  = money going OUT  → expense
-    //     ["Payroll"]            = paycheck         → income
-    //     Any merchant category  = purchase         → expense
-    //
-    // Layer 3 — amount sign (Plaid standard: positive = money out = expense).
-    //   Only used as a last resort when both category fields are absent.
+    const { type, source: typeSource } = classifyTransactionType(txn);
 
-    const pfcPrimary    = (txn.personal_finance_category?.primary ?? "").toUpperCase();
-    const legacyCats    = (txn.category ?? []) as string[];
-    const legacyPrimary = legacyCats[0] ?? "";
-
-    // DIAGNOSTIC — remove after confirming PenFed category data
-    if (imported < 5) {
-      console.log(`[TXN_DEBUG] name="${txn.name}" amount=${txn.amount} pfc="${pfcPrimary}" legacy=${JSON.stringify(legacyCats)}`);
-    }
-
-    let type: "income" | "expense";
-
-    if (pfcPrimary === "INCOME" || pfcPrimary === "TRANSFER_IN") {
-      type = "income";
-    } else if (pfcPrimary !== "") {
-      // Any other pfc (food, transport, utilities, etc.) = expense
-      type = "expense";
-    } else if (legacyPrimary === "Payroll") {
-      type = "income";
-    } else if (legacyPrimary === "Transfer") {
-      // Credit sub-category = money arriving; everything else = money leaving
-      type = legacyCats.includes("Credit") ? "income" : "expense";
-    } else if (legacyPrimary !== "") {
-      // Any non-transfer merchant category = expense
-      type = "expense";
-    } else {
-      // No category data at all — fall back to amount sign
-      type = txn.amount >= 0 ? "expense" : "income";
-    }
+    // DIAGNOSTIC — log every transaction across every connected account
+    console.log(`[TXN_DEBUG] uid=${uid} acct=${plaidAccountId ?? "all"} name="${txn.name}" amount=${txn.amount} pfc="${(txn.personal_finance_category?.primary ?? "").toUpperCase()}" legacy=${JSON.stringify(txn.category ?? [])} type=${type} src=${typeSource}`);
 
     const taxYear = parseInt(txn.date.split("-")[0]);
 
@@ -231,11 +216,16 @@ export async function fetchTransactionsForAccount(
       plaidAccountId: txn.account_id,
       amount,
       type,
+      typeSource,
       taxYear,
       date: txn.date,
       description,
       normalizedDescription: normDesc,
       merchantName,
+      // Raw Plaid signals — kept so backfill can re-classify without re-fetching
+      plaidSignedAmount: txn.amount,
+      plaidPfcPrimary: txn.personal_finance_category?.primary ?? null,
+      plaidLegacyCategories: (txn.category ?? []) as string[],
       category: "",
       taxCategory: "",
       taxSchedule: "",

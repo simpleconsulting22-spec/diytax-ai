@@ -132,6 +132,9 @@ export default function BankAccountsPage() {
   const [wipeResult, setWipeResult] = useState<string | null>(null);
   const isWipeAdmin = (user?.email?.toLowerCase() ?? "") === "deboijiwola@gmail.com";
 
+  const [reclassifyLoading, setReclassifyLoading] = useState(false);
+  const [reclassifyResult, setReclassifyResult] = useState<string | null>(null);
+
   // sync start date per account (defaults to 90 days ago)
   const defaultStartDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
   const [syncStartMap, setSyncStartMap] = useState<Record<string, string>>({});
@@ -630,6 +633,25 @@ export default function BankAccountsPage() {
     }
   }
 
+  async function handleReclassify() {
+    setReclassifyLoading(true);
+    setReclassifyResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{ updated: number; unchanged: number; errors: string[] }>(
+        "backfillTransactionTypes",
+        {}
+      );
+      const errNote = res.errors.length > 0 ? ` (${res.errors.length} account error${res.errors.length !== 1 ? "s" : ""})` : "";
+      setReclassifyResult(`Re-classified ${res.updated} transaction${res.updated !== 1 ? "s" : ""}. ${res.unchanged} already correct${errNote}.`);
+      setTimeout(() => setReclassifyResult(null), 12000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Re-classify failed.");
+    } finally {
+      setReclassifyLoading(false);
+    }
+  }
+
   async function handleWipeDryRun() {
     setWipeLoading(true);
     setWipeResult(null);
@@ -1119,6 +1141,28 @@ export default function BankAccountsPage() {
               </div>
             )}
           </>
+        )}
+
+        {/* ── Re-classify income/expense (visible to all users with Plaid accounts) ── */}
+        {plaidAccounts.length > 0 && (
+          <div style={{ marginTop: "32px", padding: "16px 20px", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 6px rgba(0,0,0,0.05)" }}>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#374151", marginBottom: "6px" }}>Re-classify Transaction Types</div>
+            <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "12px" }}>
+              Re-runs the income/expense detection on all your Plaid-imported transactions using the latest classifier. Useful if older transactions were misclassified (e.g. expenses appearing as income). Non-destructive — only the income/expense field is updated; categories and notes are preserved.
+            </div>
+            {reclassifyResult && (
+              <div style={{ fontSize: "12px", color: "#15803d", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "8px 12px", marginBottom: "10px" }}>
+                ✓ {reclassifyResult}
+              </div>
+            )}
+            <button
+              onClick={handleReclassify}
+              disabled={reclassifyLoading}
+              style={{ padding: "7px 16px", backgroundColor: reclassifyLoading ? "#f3f4f6" : "#f9fafb", color: reclassifyLoading ? "#9ca3af" : "#374151", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: reclassifyLoading ? "default" : "pointer", fontFamily: font }}
+            >
+              {reclassifyLoading ? "Re-classifying… (this may take a minute)" : "Re-classify All Plaid Transactions"}
+            </button>
+          </div>
         )}
 
         {/* ── Data Tools (admin only — legacy migration + wipe) ────────── */}
