@@ -10,8 +10,7 @@ export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, asy
   const data = request.data as {
     publicToken?: string;
     institutionName?: string;
-    accountName?: string;
-    mask?: string;
+    accounts?: Array<{ plaidAccountId: string; name: string; mask: string }>;
   };
 
   if (!data.publicToken) {
@@ -37,6 +36,7 @@ export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, asy
   });
 
   const plaidClient = new PlaidApi(configuration);
+  const db = admin.firestore();
 
   const exchangeResponse = await plaidClient.itemPublicTokenExchange({
     public_token: data.publicToken,
@@ -44,25 +44,39 @@ export const exchangePublicToken = onCall({ cors: true, invoker: "public" }, asy
 
   const accessToken = exchangeResponse.data.access_token;
   const itemId      = exchangeResponse.data.item_id;
+  const institution = data.institutionName ?? "Unknown Bank";
 
-  const accountId = admin.firestore().collection("accounts").doc().id;
-  const db = admin.firestore();
+  const accounts = data.accounts ?? [];
 
-  await db.collection("accounts").doc(accountId).set({
-    accountId,
-    uid,
-    plaidAccessToken: accessToken,
-    plaidItemId: itemId,
-    institutionName: data.institutionName ?? "Unknown Bank",
-    accountName: data.accountName ?? "Account",
-    mask: data.mask ?? "",
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  for (const acct of accounts) {
+    // Skip if this Plaid account is already saved (handles update mode re-submissions)
+    const existing = await db
+      .collection("accounts")
+      .where("uid", "==", uid)
+      .where("plaidAccountId", "==", acct.plaidAccountId)
+      .limit(1)
+      .get();
 
-  // Fetch transactions in background (don't await to avoid timeout)
-  fetchTransactionsForAccount(uid, accountId, accessToken).catch((err) =>
-    console.error("fetchTransactionsForAccount error:", err)
-  );
+    if (!existing.empty) continue;
 
-  return { accountId };
+    const docId = db.collection("accounts").doc().id;
+    await db.collection("accounts").doc(docId).set({
+      uid,
+      plaidAccessToken: accessToken,
+      plaidItemId: itemId,
+      institutionName: institution,
+      accountName: acct.name,
+      mask: acct.mask,
+      plaidAccountId: acct.plaidAccountId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const label = `${institution} – ${acct.name}${acct.mask ? ` ····${acct.mask}` : ""}`;
+    // Fetch transactions for this specific account in background
+    fetchTransactionsForAccount(uid, docId, accessToken, label, undefined, acct.plaidAccountId).catch(
+      (err) => console.error("fetchTransactionsForAccount error:", err)
+    );
+  }
+
+  return { ok: true };
 });

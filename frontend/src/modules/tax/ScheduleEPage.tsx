@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { Home, AlertTriangle } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleE, PropertyScheduleE, ScheduleELine } from "./hooks/useScheduleE";
 import { useTaxYear } from "../../contexts/TaxYearContext";
@@ -284,7 +285,9 @@ export default function ScheduleEPage() {
               boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
             }}
           >
-            <div style={{ fontSize: "40px", marginBottom: "12px" }}>🏠</div>
+            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+              <Home size={44} strokeWidth={1.6} />
+            </div>
             <div style={{ fontWeight: 700, fontSize: "16px", color: "#111827", marginBottom: "8px" }}>
               No rental income data yet
             </div>
@@ -316,7 +319,7 @@ export default function ScheduleEPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "18px" }}>⚠</span>
+                  <AlertTriangle size={20} strokeWidth={2.2} color="#ea580c" />
                   <span style={{ fontWeight: 600, color: "#9a3412", fontSize: "14px" }}>
                     Some rental transactions are not assigned to a property
                   </span>

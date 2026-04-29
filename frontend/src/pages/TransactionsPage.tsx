@@ -110,9 +110,13 @@ export default function TransactionHistoryPage() {
       getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid))),
     ]).then(([snap, accountSnap]) => {
       const accountMap = new Map<string, string>();
-      accountSnap.docs.forEach((d) =>
-        accountMap.set(d.id, (d.data().name as string) ?? d.id)
-      );
+      accountSnap.docs.forEach((d) => {
+        const data = d.data();
+        const display = (data.name as string)
+          ?? (data.accountName as string)
+          ?? d.id;
+        accountMap.set(d.id, display);
+      });
 
       const data: TxnRow[] = snap.docs.map((d) => {
         const txn = d.data();

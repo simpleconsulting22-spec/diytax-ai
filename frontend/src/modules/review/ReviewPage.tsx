@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { X } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
@@ -203,6 +204,7 @@ export default function ReviewPage() {
     handleBulkConfirm,
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
+    handleBulkAccountAssign,
     handleAutoCategorizeBatch,
     handleApplySimilar,
     handleCustomCategoryAdded,
@@ -218,7 +220,10 @@ export default function ReviewPage() {
   const isCategorizedView = statusFilter === "categorized";
 
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
+  const [bulkAccountName, setBulkAccountName] = useState("");
   const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [filterAccountInput, setFilterAccountInput] = useState("");
+  const [applyingFilterAccount, setApplyingFilterAccount] = useState(false);
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
   const [autoToast, setAutoToast] = useState<{ message: string; isError: boolean } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -228,6 +233,15 @@ export default function ReviewPage() {
     setAutoToast({ message, isError });
     toastTimerRef.current = setTimeout(() => setAutoToast(null), 6000);
   }
+
+  // Pre-fill the account name input when the filter changes to a named account
+  useEffect(() => {
+    if (accountFilter !== "all" && accountFilter !== "__blank__") {
+      setFilterAccountInput(accountFilter);
+    } else {
+      setFilterAccountInput("");
+    }
+  }, [accountFilter]);
 
   const handleAutoAll = useCallback(async () => {
     setAutoProgress({ processed: 0, total: transactions.length });
@@ -266,9 +280,13 @@ export default function ReviewPage() {
     new Set(transactions.map((t) => t.accountName).filter((n): n is string => !!n))
   ).sort();
 
+  const hasBlankAccounts = transactions.some((t) => !t.accountName?.trim());
+
   const filteredTransactions =
     accountFilter === "all"
       ? transactions
+      : accountFilter === "__blank__"
+      ? transactions.filter((t) => !t.accountName?.trim())
       : transactions.filter((t) => t.accountName === accountFilter);
 
   // allSelected and toggleSelectAll must reflect the filtered view only.
@@ -281,6 +299,14 @@ export default function ReviewPage() {
   const handleToggleSelectAllFiltered = useCallback(() => {
     toggleSelectAll(filteredTransactions.map((t) => t.id));
   }, [toggleSelectAll, filteredTransactions]);
+
+  const handleApplyFilterAccount = useCallback(async () => {
+    const name = filterAccountInput.trim();
+    if (!name || filteredTransactions.length === 0) return;
+    setApplyingFilterAccount(true);
+    await handleBulkAccountAssign(filteredTransactions.map((t) => t.id), name);
+    setApplyingFilterAccount(false);
+  }, [filterAccountInput, filteredTransactions, handleBulkAccountAssign]);
 
   // Full category pool for the bulk toolbar (no entity-type filtering —
   // bulk assign applies to mixed transactions).
@@ -460,7 +486,13 @@ export default function ReviewPage() {
             fontFamily: font,
           }}>
             <span>{autoToast.message}</span>
-            <button onClick={() => setAutoToast(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: "inherit", lineHeight: 1, padding: "0 0 0 12px" }}>×</button>
+            <button
+              onClick={() => setAutoToast(null)}
+              aria-label="Dismiss"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", lineHeight: 1, padding: "4px 0 4px 12px", display: "flex", alignItems: "center" }}
+            >
+              <X size={16} strokeWidth={2.4} />
+            </button>
           </div>
         )}
 
@@ -487,8 +519,8 @@ export default function ReviewPage() {
         )}
 
         {/* Account filter */}
-        {!loading && accountOptions.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+        {!loading && (accountOptions.length > 0 || hasBlankAccounts) && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
             <select
               value={accountFilter}
@@ -506,6 +538,9 @@ export default function ReviewPage() {
               }}
             >
               <option value="all">All Accounts</option>
+              {hasBlankAccounts && (
+                <option value="__blank__">— No Account —</option>
+              )}
               {accountOptions.map((name) => (
                 <option key={name} value={name}>{name}</option>
               ))}
@@ -517,6 +552,50 @@ export default function ReviewPage() {
               >
                 Clear
               </button>
+            )}
+
+            {/* Set account for all filtered */}
+            {accountFilter !== "all" && filteredTransactions.length > 0 && (
+              <>
+                <div style={{ width: "1px", height: "20px", backgroundColor: "#e5e7eb" }} />
+                <span style={{ fontSize: "13px", color: "#6b7280", whiteSpace: "nowrap" }}>
+                  Set account for {filteredTransactions.length}:
+                </span>
+                <input
+                  type="text"
+                  value={filterAccountInput}
+                  onChange={(e) => setFilterAccountInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleApplyFilterAccount(); }}
+                  placeholder="Account name…"
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "13px",
+                    fontFamily: font,
+                    outline: "none",
+                    width: "160px",
+                  }}
+                />
+                <button
+                  onClick={handleApplyFilterAccount}
+                  disabled={!filterAccountInput.trim() || applyingFilterAccount}
+                  style={{
+                    padding: "5px 14px",
+                    backgroundColor: filterAccountInput.trim() && !applyingFilterAccount ? "#16A34A" : "#d1d5db",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: filterAccountInput.trim() && !applyingFilterAccount ? "pointer" : "not-allowed",
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {applyingFilterAccount ? "Applying…" : "Apply to all"}
+                </button>
+              </>
             )}
           </div>
         )}
@@ -716,6 +795,51 @@ export default function ReviewPage() {
           >
             {autoProgress ? `${autoProgress.processed}/${autoProgress.total}…` : "✦ AI Categorize"}
           </button>
+
+          {/* Set Account */}
+          <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", color: "#94a3b8", whiteSpace: "nowrap" }}>Set account:</span>
+            <input
+              type="text"
+              value={bulkAccountName}
+              onChange={(e) => setBulkAccountName(e.target.value)}
+              placeholder="Account name…"
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                backgroundColor: "#0f172a",
+                color: "#f1f5f9",
+                fontSize: "13px",
+                fontFamily: font,
+                outline: "none",
+                width: "140px",
+              }}
+            />
+            <button
+              onClick={() => {
+                if (!bulkAccountName.trim()) return;
+                handleBulkAccountAssign([...selectedIds], bulkAccountName.trim());
+                setBulkAccountName("");
+              }}
+              disabled={!bulkAccountName.trim()}
+              style={{
+                padding: "6px 14px",
+                backgroundColor: bulkAccountName.trim() ? "#334155" : "#1e293b",
+                color: bulkAccountName.trim() ? "#f1f5f9" : "#475569",
+                border: "1px solid #334155",
+                borderRadius: "6px",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: bulkAccountName.trim() ? "pointer" : "not-allowed",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Apply
+            </button>
+          </div>
 
           <div style={{ flex: 1 }} />
 

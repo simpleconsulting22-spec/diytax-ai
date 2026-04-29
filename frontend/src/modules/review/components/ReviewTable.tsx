@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
+import { CheckCircle2 } from "lucide-react";
 import { ReviewTransaction } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
@@ -240,7 +241,7 @@ function EntityDropdown({
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
 
-type SortCol = "date" | "amount" | "description" | "type" | "category" | null;
+type SortCol = "date" | "amount" | "description" | "type" | "category" | "account" | "entity" | "confidence" | null;
 type SortDir = "asc" | "desc";
 
 // ─── Table ────────────────────────────────────────────────────────────────────
@@ -338,6 +339,9 @@ export default function ReviewTable({
       else if (sortCol === "description") { av = (a.description || "").toLowerCase(); bv = (b.description || "").toLowerCase(); }
       else if (sortCol === "type")   { av = a.type;                              bv = b.type; }
       else if (sortCol === "category") { av = (a.category || "").toLowerCase();  bv = (b.category || "").toLowerCase(); }
+      else if (sortCol === "account") { av = (a.accountName || "").toLowerCase(); bv = (b.accountName || "").toLowerCase(); }
+      else if (sortCol === "entity") { av = (a.entityName || "").toLowerCase();  bv = (b.entityName || "").toLowerCase(); }
+      else if (sortCol === "confidence") { av = a.categorizationConfidence ?? -1; bv = b.categorizationConfidence ?? -1; }
       if (av < bv) return sortDir === "asc" ? -1 : 1;
       if (av > bv) return sortDir === "asc" ? 1 : -1;
       return 0;
@@ -358,7 +362,9 @@ export default function ReviewTable({
   if (transactions.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "64px 24px", color: "#6b7280" }}>
-        <div style={{ fontSize: "40px", marginBottom: "12px" }}>✅</div>
+        <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center" }}>
+          <CheckCircle2 size={48} strokeWidth={1.7} color="#16A34A" />
+        </div>
         <div style={{ fontWeight: 700, color: "#111827", fontSize: "16px", marginBottom: "4px" }}>
           All caught up!
         </div>
@@ -386,10 +392,9 @@ export default function ReviewTable({
             {sortableTH("amount", "Amount", { textAlign: "right", width: "90px" })}
             {sortableTH("type", "Type", { width: "80px" })}
             {sortableTH("category", "Category", { minWidth: "160px" })}
-            {entities.length > 0 && (
-              <th style={{ ...TH, width: "120px" }}>Assign To</th>
-            )}
-            <th style={{ ...TH, textAlign: "center", width: "60px" }}>Conf.</th>
+            {sortableTH("account", "Account", { width: "110px" })}
+            {entities.length > 0 && sortableTH("entity", "Assign To", { width: "120px" })}
+            {sortableTH("confidence", "Conf.", { textAlign: "center", width: "60px" })}
             <th style={{ ...TH, textAlign: "center", width: "80px" }}>Action</th>
           </tr>
         </thead>
@@ -505,6 +510,21 @@ export default function ReviewTable({
                     onChange={(cat) => onCategoryChange(txn.id, cat)}
                     onCustomCategoryAdded={onCustomCategoryAdded}
                   />
+                </td>
+
+                {/* Account */}
+                <td style={{ ...TD, maxWidth: "130px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {txn.accountName?.trim() || "—"}
+                  </div>
+                  {txn.importFile && (
+                    <div
+                      title={txn.importFile}
+                      style={{ fontSize: "10px", color: "#c4c9d4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}
+                    >
+                      {txn.importFile.replace(/\.[^.]+$/, "")}
+                    </div>
+                  )}
                 </td>
 
                 {/* Assign To */}

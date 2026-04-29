@@ -20,6 +20,9 @@ export function usePWAInstall() {
     }
 
     function onPrompt(e: Event) {
+      // Only defer the native banner if we intend to show our own UI.
+      // If the user already dismissed, let the browser handle it natively.
+      if (localStorage.getItem("pwa_install_dismissed") === "1") return;
       e.preventDefault();
       setInstallPrompt(e as BeforeInstallPromptEvent);
     }

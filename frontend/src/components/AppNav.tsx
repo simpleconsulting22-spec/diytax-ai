@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { signOut } from "firebase/auth";
+import { Home, Wallet, Landmark, FileText, Settings as SettingsIcon, LogOut, type LucideIcon } from "lucide-react";
 import { auth } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -8,57 +9,137 @@ import YearSelector from "./YearSelector";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
-// ─── Nav link definitions ─────────────────────────────────────────────────────
+// ─── Hub structure ────────────────────────────────────────────────────────────
+//
+// Five top-level hubs. Each owns a set of routes (used to compute which hub is
+// "active") plus a sub-link list shown as a contextual second row.
 
-const NAV_LINKS = [
-  { path: "/dashboard",    label: "Dashboard" },
-  { path: "/transactions", label: "Transaction History" },
-  { path: "/review",       label: "Review" },
-  { path: "/import-csv",   label: "Import CSV" },
-  { path: "/bank-accounts", label: "Bank Accounts" },
-  { path: "/ai-parser",    label: "AI Parser" },
-  { path: "/tax-summary",  label: "Business (Sch. C)" },
-  { path: "/schedule-e",   label: "Rental Properties (Sch. E)" },
-  { path: "/schedule-a",   label: "Deductions (Sch. A)" },
-  { path: "/transfers",     label: "Transfers" },
-  { path: "/budget",       label: "Budget" },
-] as const;
+interface SubLink { path: string; label: string }
+interface Hub {
+  key: string;
+  label: string;
+  primaryPath: string;
+  routes: string[];
+  subLinks: SubLink[];
+  Icon: LucideIcon;
+}
+
+const HUBS: Hub[] = [
+  {
+    key: "home",
+    label: "Home",
+    primaryPath: "/dashboard",
+    routes: ["/dashboard"],
+    subLinks: [],
+    Icon: Home,
+  },
+  {
+    key: "money",
+    label: "Money",
+    primaryPath: "/transactions",
+    routes: ["/transactions", "/review", "/transfers", "/budget", "/spending-forecast"],
+    subLinks: [
+      { path: "/transactions", label: "Transactions" },
+      { path: "/review", label: "Needs Review" },
+      { path: "/transfers", label: "Transfers" },
+      { path: "/budget", label: "Budget" },
+      { path: "/spending-forecast", label: "Forecast" },
+    ],
+    Icon: Wallet,
+  },
+  {
+    key: "accounts",
+    label: "Accounts",
+    primaryPath: "/bank-accounts",
+    routes: ["/bank-accounts", "/import-csv", "/ai-parser"],
+    subLinks: [
+      { path: "/bank-accounts", label: "Bank Accounts" },
+      { path: "/import-csv", label: "Import CSV" },
+      { path: "/ai-parser", label: "AI Parser" },
+    ],
+    Icon: Landmark,
+  },
+  {
+    key: "taxes",
+    label: "Taxes",
+    primaryPath: "/tax-estimate",
+    routes: [
+      "/tax-estimate",
+      "/tax-summary",
+      "/schedule-e",
+      "/schedule-a",
+      "/deductions",
+      "/income/ssa",
+      "/income/retirement",
+      "/summary",
+    ],
+    subLinks: [
+      { path: "/tax-estimate", label: "Tax Estimate" },
+      { path: "/tax-summary", label: "Business (Sch. C)" },
+      { path: "/schedule-e", label: "Rental (Sch. E)" },
+      { path: "/schedule-a", label: "Deductions (Sch. A)" },
+    ],
+    Icon: FileText,
+  },
+  {
+    key: "settings",
+    label: "Settings",
+    primaryPath: "/manage-access",
+    routes: ["/manage-access", "/settings/notifications", "/onboarding"],
+    subLinks: [
+      { path: "/manage-access", label: "Team" },
+      { path: "/settings/notifications", label: "Notifications" },
+      { path: "/onboarding", label: "Profile" },
+    ],
+    Icon: SettingsIcon,
+  },
+];
+
+const MOBILE_TAB_HEIGHT = 64; // base height; safe-area-inset-bottom is added on top
+
+function findActiveHub(pathname: string): Hub | null {
+  for (const h of HUBS) {
+    if (h.routes.some((r) => pathname === r || pathname.startsWith(r + "/"))) return h;
+  }
+  return null;
+}
 
 // ─── AppNav ───────────────────────────────────────────────────────────────────
 
 export default function AppNav() {
   const navigate    = useNavigate();
   const location    = useLocation();
-  const { user, role }    = useAuth();
+  const { user, role } = useAuth();
   const isMobile    = useIsMobile();
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const drawerRef   = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
-
+  // Reserve space at the bottom so fixed bottom-tab bar doesn't cover content.
   useEffect(() => {
-    if (!drawerOpen) return;
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setDrawerOpen(false); }
-    function onOutside(e: MouseEvent) {
-      if (drawerRef.current && !drawerRef.current.contains(e.target as Node))
-        setDrawerOpen(false);
+    if (!isMobile) {
+      document.body.style.paddingBottom = "";
+      return;
     }
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onOutside);
+    document.body.style.paddingBottom = `calc(${MOBILE_TAB_HEIGHT}px + env(safe-area-inset-bottom, 0px))`;
     return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onOutside);
+      document.body.style.paddingBottom = "";
     };
-  }, [drawerOpen]);
+  }, [isMobile]);
 
   async function handleSignOut() {
     await signOut(auth);
     navigate("/login");
   }
 
-  const isActive = (path: string) => location.pathname === path;
+  const activeHub = findActiveHub(location.pathname);
+  const isPathActive = (path: string) => location.pathname === path;
 
-  // ── Desktop nav — 2-row layout ─────────────────────────────────────────────
+  function visibleSubLinks(hub: Hub): SubLink[] {
+    if (hub.key === "settings" && role !== "owner") {
+      return hub.subLinks.filter((s) => s.path !== "/manage-access");
+    }
+    return hub.subLinks;
+  }
+
+  // ── Desktop nav ────────────────────────────────────────────────────────────
 
   if (!isMobile) {
     return (
@@ -71,97 +152,62 @@ export default function AppNav() {
         zIndex: 100,
         fontFamily: font,
       }}>
-
-        {/* ── Row 1: logo + account actions ── */}
+        {/* Row 1: logo + 5 hubs + account actions */}
         <div style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "10px 24px 8px",
-          borderBottom: "1px solid #f3f4f6",
+          padding: "10px 24px",
+          gap: "24px",
         }}>
-          {/* Logo */}
           <button
             onClick={() => navigate("/dashboard")}
             style={{
-              background: "none",
-              border: "none",
-              fontSize: "17px",
-              fontWeight: 800,
-              color: "#16A34A",
-              cursor: "pointer",
-              fontFamily: font,
-              padding: 0,
-              letterSpacing: "-0.01em",
+              background: "none", border: "none", fontSize: "17px", fontWeight: 800,
+              color: "#16A34A", cursor: "pointer", fontFamily: font, padding: 0,
+              letterSpacing: "-0.01em", flexShrink: 0,
             }}
           >
             DIYTax AI
           </button>
 
-          {/* Right: year selector + settings + email + sign out */}
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flex: 1, justifyContent: "center" }}>
+            {HUBS.map((hub) => {
+              const active = activeHub?.key === hub.key;
+              return (
+                <button
+                  key={hub.key}
+                  onClick={() => navigate(hub.primaryPath)}
+                  style={{
+                    background: "none", border: "none",
+                    fontSize: "14px",
+                    fontWeight: active ? 700 : 500,
+                    color: active ? "#16A34A" : "#4b5563",
+                    cursor: "pointer", padding: "6px 14px", borderRadius: "8px",
+                    backgroundColor: active ? "#f0fdf4" : "transparent",
+                    fontFamily: font, whiteSpace: "nowrap",
+                    transition: "color 0.15s, background-color 0.15s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#111827";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#4b5563";
+                  }}
+                >
+                  {hub.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "14px", flexShrink: 0 }}>
             <YearSelector variant="nav" />
 
-            {role === "owner" && (
-              <button
-                onClick={() => navigate("/manage-access")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  fontSize: "13px",
-                  fontWeight: isActive("/manage-access") ? 700 : 500,
-                  color: isActive("/manage-access") ? "#16A34A" : "#6b7280",
-                  cursor: "pointer",
-                  fontFamily: font,
-                  padding: 0,
-                }}
-              >
-                Team
-              </button>
-            )}
-
-            <button
-              onClick={() => navigate("/settings/notifications")}
-              style={{
-                background: "none",
-                border: "none",
-                fontSize: "13px",
-                fontWeight: isActive("/settings/notifications") ? 700 : 500,
-                color: isActive("/settings/notifications") ? "#16A34A" : "#6b7280",
-                cursor: "pointer",
-                fontFamily: font,
-                padding: 0,
-              }}
-            >
-              Notifications
-            </button>
-
-            <button
-              onClick={() => navigate("/onboarding")}
-              style={{
-                background: "none",
-                border: "none",
-                fontSize: "13px",
-                fontWeight: isActive("/onboarding") ? 700 : 500,
-                color: isActive("/onboarding") ? "#16A34A" : "#6b7280",
-                cursor: "pointer",
-                fontFamily: font,
-                padding: 0,
-              }}
-            >
-              Settings
-            </button>
-
-            {/* Divider */}
-            <span style={{ width: "1px", height: "16px", backgroundColor: "#e5e7eb", display: "inline-block" }} />
-
             <span style={{
-              fontSize: "12px",
-              color: "#9ca3af",
-              maxWidth: "180px",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              fontSize: "12px", color: "#9ca3af",
+              maxWidth: "180px", overflow: "hidden",
+              textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}>
               {user?.email}
             </span>
@@ -169,16 +215,10 @@ export default function AppNav() {
             <button
               onClick={handleSignOut}
               style={{
-                padding: "5px 12px",
-                backgroundColor: "transparent",
-                color: "#dc2626",
-                border: "1.5px solid #fca5a5",
-                borderRadius: "6px",
-                fontSize: "12px",
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: font,
-                whiteSpace: "nowrap",
+                padding: "5px 12px", backgroundColor: "transparent", color: "#dc2626",
+                border: "1.5px solid #fca5a5", borderRadius: "6px",
+                fontSize: "12px", fontWeight: 600, cursor: "pointer",
+                fontFamily: font, whiteSpace: "nowrap",
               }}
             >
               Sign Out
@@ -186,271 +226,199 @@ export default function AppNav() {
           </div>
         </div>
 
-        {/* ── Row 2: nav links ── */}
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "2px",
-          padding: "0 20px",
-          overflowX: "auto",
-          scrollbarWidth: "none",
-        }}>
-          {NAV_LINKS.map(({ path, label }) => {
-            const active = isActive(path);
-            return (
-              <button
-                key={path}
-                onClick={() => navigate(path)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  borderBottom: active ? "2px solid #16A34A" : "2px solid transparent",
-                  fontSize: "12.5px",
-                  fontWeight: active ? 700 : 500,
-                  color: active ? "#16A34A" : "#4b5563",
-                  cursor: "pointer",
-                  padding: "10px 10px 8px",
-                  fontFamily: font,
-                  whiteSpace: "nowrap",
-                  transition: "color 0.15s, border-color 0.15s",
-                  flexShrink: 0,
-                }}
-                onMouseEnter={e => {
-                  if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#111827";
-                }}
-                onMouseLeave={e => {
-                  if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#4b5563";
-                }}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
+        {/* Row 2: contextual sub-nav */}
+        {activeHub && visibleSubLinks(activeHub).length > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "2px",
+            padding: "0 24px", borderTop: "1px solid #f3f4f6",
+            overflowX: "auto", scrollbarWidth: "none",
+          }}>
+            {visibleSubLinks(activeHub).map(({ path, label }) => {
+              const active = isPathActive(path);
+              return (
+                <button
+                  key={path}
+                  onClick={() => navigate(path)}
+                  style={{
+                    background: "none", border: "none",
+                    borderBottom: active ? "2px solid #16A34A" : "2px solid transparent",
+                    fontSize: "12.5px",
+                    fontWeight: active ? 700 : 500,
+                    color: active ? "#16A34A" : "#6b7280",
+                    cursor: "pointer", padding: "9px 12px 7px",
+                    fontFamily: font, whiteSpace: "nowrap",
+                    transition: "color 0.15s, border-color 0.15s",
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#111827";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!active) (e.currentTarget as HTMLButtonElement).style.color = "#6b7280";
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </nav>
     );
   }
 
   // ── Mobile nav ─────────────────────────────────────────────────────────────
+  // Top bar: logo + year. Sub-nav pill row when in a hub with sub-pages.
+  // Bottom: fixed tab bar with 5 hubs (icon + label).
+
+  const subs = activeHub ? visibleSubLinks(activeHub) : [];
 
   return (
     <>
       {/* Mobile top bar */}
-      <nav style={{
+      <div style={{
         backgroundColor: "#fff",
         borderBottom: "1px solid #e5e7eb",
-        boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
-        padding: "0 16px",
-        height: "52px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
+        boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
         position: "sticky",
         top: 0,
         zIndex: 100,
         fontFamily: font,
       }}>
-        <button
-          onClick={() => navigate("/dashboard")}
-          style={{ background: "none", border: "none", fontSize: "17px", fontWeight: 800, color: "#16A34A", cursor: "pointer", fontFamily: font, padding: 0 }}
-        >
-          DIYTax AI
-        </button>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <button
-            onClick={handleSignOut}
-            style={{
-              padding: "5px 10px",
-              backgroundColor: "transparent",
-              color: "#dc2626",
-              border: "1.5px solid #fca5a5",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: 600,
-              cursor: "pointer",
-              fontFamily: font,
-            }}
-          >
-            Sign Out
-          </button>
-          <button
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open menu"
-            style={{
-              background: "none",
-              border: "1px solid #e5e7eb",
-              borderRadius: "8px",
-              padding: "6px 10px",
-              cursor: "pointer",
-              fontSize: "18px",
-              lineHeight: 1,
-              color: "#374151",
-            }}
-          >
-            ☰
-          </button>
-        </div>
-      </nav>
-
-      {/* Backdrop */}
-      {drawerOpen && (
-        <div
-          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.4)", zIndex: 200 }}
-          onClick={() => setDrawerOpen(false)}
-        />
-      )}
-
-      {/* Slide-in drawer */}
-      <div
-        ref={drawerRef}
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          width: "280px",
-          backgroundColor: "#fff",
-          zIndex: 201,
-          boxShadow: "-4px 0 24px rgba(0,0,0,0.15)",
-          display: "flex",
-          flexDirection: "column",
-          transform: drawerOpen ? "translateX(0)" : "translateX(100%)",
-          transition: "transform 0.25s ease",
-          fontFamily: font,
-        }}
-      >
-        {/* Drawer header */}
         <div style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "16px 20px",
-          borderBottom: "1px solid #e5e7eb",
+          padding: "0 16px",
+          height: "52px",
         }}>
-          <span style={{ fontSize: "16px", fontWeight: 800, color: "#16A34A" }}>DIYTax AI</span>
           <button
-            onClick={() => setDrawerOpen(false)}
-            style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#6b7280", padding: "4px" }}
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Nav links */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-          {NAV_LINKS.map(({ path, label }) => (
-            <button
-              key={path}
-              onClick={() => navigate(path)}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                padding: "12px 20px",
-                background: isActive(path) ? "#f0fdf4" : "none",
-                border: "none",
-                borderLeft: isActive(path) ? "3px solid #16A34A" : "3px solid transparent",
-                fontSize: "14px",
-                fontWeight: isActive(path) ? 700 : 400,
-                color: isActive(path) ? "#15803d" : "#374151",
-                cursor: "pointer",
-                fontFamily: font,
-              }}
-            >
-              {label}
-            </button>
-          ))}
-          {role === "owner" && (
-            <button
-              onClick={() => navigate("/manage-access")}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                padding: "12px 20px",
-                background: isActive("/manage-access") ? "#f0fdf4" : "none",
-                border: "none",
-                borderLeft: isActive("/manage-access") ? "3px solid #16A34A" : "3px solid transparent",
-                fontSize: "14px",
-                fontWeight: isActive("/manage-access") ? 700 : 400,
-                color: isActive("/manage-access") ? "#15803d" : "#374151",
-                cursor: "pointer",
-                fontFamily: font,
-              }}
-            >
-              Team
-            </button>
-          )}
-          <button
-            onClick={() => navigate("/settings/notifications")}
+            onClick={() => navigate("/dashboard")}
             style={{
-              display: "block",
-              width: "100%",
-              textAlign: "left",
-              padding: "12px 20px",
-              background: isActive("/settings/notifications") ? "#f0fdf4" : "none",
-              border: "none",
-              borderLeft: isActive("/settings/notifications") ? "3px solid #16A34A" : "3px solid transparent",
-              fontSize: "14px",
-              fontWeight: isActive("/settings/notifications") ? 700 : 400,
-              color: isActive("/settings/notifications") ? "#15803d" : "#374151",
-              cursor: "pointer",
-              fontFamily: font,
+              background: "none", border: "none",
+              fontSize: "17px", fontWeight: 800, color: "#16A34A",
+              cursor: "pointer", fontFamily: font, padding: 0,
             }}
           >
-            Notifications
+            DIYTax AI
           </button>
-          <button
-            onClick={() => navigate("/onboarding")}
-            style={{
-              display: "block",
-              width: "100%",
-              textAlign: "left",
-              padding: "12px 20px",
-              background: isActive("/onboarding") ? "#f0fdf4" : "none",
-              border: "none",
-              borderLeft: isActive("/onboarding") ? "3px solid #16A34A" : "3px solid transparent",
-              fontSize: "14px",
-              fontWeight: isActive("/onboarding") ? 700 : 400,
-              color: isActive("/onboarding") ? "#15803d" : "#374151",
-              cursor: "pointer",
-              fontFamily: font,
-            }}
-          >
-            Settings
-          </button>
-        </div>
-
-        {/* Drawer footer */}
-        <div style={{ borderTop: "1px solid #e5e7eb", padding: "16px 20px" }}>
-          <div style={{ marginBottom: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <YearSelector variant="nav" />
+            <button
+              onClick={handleSignOut}
+              aria-label="Sign out"
+              title="Sign out"
+              style={{
+                background: "none",
+                border: "none",
+                padding: "8px",
+                cursor: "pointer",
+                color: "#9ca3af",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <LogOut size={18} strokeWidth={2} />
+            </button>
           </div>
-          {user?.email && (
-            <div style={{ fontSize: "12px", color: "#9ca3af", marginBottom: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {user.email}
-            </div>
-          )}
-          <button
-            onClick={handleSignOut}
-            style={{
-              width: "100%",
-              padding: "10px",
-              backgroundColor: "transparent",
-              color: "#dc2626",
-              border: "1.5px solid #fca5a5",
-              borderRadius: "8px",
-              fontSize: "14px",
-              fontWeight: 600,
-              cursor: "pointer",
-              fontFamily: font,
-            }}
-          >
-            Sign Out
-          </button>
         </div>
+
+        {/* Sub-nav pills (sticky under top bar) */}
+        {subs.length > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "6px",
+            padding: "8px 12px",
+            borderTop: "1px solid #f3f4f6",
+            overflowX: "auto", scrollbarWidth: "none",
+            WebkitOverflowScrolling: "touch",
+          }}>
+            {subs.map(({ path, label }) => {
+              const active = isPathActive(path);
+              return (
+                <button
+                  key={path}
+                  onClick={() => navigate(path)}
+                  style={{
+                    flexShrink: 0,
+                    padding: "8px 14px",
+                    borderRadius: "999px",
+                    border: "none",
+                    backgroundColor: active ? "#16A34A" : "#f3f4f6",
+                    color: active ? "#fff" : "#374151",
+                    fontSize: "13px",
+                    fontWeight: active ? 700 : 500,
+                    fontFamily: font,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    transition: "background-color 0.15s",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {/* Bottom tab bar — fixed */}
+      <nav
+        aria-label="Primary"
+        style={{
+          position: "fixed",
+          bottom: 0, left: 0, right: 0,
+          backgroundColor: "#fff",
+          borderTop: "1px solid #e5e7eb",
+          boxShadow: "0 -2px 16px rgba(0,0,0,0.06)",
+          display: "flex",
+          alignItems: "stretch",
+          justifyContent: "space-around",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          zIndex: 200,
+          fontFamily: font,
+        }}
+      >
+        {HUBS.map((hub) => {
+          const active = activeHub?.key === hub.key;
+          const Icon = hub.Icon;
+          return (
+            <button
+              key={hub.key}
+              onClick={() => navigate(hub.primaryPath)}
+              aria-label={hub.label}
+              style={{
+                flex: 1,
+                background: "none",
+                border: "none",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "5px",
+                padding: "8px 4px",
+                minHeight: `${MOBILE_TAB_HEIGHT}px`,
+                cursor: "pointer",
+                color: active ? "#16A34A" : "#374151",
+                fontFamily: font,
+                WebkitFontSmoothing: "antialiased",
+                MozOsxFontSmoothing: "grayscale",
+              }}
+            >
+              <Icon size={24} strokeWidth={active ? 2.4 : 2.1} color={active ? "#16A34A" : "#374151"} />
+              <span style={{
+                fontSize: "12px",
+                fontWeight: active ? 700 : 600,
+                letterSpacing: "0.02em",
+                lineHeight: 1.1,
+                color: active ? "#16A34A" : "#374151",
+              }}>
+                {hub.label}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
     </>
   );
 }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useTaxCalculator } from "./useTaxCalculator";
 import type { TaxEstimate } from "./taxCalculator";
@@ -210,7 +211,11 @@ function InlineNumberEditor({
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
-export default function LiveTaxMeter() {
+interface LiveTaxMeterProps {
+  needsReviewCount?: number;
+}
+
+export default function LiveTaxMeter({ needsReviewCount = 0 }: LiveTaxMeterProps) {
   const navigate = useNavigate();
   const { selectedYear } = useTaxYear();
   const { estimate, loading, profile, trend, saveW2Income, saveIraContributions } =
@@ -219,6 +224,7 @@ export default function LiveTaxMeter() {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showHowCalc, setShowHowCalc] = useState(false);
   const [editingW2, setEditingW2] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   // Keep sync with profile changes
   useEffect(() => {
@@ -349,21 +355,22 @@ export default function LiveTaxMeter() {
         </button>
       </div>
 
-      {/* ── Primary number ── */}
+      {/* ── Primary number — dramatically scaled hero ── */}
       <div
         style={{
           display: "flex",
           alignItems: "baseline",
-          gap: "10px",
-          marginBottom: "6px",
+          gap: "12px",
+          marginBottom: "8px",
+          flexWrap: "wrap",
         }}
       >
         <div
           style={{
-            fontSize: "52px",
+            fontSize: "clamp(56px, 14vw, 88px)",
             fontWeight: 800,
             color: meterColor,
-            letterSpacing: "-2px",
+            letterSpacing: "-0.03em",
             fontVariantNumeric: "tabular-nums",
             lineHeight: 1,
           }}
@@ -373,11 +380,11 @@ export default function LiveTaxMeter() {
         {trendIcon && (
           <div
             style={{
-              fontSize: "24px",
+              fontSize: "clamp(22px, 4vw, 32px)",
               fontWeight: 700,
               color: trendColor,
               lineHeight: 1,
-              marginBottom: "4px",
+              marginBottom: "6px",
             }}
           >
             {trendIcon}
@@ -385,17 +392,86 @@ export default function LiveTaxMeter() {
         )}
       </div>
 
-      <div style={{ fontSize: "14px", color: "#6b7280", marginBottom: "22px" }}>
+      <div style={{ fontSize: "15px", lineHeight: 1.5, color: "#4b5563", marginBottom: needsReviewCount > 0 ? "16px" : "22px" }}>
         Estimated tax owed for {selectedYear}
         {" · "}
-        <span style={{ fontWeight: 600, color: meterColor }}>
+        <span style={{ fontWeight: 700, color: meterColor }}>
           {e.effectiveRate.toFixed(1)}% effective rate
         </span>
         {" · "}
-        <span style={{ color: "#9ca3af" }}>{e.marginalRate}% marginal</span>
+        <span style={{ color: "#6b7280" }}>{e.marginalRate}% marginal</span>
       </div>
 
-      {/* ── Secondary stats grid ── */}
+      {/* ── Action chip: review prompt ── */}
+      {needsReviewCount > 0 && (
+        <button
+          onClick={() => navigate("/review")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            backgroundColor: "#fff",
+            border: `1px solid ${cardBorder}`,
+            borderRadius: "999px",
+            padding: "8px 14px 8px 16px",
+            fontSize: "13px",
+            fontWeight: 600,
+            color: "#111827",
+            cursor: "pointer",
+            fontFamily: font,
+            marginBottom: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            transition: "transform 0.1s ease, box-shadow 0.1s ease",
+          }}
+          onMouseEnter={(ev) => {
+            (ev.currentTarget as HTMLButtonElement).style.transform = "translateY(-1px)";
+            (ev.currentTarget as HTMLButtonElement).style.boxShadow = "0 3px 8px rgba(0,0,0,0.08)";
+          }}
+          onMouseLeave={(ev) => {
+            (ev.currentTarget as HTMLButtonElement).style.transform = "translateY(0)";
+            (ev.currentTarget as HTMLButtonElement).style.boxShadow = "0 1px 3px rgba(0,0,0,0.04)";
+          }}
+        >
+          <span style={{
+            backgroundColor: meterColor,
+            color: "#fff",
+            borderRadius: "999px",
+            padding: "1px 8px",
+            fontSize: "12px",
+            fontWeight: 700,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {needsReviewCount}
+          </span>
+          <span>{needsReviewCount === 1 ? "transaction needs your eye" : "transactions need your eye"}</span>
+          <ArrowRight size={14} strokeWidth={2.4} color="#6b7280" />
+        </button>
+      )}
+
+      {/* ── Show / hide details toggle ── */}
+      <button
+        onClick={() => setShowDetails((v) => !v)}
+        style={{
+          background: "none",
+          border: "none",
+          color: meterColor,
+          fontSize: "13px",
+          fontWeight: 600,
+          cursor: "pointer",
+          padding: "4px 0",
+          fontFamily: font,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "4px",
+          marginBottom: showDetails ? "16px" : "0",
+        }}
+      >
+        {showDetails ? <ChevronUp size={14} strokeWidth={2.4} /> : <ChevronDown size={14} strokeWidth={2.4} />}
+        <span>{showDetails ? "Hide details" : "Show details"}</span>
+      </button>
+
+      {/* ── Secondary stats grid (collapsed by default) ── */}
+      {showDetails && (
       <div
         style={{
           display: "flex",
@@ -430,8 +506,10 @@ export default function LiveTaxMeter() {
           </div>
         ))}
       </div>
+      )}
 
-      {/* ── Tax Breakdown toggle ── */}
+      {/* ── Tax Breakdown toggle (collapsed by default) ── */}
+      {showDetails && (
       <div style={{ marginBottom: "16px" }}>
         <button
           onClick={() => setShowBreakdown((v) => !v)}
@@ -523,11 +601,15 @@ export default function LiveTaxMeter() {
           </div>
         )}
       </div>
+      )}
 
       {/* ── How is this calculated? ── */}
       {showHowCalc && <HowCalcPanel e={e} />}
 
-      {/* ── W-2 / IRA income row ── */}
+      {/* ── W-2 / IRA income row ──
+          Always shown when W-2 is missing (value prompt) or being edited;
+          otherwise hidden behind the "Show details" toggle. */}
+      {(profile.w2Income === 0 || editingW2 || showDetails) && (
       <div
         style={{
           borderTop: `1px solid ${dividerColor}`,
@@ -625,6 +707,7 @@ export default function LiveTaxMeter() {
           />
         )}
       </div>
+      )}
     </div>
   );
 }

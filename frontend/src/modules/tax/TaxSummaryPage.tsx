@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { FileText, AlertTriangle } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useScheduleC, EntityScheduleC, ScheduleCLine } from "./hooks/useScheduleC";
@@ -358,7 +359,9 @@ export default function TaxSummaryPage() {
               boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
             }}
           >
-            <div style={{ fontSize: "40px", marginBottom: "12px" }}>📋</div>
+            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+              <FileText size={44} strokeWidth={1.6} />
+            </div>
             <div style={{ fontWeight: 700, fontSize: "16px", color: "#111827", marginBottom: "8px" }}>
               No Schedule C data yet
             </div>
@@ -390,7 +393,7 @@ export default function TaxSummaryPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "18px" }}>⚠</span>
+                  <AlertTriangle size={20} strokeWidth={2.2} color="#ea580c" />
                   <span style={{ fontWeight: 600, color: "#9a3412", fontSize: "14px" }}>
                     Some Schedule C transactions are not assigned to a business entity
                   </span>

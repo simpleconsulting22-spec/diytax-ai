@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
-import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { collection, doc, setDoc, addDoc, serverTimestamp } from "firebase/firestore";
+import { Camera } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
@@ -118,6 +119,17 @@ export default function AIParserPage() {
     setImporting(true);
     setError(null);
     try {
+      // Create import record first so we have an importId to stamp on each transaction
+      const importRef = await addDoc(collection(db, "imports"), {
+        userId:        ownerUid,
+        fileName:      `[AI] ${accountName.trim() || "Imported"}`,
+        importedCount: rows.length,
+        skippedCount:  0,
+        source:        "ai_parser",
+        createdAt:     serverTimestamp(),
+      });
+      const importId = importRef.id;
+
       await Promise.all(
         rows.map((row) => {
           const txnRef = doc(collection(db, "transactions"));
@@ -126,16 +138,17 @@ export default function AIParserPage() {
             uid:           ownerUid,
             amount:        row.amount,
             type:          row.type,
-            taxYear:       row.date.slice(0, 4) || selectedYear,
+            taxYear:       parseInt(row.date.slice(0, 4)) || selectedYear,
             date:          row.date,
             description:   row.description,
             merchantName:  row.description,
-            accountName:   accountName || "Imported",
+            accountName:   accountName.trim() || "Imported",
             category:      "",
             taxCategory:   "",
             taxSchedule:   "",
             status:        "needs_review",
             source:        "ai_parser",
+            importId,
             createdAt:     serverTimestamp(),
           });
         })
@@ -265,7 +278,9 @@ Or paste a CSV, email, or any text containing transactions.`}
                 </div>
               ) : (
                 <>
-                  <div style={{ fontSize: "36px", marginBottom: "10px" }}>📷</div>
+                  <div style={{ marginBottom: "10px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+                    <Camera size={40} strokeWidth={1.6} />
+                  </div>
                   <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>
                     Drop screenshot here or click to browse
                   </div>
@@ -418,6 +433,7 @@ Or paste a CSV, email, or any text containing transactions.`}
               <li>CSV files in any column order (paste the content)</li>
               <li>Email statements or exported Excel data (paste as text)</li>
               <li>Any format with dates, descriptions, and amounts</li>
+              <li><strong>Up to ~270 transactions per paste</strong> — if you have more, split into two pastes and import each separately</li>
             </ul>
           </div>
         )}

@@ -24,3 +24,6 @@ export * from "./notifications/uncategorizedAlert";
 export * from "./notifications/deductionMilestone";
 export * from "./plaid/plaidWebhook";
 export * from "./parser/parseFinancialData";
+export * from "./forecast/detectRecurring";
+export * from "./forecast/getTaxForecast";
+export * from "./admin/wipeBankData";

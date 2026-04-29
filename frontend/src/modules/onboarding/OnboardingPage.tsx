@@ -97,33 +97,33 @@ const labelStyle: React.CSSProperties = {
   marginBottom: "4px",
 };
 
-const INCOME_OPTIONS: { value: IncomeSource; label: string }[] = [
-  { value: "job", label: "I have a job" },
-  { value: "business", label: "I run a business or side hustle" },
-  { value: "rental", label: "I rent out property" },
-  { value: "investments", label: "I have investments" },
-  { value: "social_security", label: "I receive Social Security" },
+const INCOME_OPTIONS: { value: IncomeSource; label: string; sublabel: string }[] = [
+  { value: "job", label: "I have a job", sublabel: "W-2 paycheck from an employer" },
+  { value: "business", label: "I freelance or run a business", sublabel: "1099 work, LLC, sole prop, side hustle — anything self-employed" },
+  { value: "rental", label: "I rent out property", sublabel: "Long-term tenant, AirBnB, etc." },
+  { value: "investments", label: "I have investment income", sublabel: "Stocks, dividends, capital gains, crypto" },
+  { value: "social_security", label: "I receive Social Security", sublabel: "Monthly SSA benefits" },
 ];
 
-const EXPENSE_OPTIONS: { value: ExpenseType; label: string }[] = [
-  { value: "travel", label: "Travel" },
-  { value: "meals", label: "Meals" },
-  { value: "supplies", label: "Supplies" },
-  { value: "software", label: "Software" },
-  { value: "professional_services", label: "Professional services" },
+const EXPENSE_OPTIONS: { value: ExpenseType; label: string; sublabel: string }[] = [
+  { value: "travel", label: "Travel", sublabel: "Flights, hotels, gas, mileage" },
+  { value: "meals", label: "Meals", sublabel: "Client lunches, business meetings, work travel meals" },
+  { value: "supplies", label: "Supplies", sublabel: "Office stuff, materials, equipment" },
+  { value: "software", label: "Software", sublabel: "Tools, subscriptions, SaaS" },
+  { value: "professional_services", label: "Professional services", sublabel: "Lawyers, accountants, contractors" },
 ];
 
 const DATA_SOURCE_OPTIONS: { value: DataSourcePreference; label: string; sublabel?: string }[] = [
-  { value: "csv", label: "Upload a file (CSV)" },
-  { value: "bank", label: "Connect bank", sublabel: "Automatic sync via Plaid" },
-  { value: "manual", label: "Enter manually" },
+  { value: "bank", label: "Connect my bank (recommended)", sublabel: "Auto-sync via Plaid. Works with 12,000+ US banks." },
+  { value: "csv", label: "I'll upload a CSV", sublabel: "Export from your bank's website if your bank isn't on Plaid." },
+  { value: "manual", label: "I'll enter transactions myself", sublabel: "Best for cash, side gigs, or one-off entries." },
 ];
 
 const FILING_STATUS_OPTIONS: { value: FilingStatus; label: string; sublabel?: string }[] = [
-  { value: "single", label: "Single" },
-  { value: "married_jointly", label: "Married Filing Jointly", sublabel: "Both spouses on one return" },
-  { value: "married_separately", label: "Married Filing Separately", sublabel: "Each spouse files their own return" },
-  { value: "head_of_household", label: "Head of Household" },
+  { value: "single", label: "Single", sublabel: "Unmarried — no spouse on the return" },
+  { value: "married_jointly", label: "Married Filing Jointly", sublabel: "You and your spouse file together. Most married couples pick this." },
+  { value: "married_separately", label: "Married Filing Separately", sublabel: "You and your spouse each file your own return" },
+  { value: "head_of_household", label: "Head of Household", sublabel: "Unmarried, but you support a dependent (kid, parent, etc.)" },
 ];
 
 export default function OnboardingPage() {
@@ -183,10 +183,10 @@ export default function OnboardingPage() {
       <div style={pageStyle}>
         <ProgressBar step={1} totalSteps={6} />
         <div style={cardStyle}>
-          <div style={{ fontSize: "48px", textAlign: "center", marginBottom: "16px" }}>👍</div>
-          <div style={{ ...titleStyle, textAlign: "center" }}>Let's get to know you</div>
+          <div style={{ fontSize: "48px", textAlign: "center", marginBottom: "16px" }}>👋</div>
+          <div style={{ ...titleStyle, textAlign: "center" }}>Hi — let me get your tax dashboard set up</div>
           <div style={{ ...subtitleStyle, textAlign: "center" }}>
-            It only takes a couple of minutes to set up your tax profile.
+            About 3 minutes. I'll ask a few quick questions, then we'll connect your bank accounts and credit cards and you'll see your real tax estimate.
           </div>
 
           <div
@@ -228,7 +228,7 @@ export default function OnboardingPage() {
             disabled={!consented}
             onClick={goNext}
           >
-            Let's start
+            Let's go →
           </button>
         </div>
       </div>
@@ -247,12 +247,12 @@ export default function OnboardingPage() {
       <div style={pageStyle}>
         <ProgressBar step={2} totalSteps={6} />
         <div style={cardStyle}>
-          <div style={titleStyle}>About your tax return</div>
-          <div style={subtitleStyle}>This helps us correctly label your tax documents</div>
+          <div style={titleStyle}>What should I call you?</div>
+          <div style={subtitleStyle}>Use the name that's on your tax return.</div>
 
           {/* Owner name */}
           <div style={{ marginBottom: "24px" }}>
-            <label style={labelStyle}>Your full legal name</label>
+            <label style={labelStyle}>Your name</label>
             <input
               style={inputStyle}
               type="text"
@@ -264,7 +264,7 @@ export default function OnboardingPage() {
 
           {/* Filing status */}
           <div style={{ marginBottom: isMarried ? "24px" : "0" }}>
-            <div style={labelStyle}>Filing status</div>
+            <div style={labelStyle}>How do you file?</div>
             {FILING_STATUS_OPTIONS.map(({ value, label, sublabel }) => (
               <div
                 key={value}
@@ -294,7 +294,7 @@ export default function OnboardingPage() {
           {/* Spouse name — shown only when married */}
           {isMarried && (
             <div style={{ marginTop: "24px" }}>
-              <label style={labelStyle}>Spouse's full legal name</label>
+              <label style={labelStyle}>Your spouse's name</label>
               <input
                 style={inputStyle}
                 type="text"
@@ -310,10 +310,10 @@ export default function OnboardingPage() {
             disabled={!canContinue}
             onClick={goNext}
           >
-            Next
+            Continue →
           </button>
           <button style={btnSecondary} onClick={goBack}>
-            Back
+            ← Back
           </button>
         </div>
       </div>
@@ -327,12 +327,13 @@ export default function OnboardingPage() {
         <ProgressBar step={3} totalSteps={6} />
         <div style={cardStyle}>
           <div style={titleStyle}>How do you make money?</div>
-          <div style={subtitleStyle}>Select all that apply</div>
+          <div style={subtitleStyle}>Pick everything that fits — I'll set up the right tax sections for you.</div>
 
-          {INCOME_OPTIONS.map(({ value, label }) => (
+          {INCOME_OPTIONS.map(({ value, label, sublabel }) => (
             <OptionCard
               key={value}
               label={label}
+              sublabel={sublabel}
               selected={incomeSources.includes(value)}
               onClick={() => toggleIncomeSource(value)}
             />
@@ -343,10 +344,10 @@ export default function OnboardingPage() {
             disabled={incomeSources.length === 0}
             onClick={goNext}
           >
-            Next
+            Continue →
           </button>
           <button style={btnSecondary} onClick={goBack}>
-            Back
+            ← Back
           </button>
         </div>
       </div>
@@ -435,14 +436,20 @@ export default function OnboardingPage() {
       <div style={pageStyle}>
         <ProgressBar step={4} totalSteps={6} />
         <div style={cardStyle}>
-          <div style={titleStyle}>Tell us more</div>
-          <div style={subtitleStyle}>We'll use this to set up your tax schedules</div>
+          <div style={titleStyle}>
+            {hasBusinessSelected && hasRentalSelected
+              ? "A few quick details"
+              : hasBusinessSelected
+              ? "Tell me about your business"
+              : "Tell me about your rental"}
+          </div>
+          <div style={subtitleStyle}>This is what makes your Schedule C and E come out right at tax time.</div>
 
           {hasBusinessSelected && (
             <div style={{ marginBottom: "28px" }}>
-              <div style={labelStyle}>Business name(s) — Schedule C</div>
+              <div style={labelStyle}>What's your business called?</div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
-                Add one entry per business or side hustle
+                Add each one — even small side hustles count.
               </div>
               {businesses.map((entry, i) => (
                 <div key={i} style={{ marginBottom: "14px" }}>
@@ -466,15 +473,15 @@ export default function OnboardingPage() {
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addBusiness}>+ Add another business</button>
+              <button style={addBtnStyle} onClick={addBusiness}>+ Add another</button>
             </div>
           )}
 
           {hasRentalSelected && (
             <div style={{ marginBottom: "8px" }}>
-              <div style={labelStyle}>Rental property address(es) — Schedule E</div>
+              <div style={labelStyle}>Where's the rental?</div>
               <div style={{ fontSize: "13px", color: "#6b7280", marginBottom: "8px" }}>
-                Add one entry per property
+                Add each property you rent out.
               </div>
               {rentals.map((entry, i) => (
                 <div key={i} style={{ marginBottom: "14px" }}>
@@ -498,7 +505,7 @@ export default function OnboardingPage() {
                   )}
                 </div>
               ))}
-              <button style={addBtnStyle} onClick={addRental}>+ Add another property</button>
+              <button style={addBtnStyle} onClick={addRental}>+ Add another</button>
             </div>
           )}
 
@@ -507,9 +514,9 @@ export default function OnboardingPage() {
             disabled={!canContinue}
             onClick={goNext}
           >
-            Next
+            Continue →
           </button>
-          <button style={btnSecondary} onClick={goBack}>Back</button>
+          <button style={btnSecondary} onClick={goBack}>← Back</button>
         </div>
       </div>
     );
@@ -521,13 +528,14 @@ export default function OnboardingPage() {
       <div style={pageStyle}>
         <ProgressBar step={visualStep} totalSteps={6} />
         <div style={cardStyle}>
-          <div style={titleStyle}>What kinds of things do you usually spend money on?</div>
-          <div style={subtitleStyle}>Select all that apply</div>
+          <div style={titleStyle}>What do you spend the most on?</div>
+          <div style={subtitleStyle}>Pick the big ones — I'll put these front and center on your dashboard.</div>
 
-          {EXPENSE_OPTIONS.map(({ value, label }) => (
+          {EXPENSE_OPTIONS.map(({ value, label, sublabel }) => (
             <OptionCard
               key={value}
               label={label}
+              sublabel={sublabel}
               selected={expenseTypes.includes(value)}
               onClick={() => toggleExpenseType(value)}
             />
@@ -538,9 +546,9 @@ export default function OnboardingPage() {
             disabled={expenseTypes.length === 0}
             onClick={goNext}
           >
-            Next
+            Continue →
           </button>
-          <button style={btnSecondary} onClick={goBack}>Back</button>
+          <button style={btnSecondary} onClick={goBack}>← Back</button>
         </div>
       </div>
     );
@@ -551,8 +559,8 @@ export default function OnboardingPage() {
     <div style={pageStyle}>
       <ProgressBar step={6} totalSteps={6} />
       <div style={cardStyle}>
-        <div style={titleStyle}>How would you like to bring in your data?</div>
-        <div style={subtitleStyle}>You can change this later</div>
+        <div style={titleStyle}>Last step — let's connect your money</div>
+        <div style={subtitleStyle}>This is the magic part. Each connection takes about a minute and pulls the last 3 months of transactions. You can link as many bank accounts and credit cards as you want.</div>
 
         {DATA_SOURCE_OPTIONS.map(({ value, label, sublabel }) => (
           <div
@@ -584,9 +592,9 @@ export default function OnboardingPage() {
           disabled={!dataSourcePreference || saving}
           onClick={handleSubmit}
         >
-          {saving ? "Saving..." : isEditing ? "Save Changes" : "Finish Setup"}
+          {saving ? "Setting up your dashboard…" : isEditing ? "Save changes" : "Take me to my dashboard →"}
         </button>
-        <button style={btnSecondary} disabled={saving} onClick={goBack}>Back</button>
+        <button style={btnSecondary} disabled={saving} onClick={goBack}>← Back</button>
 
         {error && <div style={errorStyle}>{error}</div>}
       </div>

@@ -33,6 +33,8 @@ import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
 import BankAccountsPage from "./modules/bank/BankAccountsPage";
+import SpendingForecastPage from "./modules/forecast/SpendingForecastPage";
+import TaxEstimatePage from "./modules/forecast/TaxEstimatePage";
 import AIParserPage from "./modules/parser/AIParserPage";
 import PWAInstallBanner from "./components/PWAInstallBanner";
 
@@ -206,6 +208,23 @@ function AppRoutes() {
           </AuthGuard>
         }
       />
+      <Route
+        path="/spending-forecast"
+        element={
+          <AuthGuard>
+            <SpendingForecastPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/tax-estimate"
+        element={
+          <AuthGuard>
+            <TaxEstimatePage />
+          </AuthGuard>
+        }
+      />
+      <Route path="/forecast" element={<Navigate to="/spending-forecast" replace />} />
       <Route
         path="/settings/notifications"
         element={

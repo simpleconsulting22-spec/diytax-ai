@@ -6,11 +6,13 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { Plus } from "lucide-react";
 import { db, storage } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { getUserEntities, UserEntity } from "../../services/entityService";
 import { apiClient } from "../../services/apiClient";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import { CATEGORY_GROUPS } from "../review/components/CategoryDropdown";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -76,6 +78,7 @@ function todayString(): string {
 export default function QuickCaptureFAB() {
   const { user, effectiveOwnerUid } = useAuth();
   const { selectedYear } = useTaxYear();
+  const isMobile = useIsMobile();
   const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
 
   const [isOpen, setIsOpen] = useState(false);
@@ -334,16 +337,17 @@ export default function QuickCaptureFAB() {
         aria-label="Quick capture transaction"
         style={{
           position: "fixed",
-          bottom: "28px",
-          right: "28px",
+          // On mobile, sit above the bottom tab bar (64px) plus safe-area inset.
+          bottom: isMobile
+            ? "calc(64px + env(safe-area-inset-bottom, 0px) + 16px)"
+            : "28px",
+          right: isMobile ? "20px" : "28px",
           width: "58px",
           height: "58px",
           borderRadius: "50%",
           backgroundColor: "#16A34A",
           color: "#fff",
           border: "none",
-          fontSize: "30px",
-          lineHeight: 1,
           cursor: "pointer",
           boxShadow: "0 4px 16px rgba(22, 163, 74, 0.45)",
           zIndex: 900,
@@ -362,7 +366,7 @@ export default function QuickCaptureFAB() {
           (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 4px 16px rgba(22, 163, 74, 0.45)";
         }}
       >
-        +
+        <Plus size={28} strokeWidth={2.6} />
       </button>
 
       {/* ── Modal overlay ── */}

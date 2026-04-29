@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { collection, query, where, getDocs, orderBy, limit, getDoc, doc, writeBatch } from "firebase/firestore";
+import { CheckCircle2, FolderOpen, ChevronRight, Trash2 } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { findOrCreateAccountByName } from "../../services/accountService";
@@ -150,7 +151,12 @@ export default function ImportCSVPage() {
       await Promise.all(
         [...accountIdSet].map(async (aid) => {
           const accDoc = await getDoc(doc(db, "accounts", aid));
-          if (accDoc.exists()) accountNameMap.set(aid, accDoc.data().name as string);
+          if (!accDoc.exists()) return;
+          const data = accDoc.data();
+          const display = (data.name as string)
+            ?? (data.accountName as string)
+            ?? "";
+          if (display) accountNameMap.set(aid, display);
         })
       );
 
@@ -260,7 +266,7 @@ export default function ImportCSVPage() {
         {importResult && (
           <div style={{ backgroundColor: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "14px", padding: "28px 32px", marginBottom: "28px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
-              <span style={{ fontSize: "28px" }}>✅</span>
+              <CheckCircle2 size={32} strokeWidth={2} color="#16A34A" />
               <div>
                 <div style={{ fontSize: "17px", fontWeight: 700, color: "#166534" }}>Import complete</div>
                 <div style={{ fontSize: "13px", color: "#4ade80", marginTop: "2px" }}>{importResult.fileName}</div>
@@ -338,7 +344,9 @@ export default function ImportCSVPage() {
                 style={{ border: "2px dashed #d1d5db", borderRadius: "12px", padding: "32px 24px", textAlign: "center", backgroundColor: "#fafafa", cursor: "pointer" }}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <div style={{ fontSize: "32px", marginBottom: "8px" }}>📂</div>
+                <div style={{ marginBottom: "10px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+                  <FolderOpen size={36} strokeWidth={1.6} />
+                </div>
                 <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827", marginBottom: "4px" }}>
                   {fileName || "Choose a CSV file"}
                 </div>
@@ -524,7 +532,9 @@ export default function ImportCSVPage() {
                       style={{ cursor: "pointer", flex: 1 }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ fontSize: "11px", color: "#9ca3af", transition: "transform 0.15s", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+                        <span style={{ color: "#9ca3af", transition: "transform 0.15s", display: "inline-flex", transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>
+                          <ChevronRight size={14} strokeWidth={2.4} />
+                        </span>
                         <span style={{ fontWeight: 500, color: "#111827" }}>{record.fileName}</span>
                         {record.source === "ai_parser" && (
                           <span style={{ fontSize: "10px", fontWeight: 700, padding: "1px 6px", borderRadius: "999px", backgroundColor: "#eff6ff", color: "#1d4ed8", whiteSpace: "nowrap" }}>AI Parser</span>
@@ -561,10 +571,10 @@ export default function ImportCSVPage() {
                       ) : (
                         <button
                           onClick={() => setDeletingId(record.id)}
-                          style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px 8px", borderRadius: "4px" }}
+                          style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px 8px", borderRadius: "4px", display: "inline-flex", alignItems: "center", gap: "4px" }}
                           title="Delete import"
                         >
-                          🗑 Delete
+                          <Trash2 size={14} strokeWidth={2} /> Delete
                         </button>
                       )}
                     </div>

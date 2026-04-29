@@ -4,6 +4,7 @@ import {
   doc, updateDoc, deleteField, getDocs, writeBatch, deleteDoc,
 } from "firebase/firestore";
 import { usePlaidLink } from "react-plaid-link";
+import { Landmark, CreditCard, Trash2 } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { apiClient } from "../../services/apiClient";
@@ -118,6 +119,18 @@ export default function BankAccountsPage() {
   const [mergeCount, setMergeCount] = useState<number | null>(null);
   const [merging, setMerging] = useState(false);
   const [mergeResult, setMergeResult] = useState<string | null>(null);
+
+  // one-off wipe: dry-run shows counts, confirm deletes (admin email only — see wipeBankData.ts)
+  interface WipeCounts {
+    transactions: number;
+    imports: number;
+    accounts: number;
+    plaidItemsToRemove: number;
+  }
+  const [wipeCounts, setWipeCounts] = useState<WipeCounts | null>(null);
+  const [wipeLoading, setWipeLoading] = useState(false);
+  const [wipeResult, setWipeResult] = useState<string | null>(null);
+  const isWipeAdmin = (user?.email?.toLowerCase() ?? "") === "deboijiwola@gmail.com";
 
   // sync start date per account (defaults to 90 days ago)
   const defaultStartDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
@@ -617,6 +630,36 @@ export default function BankAccountsPage() {
     }
   }
 
+  async function handleWipeDryRun() {
+    setWipeLoading(true);
+    setWipeResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{ counts: WipeCounts }>("adminWipeBankData", {});
+      setWipeCounts(res.counts);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Wipe dry-run failed.");
+    } finally {
+      setWipeLoading(false);
+    }
+  }
+
+  async function handleWipeConfirm() {
+    setWipeLoading(true);
+    setError(null);
+    try {
+      const res = await apiClient.call<{ deleted: { transactions: number; imports: number; accounts: number; plaidItemsRemoved: number; plaidItemsRemoveFailed: number } }>("adminWipeBankData", { confirm: true });
+      const d = res.deleted;
+      const failedNote = d.plaidItemsRemoveFailed > 0 ? ` (${d.plaidItemsRemoveFailed} Plaid removal${d.plaidItemsRemoveFailed !== 1 ? "s" : ""} failed)` : "";
+      setWipeResult(`Deleted ${d.transactions} transaction${d.transactions !== 1 ? "s" : ""}, ${d.imports} import record${d.imports !== 1 ? "s" : ""}, ${d.accounts} account doc${d.accounts !== 1 ? "s" : ""}. Removed ${d.plaidItemsRemoved} Plaid connection${d.plaidItemsRemoved !== 1 ? "s" : ""}${failedNote}. You'll need to re-link your accounts via "+ Connect Account".`);
+      setWipeCounts(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Wipe failed.");
+    } finally {
+      setWipeLoading(false);
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
   function initials(name: string) {
@@ -664,7 +707,7 @@ export default function BankAccountsPage() {
               Bank Accounts
             </h1>
             <p style={{ fontSize: "14px", color: "#6b7280", margin: 0 }}>
-              Connect your bank to automatically import and categorize transactions.
+              Connect your bank accounts and credit cards to automatically import and categorize transactions.
             </p>
           </div>
           <button
@@ -677,7 +720,7 @@ export default function BankAccountsPage() {
               cursor: isWorking ? "default" : "pointer", fontFamily: font, whiteSpace: "nowrap",
             }}
           >
-            {connecting ? "Initializing…" : linkingBank ? "Linking…" : "+ Connect Bank"}
+            {connecting ? "Initializing…" : linkingBank ? "Linking…" : "+ Connect Account"}
           </button>
         </div>
 
@@ -701,17 +744,19 @@ export default function BankAccountsPage() {
             {/* ── Plaid accounts ─────────────────────────────────────────────── */}
             {institutionGroups.length === 0 ? (
               <div style={{ backgroundColor: "#fff", borderRadius: "16px", padding: "48px 32px", textAlign: "center", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", marginBottom: "24px" }}>
-                <div style={{ fontSize: "40px", marginBottom: "16px" }}>🏦</div>
+                <div style={{ marginBottom: "16px", display: "flex", justifyContent: "center" }}>
+                  <Landmark size={44} strokeWidth={1.6} color="#16A34A" />
+                </div>
                 <div style={{ fontSize: "16px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>No accounts connected yet</div>
                 <div style={{ fontSize: "14px", color: "#6b7280", marginBottom: "24px" }}>
-                  Connect your bank to automatically import transactions and get a real-time tax estimate.
+                  Connect your bank accounts and credit cards to automatically import transactions and get a real-time tax estimate. Add as many as you need.
                 </div>
                 <button
                   onClick={handleConnectBank}
                   disabled={isWorking}
                   style={{ padding: "12px 28px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "10px", fontSize: "15px", fontWeight: 700, cursor: "pointer", fontFamily: font }}
                 >
-                  {isWorking ? "Initializing…" : "Connect Bank"}
+                  {isWorking ? "Initializing…" : "Connect Account"}
                 </button>
               </div>
             ) : (
@@ -828,7 +873,7 @@ export default function BankAccountsPage() {
                                 </div>
                               )}
                               {acct.createdAt && (
-                                <div style={{ fontSize: "11px", color: "#9ca3af" }}>
+                                <div style={{ fontSize: "12px", color: "#6b7280" }}>
                                   Connected {acct.createdAt.toDate().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                                 </div>
                               )}
@@ -845,14 +890,14 @@ export default function BankAccountsPage() {
                               )}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                              <label style={{ fontSize: "11px", color: "#9ca3af", whiteSpace: "nowrap" }}>From</label>
+                              <label style={{ fontSize: "12px", color: "#6b7280", whiteSpace: "nowrap" }}>From</label>
                               <input
                                 type="date"
                                 value={syncStartMap[acct.id] ?? defaultStartDate}
                                 max={new Date().toISOString().split("T")[0]}
                                 onChange={(e) => setSyncStartMap((prev) => ({ ...prev, [acct.id]: e.target.value }))}
                                 disabled={rs?.loading}
-                                style={{ padding: "4px 7px", borderRadius: "7px", border: "1px solid #d1d5db", fontSize: "11px", color: "#374151", fontFamily: font, backgroundColor: "#fff" }}
+                                style={{ padding: "5px 8px", borderRadius: "7px", border: "1px solid #d1d5db", fontSize: "12px", color: "#374151", fontFamily: font, backgroundColor: "#fff" }}
                               />
                             </div>
                             <button
@@ -875,9 +920,10 @@ export default function BankAccountsPage() {
                               </div>
                             ) : (
                               <button onClick={() => setConfirmDeleteId(acct.id)}
-                                style={{ background: "none", border: "none", color: "#d1d5db", cursor: "pointer", fontSize: "13px", fontFamily: font, padding: "4px", flexShrink: 0 }}
-                                title="Delete this account and all its transactions">
-                                🗑
+                                style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", padding: "8px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
+                                title="Delete this account and all its transactions"
+                                aria-label="Delete account">
+                                <Trash2 size={16} strokeWidth={2} />
                               </button>
                             )}
                           </div>
@@ -954,7 +1000,7 @@ export default function BankAccountsPage() {
                   disabled={isWorking}
                   style={{ padding: "14px", backgroundColor: "transparent", color: "#16A34A", border: "2px dashed #86efac", borderRadius: "14px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font, marginTop: "4px" }}
                 >
-                  {isWorking ? "Initializing…" : "+ Connect Another Bank"}
+                  {isWorking ? "Initializing…" : "+ Connect Another Account"}
                 </button>
               </div>
             )}
@@ -982,13 +1028,15 @@ export default function BankAccountsPage() {
                         <div
                           style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 20px" }}
                         >
-                          <div style={{ width: "32px", height: "32px", borderRadius: "8px", backgroundColor: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", flexShrink: 0 }}>
-                            {imp.accountType === "credit_card" ? "💳" : "🏦"}
+                          <div style={{ width: "32px", height: "32px", borderRadius: "8px", backgroundColor: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "#6b7280" }}>
+                            {imp.accountType === "credit_card"
+                              ? <CreditCard size={16} strokeWidth={2} />
+                              : <Landmark size={16} strokeWidth={2} />}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: "13px", fontWeight: 600, color: "#111827" }}>{imp.name}</div>
                             {imp.last4 && (
-                              <div style={{ fontSize: "11px", color: "#9ca3af" }}>···· {imp.last4}</div>
+                              <div style={{ fontSize: "12px", color: "#6b7280", letterSpacing: "0.05em" }}>···· {imp.last4}</div>
                             )}
                           </div>
                           {linkedPlaid ? (
@@ -1073,7 +1121,8 @@ export default function BankAccountsPage() {
           </>
         )}
 
-        {/* ── Data Tools ───────────────────────────────────────────────── */}
+        {/* ── Data Tools (admin only — legacy migration + wipe) ────────── */}
+        {isWipeAdmin && (
         <div style={{ marginTop: "32px", padding: "16px 20px", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 6px rgba(0,0,0,0.05)" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#374151", marginBottom: "6px" }}>Data Tools</div>
           <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "12px" }}>
@@ -1144,7 +1193,63 @@ export default function BankAccountsPage() {
               </button>
             )}
           </div>
+
+          {/* Admin-only: one-off wipe of transactions, imports, and CSV accounts (Plaid kept) */}
+          {isWipeAdmin && (
+            <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #fecaca" }}>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#991b1b", marginBottom: "6px" }}>
+                Danger Zone — Full Reset
+              </div>
+              <div style={{ fontSize: "12px", color: "#7f1d1d", marginBottom: "12px" }}>
+                Deletes every transaction, every import record, and every account doc (Plaid + CSV). Also removes Plaid connections on Plaid's side. You'll need to re-link every account via "+ Connect Account" afterward. Cannot be undone.
+              </div>
+              {wipeResult && (
+                <div style={{ fontSize: "12px", color: "#15803d", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "8px 12px", marginBottom: "10px" }}>
+                  ✓ {wipeResult}
+                </div>
+              )}
+              {wipeCounts ? (
+                <div style={{ padding: "12px 14px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "10px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 700, color: "#991b1b", marginBottom: "6px" }}>About to delete:</div>
+                  <ul style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "12px", color: "#7f1d1d" }}>
+                    <li><strong>{wipeCounts.transactions}</strong> transaction{wipeCounts.transactions !== 1 ? "s" : ""}</li>
+                    <li><strong>{wipeCounts.imports}</strong> import record{wipeCounts.imports !== 1 ? "s" : ""}</li>
+                    <li><strong>{wipeCounts.accounts}</strong> account doc{wipeCounts.accounts !== 1 ? "s" : ""} (Plaid + CSV)</li>
+                    <li><strong>{wipeCounts.plaidItemsToRemove}</strong> Plaid connection{wipeCounts.plaidItemsToRemove !== 1 ? "s" : ""} to remove on Plaid's side</li>
+                  </ul>
+                  <div style={{ fontSize: "12px", color: "#7f1d1d", marginBottom: "10px" }}>
+                    After this, you'll need to re-link every account via the green "+ Connect Account" button.
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={handleWipeConfirm}
+                      disabled={wipeLoading}
+                      style={{ padding: "7px 16px", backgroundColor: "#dc2626", color: "#fff", border: "none", borderRadius: "7px", fontSize: "12px", fontWeight: 700, cursor: wipeLoading ? "default" : "pointer", fontFamily: font, whiteSpace: "nowrap" }}
+                    >
+                      {wipeLoading ? "Wiping…" : "Yes, Wipe Now"}
+                    </button>
+                    <button
+                      onClick={() => { setWipeCounts(null); setWipeResult(null); }}
+                      disabled={wipeLoading}
+                      style={{ padding: "7px 12px", backgroundColor: "transparent", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handleWipeDryRun}
+                  disabled={wipeLoading}
+                  style={{ padding: "7px 16px", backgroundColor: wipeLoading ? "#fecaca" : "#fef2f2", color: "#991b1b", border: "1px solid #fca5a5", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: wipeLoading ? "default" : "pointer", fontFamily: font }}
+                >
+                  {wipeLoading ? "Counting…" : "Dry Run — Show What Would Be Deleted"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
+        )}
 
         <p style={{ fontSize: "11px", color: "#9ca3af", textAlign: "center", marginTop: "20px" }}>
           Bank connections are powered by Plaid. Your credentials are never stored on our servers.

@@ -63,7 +63,7 @@ export function matchesTaxYear(
   txn: { taxYear?: number | null; date?: string },
   year: number
 ): boolean {
-  if (txn.taxYear != null) return txn.taxYear === year;
+  if (txn.taxYear != null) return Number(txn.taxYear) === year;
   const dateYear = parseInt((txn.date ?? "").slice(0, 4));
   return dateYear === year;
 }
