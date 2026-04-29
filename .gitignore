@@ -3,4 +3,6 @@
 functions/.env
 frontend/dist/
 functions/lib/
-.env
+node_modules/
+firebase-debug.log
+.claude/
