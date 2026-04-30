@@ -84,7 +84,7 @@ export default function QuickCaptureFAB() {
   const [isOpen, setIsOpen] = useState(false);
 
   // Form state
-  const [type, setType] = useState<"expense" | "income">("expense");
+  const [type, setType] = useState<"expense" | "income" | "refund">("expense");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(todayString);
@@ -284,6 +284,10 @@ export default function QuickCaptureFAB() {
 
     try {
       const txnRef = doc(collection(db, "transactions"));
+      // Sign convention for the stored amount field: outflows negative,
+      // inflows positive. Refunds are inflows on the bank side (money came
+      // back), so they're stored positive — but type="refund" ensures every
+      // expense aggregation subtracts them rather than treating as income.
       const storedAmount =
         type === "expense" ? -Math.abs(parsedAmount) : Math.abs(parsedAmount);
       const year = parseInt(date.slice(0, 4)) || selectedYear;
@@ -468,33 +472,32 @@ export default function QuickCaptureFAB() {
                     marginBottom: "20px",
                   }}
                 >
-                  {(["expense", "income"] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setType(t)}
-                      style={{
-                        flex: 1,
-                        padding: "9px",
-                        borderRadius: "8px",
-                        border: "none",
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        fontFamily: font,
-                        backgroundColor: type === t ? "#fff" : "transparent",
-                        color:
-                          type === t
-                            ? t === "expense"
-                              ? "#dc2626"
-                              : "#16A34A"
-                            : "#9ca3af",
-                        boxShadow: type === t ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      {t === "expense" ? "Expense" : "Income"}
-                    </button>
-                  ))}
+                  {(["expense", "income", "refund"] as const).map((t) => {
+                    const activeColor = t === "expense" ? "#dc2626" : t === "income" ? "#16A34A" : "#7c3aed";
+                    const label = t === "expense" ? "Expense" : t === "income" ? "Income" : "Refund";
+                    return (
+                      <button
+                        key={t}
+                        onClick={() => setType(t)}
+                        style={{
+                          flex: 1,
+                          padding: "9px",
+                          borderRadius: "8px",
+                          border: "none",
+                          fontSize: "14px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          fontFamily: font,
+                          backgroundColor: type === t ? "#fff" : "transparent",
+                          color: type === t ? activeColor : "#9ca3af",
+                          boxShadow: type === t ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+                          transition: "all 0.15s",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Amount */}
@@ -526,7 +529,7 @@ export default function QuickCaptureFAB() {
                         paddingLeft: "28px",
                         fontSize: "22px",
                         fontWeight: 700,
-                        color: type === "expense" ? "#dc2626" : "#16A34A",
+                        color: type === "expense" ? "#dc2626" : type === "refund" ? "#7c3aed" : "#16A34A",
                       }}
                     />
                   </div>

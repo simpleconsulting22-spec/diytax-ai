@@ -10,9 +10,11 @@ Return a JSON array where each item has:
 - date: string in YYYY-MM-DD format
 - description: string (clean merchant or payee name, max 60 chars, no account numbers)
 - amount: number (always positive)
-- type: "expense" or "income"
+- type: "expense", "income", or "refund"
   expense = debit / charge / withdrawal / payment made
-  income  = credit / deposit / payment received / refund
+  income  = credit / deposit / payroll / dividend / interest earned (money genuinely earned)
+  refund  = a previously-paid expense being returned (REFUND, REVERSAL, REIMBURSEMENT, CHARGEBACK).
+            Refunds reduce the related expense category — they are NOT income.
 
 CURRENT YEAR IS ${year}. Use ${year} for any date that has no year. Never use 2024 unless the source data explicitly says 2024.
 
@@ -41,7 +43,7 @@ export interface ParsedTransaction {
   date:        string;
   description: string;
   amount:      number;
-  type:        "expense" | "income";
+  type:        "expense" | "income" | "refund";
 }
 
 function extractJson(raw: string): string {
@@ -140,16 +142,31 @@ export const parseFinancialData = onCall(
       throw new HttpsError("internal", `Unexpected response format: ${String(parsed).slice(0, 100)}`);
     }
 
+    const REFUND_KEYWORDS = /\b(REFUND|REVERSAL|REIMBURSEMENT|REIMB|CHARGEBACK)\b/i;
+
     const transactions: ParsedTransaction[] = (
       parsed as Array<Record<string, unknown>>
     )
       .filter((t) => t.date && t.amount)
-      .map((t) => ({
-        date:        String(t.date ?? ""),
-        description: String(t.description ?? ""),
-        amount:      Math.abs(Number(t.amount ?? 0)),
-        type:        t.type === "income" ? "income" : "expense",
-      }));
+      .map((t) => {
+        const desc = String(t.description ?? "");
+        // Trust an explicit "refund" type from the model, otherwise infer from
+        // description keywords so refunds don't slip through as income.
+        let type: "expense" | "income" | "refund";
+        if (t.type === "refund" || REFUND_KEYWORDS.test(desc)) {
+          type = "refund";
+        } else if (t.type === "income") {
+          type = "income";
+        } else {
+          type = "expense";
+        }
+        return {
+          date:        String(t.date ?? ""),
+          description: desc,
+          amount:      Math.abs(Number(t.amount ?? 0)),
+          type,
+        };
+      });
 
     return { transactions };
   }

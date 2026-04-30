@@ -2,9 +2,10 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 
-// One-off full reset for the admin user. Pinned to a single email so the
-// callable cannot be invoked by anyone else even if it lingers in production.
-// Delete this file (and remove the export from index.ts) after the cleanup.
+// Full reset of the calling user's bank data: their transactions, import
+// records, account docs, and the Plaid items behind those accounts.
+// Pinned to a single admin email so the callable cannot be invoked by anyone
+// else even if it lingers in production.
 
 const ALLOWED_EMAIL = "deboijiwola@gmail.com";
 
@@ -42,7 +43,9 @@ function getPlaidClient(): PlaidApi | null {
   return new PlaidApi(configuration);
 }
 
-export const adminWipeBankData = onCall({ cors: true, invoker: "public" }, async (request): Promise<WipeResult> => {
+export const adminWipeBankData = onCall(
+  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  async (request): Promise<WipeResult> => {
   const email = (request.auth?.token?.email as string | undefined)?.toLowerCase();
   if (!email || email !== ALLOWED_EMAIL) {
     throw new HttpsError("permission-denied", "Not authorized.");
@@ -120,4 +123,5 @@ export const adminWipeBankData = onCall({ cors: true, invoker: "public" }, async
       plaidItemsRemoveFailed,
     },
   };
-});
+  }
+);

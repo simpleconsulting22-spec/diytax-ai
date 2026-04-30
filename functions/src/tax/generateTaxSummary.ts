@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { requireAuth } from "../middleware/auth";
+import { expenseContribution, incomeContribution } from "../shared/transactionMath";
 
 export const generateTaxSummary = onCall({ cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
@@ -35,15 +36,18 @@ export const generateTaxSummary = onCall({ cors: true, invoker: "public" }, asyn
     const txn = doc.data();
     if (!txn.category) return;
 
-    const amount = Math.abs(txn.amount as number);
     const cat = txn.category as string;
-
-    categoryTotals[cat] = (categoryTotals[cat] ?? 0) + amount;
+    // Refunds (type=expense, isRefund=true) contribute negatively to expense
+    // totals so they net against the original expense category.
+    const expContrib = expenseContribution({ type: txn.type, amount: txn.amount });
+    const incContrib = incomeContribution({ type: txn.type, amount: txn.amount });
 
     if (cat === "Income") {
-      totalIncome += amount;
+      categoryTotals[cat] = (categoryTotals[cat] ?? 0) + incContrib;
+      totalIncome += incContrib;
     } else {
-      totalExpenses += amount;
+      categoryTotals[cat] = (categoryTotals[cat] ?? 0) + expContrib;
+      totalExpenses += expContrib;
     }
   });
 

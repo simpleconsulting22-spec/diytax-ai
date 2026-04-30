@@ -54,12 +54,18 @@ export const morningSnapshot = onSchedule(
           (d) => d.data().status === "needs_review"
         ).length;
 
-        const income  = txnsSnap.docs
-          .filter((d) => d.data().type === "income")
-          .reduce((s, d) => s + (d.data().amount ?? 0), 0);
-        const expenses = txnsSnap.docs
-          .filter((d) => d.data().type === "expense")
-          .reduce((s, d) => s + (d.data().amount ?? 0), 0);
+        // Refunds (type=expense, isRefund=true) reduce the expense total —
+        // they're never counted as income.
+        const income = txnsSnap.docs.reduce((s, d) => {
+          const t = d.data();
+          return t.type === "income" ? s + (t.amount ?? 0) : s;
+        }, 0);
+        const expenses = txnsSnap.docs.reduce((s, d) => {
+          const t = d.data();
+          if (t.type !== "expense") return s;
+          const amt = t.amount ?? 0;
+          return s + (t.isRefund ? -amt : amt);
+        }, 0);
         const netProfit = income - expenses;
 
         const w2Income    = (profile.w2Income as number) ?? 0;

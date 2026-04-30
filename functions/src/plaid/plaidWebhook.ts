@@ -38,25 +38,39 @@ export const plaidWebhook = onRequest({ cors: false }, async (req, res) => {
   if (webhook_code === "DEFAULT_UPDATE" || webhook_code === "INITIAL_UPDATE" || webhook_code === "HISTORICAL_UPDATE") {
     try {
       const db = admin.firestore();
+      // CRITICAL: fetch ALL accounts for this item — a Plaid item often owns
+      // multiple accounts (Checking + Savings + Credit Card). The previous
+      // implementation only fetched the first one and dumped EVERY account's
+      // transactions into it, silently corrupting which account each txn belongs to.
       const snap = await db
         .collection("accounts")
         .where("plaidItemId", "==", item_id)
-        .limit(1)
         .get();
 
       if (snap.empty) {
-        console.warn(`[plaidWebhook] No account found for item_id: ${item_id}`);
+        console.warn(`[plaidWebhook] No accounts found for item_id: ${item_id}`);
         res.status(200).send("ok");
         return;
       }
 
-      const account = snap.docs[0].data();
-      console.log(`[plaidWebhook] ${webhook_code} for ${account.institutionName} — fetching transactions`);
+      console.log(`[plaidWebhook] ${webhook_code} for item=${item_id} accounts=${snap.size}`);
 
-      fetchTransactionsForAccount(account.uid, snap.docs[0].id, account.plaidAccessToken)
-        .then((n) => console.log(`[plaidWebhook] imported ${n} transactions`))
-        .catch((err) => console.error("[plaidWebhook] fetch error:", err));
+      // Sync each account independently with its own plaidAccountId filter so
+      // Plaid only returns transactions for that specific account.
+      for (const doc of snap.docs) {
+        const account = doc.data();
+        const plaidAccountId = account.plaidAccountId as string | undefined;
+        const accessToken    = account.plaidAccessToken as string | undefined;
+        if (!plaidAccountId || !accessToken) {
+          console.warn(`[plaidWebhook] account ${doc.id} missing plaidAccountId or accessToken — skipping`);
+          continue;
+        }
 
+        const label = `${account.institutionName ?? "Bank"} – ${account.accountName ?? ""}`;
+        fetchTransactionsForAccount(account.uid, doc.id, accessToken, label, undefined, plaidAccountId)
+          .then((n) => console.log(`[plaidWebhook] imported ${n} for acct=${doc.id} (${plaidAccountId})`))
+          .catch((err) => console.error(`[plaidWebhook] fetch error for acct=${doc.id}:`, err));
+      }
     } catch (err) {
       console.error("[plaidWebhook] error:", err);
       res.status(500).send("error");

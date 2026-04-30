@@ -116,6 +116,9 @@ function detectLoanPayment(description: string): boolean {
   return LOAN_PAYMENT_PATTERNS.some((re) => re.test(description));
 }
 
+// Refund / reversal / chargeback indicators in transaction descriptions.
+const REFUND_KEYWORDS = /\b(REFUND|REVERSAL|REIMBURSEMENT|REIMB|CHARGEBACK)\b/i;
+
 /** Derive transaction type based on account type, amount, and description. */
 function deriveType(
   description: string,
@@ -145,6 +148,13 @@ function deriveType(
   // Generic account-to-account transfer
   if (detectBankTransfer(description)) {
     return { type: "transfer", isTransfer: true };
+  }
+
+  // Bank account refunds: description has REFUND/REVERSAL/etc. keyword.
+  // type="refund" so the amount nets against the original expense category
+  // rather than inflating reported income.
+  if (REFUND_KEYWORDS.test(description)) {
+    return { type: "refund", isTransfer: false };
   }
 
   return {

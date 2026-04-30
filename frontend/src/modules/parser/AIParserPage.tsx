@@ -14,7 +14,7 @@ interface ParsedRow {
   date:        string;
   description: string;
   amount:      number;
-  type:        "expense" | "income";
+  type:        "expense" | "income" | "refund";
 }
 
 // Resize image to max 2048px and return {base64, mimeType}
@@ -392,23 +392,26 @@ Or paste a CSV, email, or any text containing transactions.`}
                   value={row.amount}
                   onChange={(e) => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
                 />
-                <button
-                  onClick={() => updateRow(row.id, "type", row.type === "expense" ? "income" : "expense")}
+                <select
+                  value={row.type}
+                  onChange={(e) => updateRow(row.id, "type", e.target.value as "expense" | "income" | "refund")}
                   style={{
                     marginLeft: "6px",
-                    padding: "4px 10px",
+                    padding: "4px 8px",
                     border: "none",
                     borderRadius: "6px",
                     fontSize: "11px",
                     fontWeight: 600,
                     cursor: "pointer",
                     fontFamily: font,
-                    backgroundColor: row.type === "expense" ? "#fee2e2" : "#dcfce7",
-                    color:           row.type === "expense" ? "#dc2626" : "#16A34A",
+                    backgroundColor: row.type === "expense" ? "#fee2e2" : row.type === "refund" ? "#f5f3ff" : "#dcfce7",
+                    color:           row.type === "expense" ? "#dc2626" : row.type === "refund" ? "#7c3aed" : "#16A34A",
                   }}
                 >
-                  {row.type === "expense" ? "Expense" : "Income"}
-                </button>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                  <option value="refund">Refund</option>
+                </select>
                 <button
                   onClick={() => deleteRow(row.id)}
                   style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px", padding: "2px", marginLeft: "4px" }}

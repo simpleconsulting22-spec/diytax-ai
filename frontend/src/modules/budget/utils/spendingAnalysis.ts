@@ -58,8 +58,9 @@ function round2(n: number): number {
 }
 
 /**
- * Sum absolute expense amounts by category within a date range.
- * Excludes transfers, refunds, and income rows.
+ * Sum NET expense amounts by category within a date range. Refunds (type=refund)
+ * subtract from the category total — net spending = gross expense − refund.
+ * Excludes transfers and income rows.
  */
 function sumByCategory(
   transactions: SpendingRecord[],
@@ -68,10 +69,14 @@ function sumByCategory(
   const totals: Record<string, number> = {};
   for (const txn of transactions) {
     if (!txn.category) continue;
-    if (txn.type !== "expense") continue;
     if (txn.status === "transfer") continue;
     if (txn.date < range.start || txn.date > range.end) continue;
-    totals[txn.category] = (totals[txn.category] ?? 0) + Math.abs(txn.amount);
+    const amt = Math.abs(txn.amount);
+    if (txn.type === "expense") {
+      totals[txn.category] = (totals[txn.category] ?? 0) + amt;
+    } else if (txn.type === "refund") {
+      totals[txn.category] = (totals[txn.category] ?? 0) - amt;
+    }
   }
   return totals;
 }

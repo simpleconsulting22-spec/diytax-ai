@@ -50,6 +50,14 @@ interface PlaidMetadata {
 
 // Opens Plaid Link immediately when mounted. key={token} ensures a fresh
 // instance for every new token instead of trying to swap token mid-lifecycle.
+// Detects when Plaid Link has redirected back from an OAuth bank (Chase,
+// Capital One, BofA, Wells Fargo, etc.). Plaid appends ?oauth_state_id=...
+// to the redirect URI; usePlaidLink uses receivedRedirectUri to resume.
+function isOAuthRedirect(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.location.href.includes("oauth_state_id");
+}
+
 function PlaidOpener({
   token,
   onSuccess,
@@ -59,7 +67,21 @@ function PlaidOpener({
   onSuccess: (publicToken: string, metadata: PlaidMetadata) => void;
   onExit: () => void;
 }) {
-  const { open, ready } = usePlaidLink({ token, onSuccess, onExit });
+  // receivedRedirectUri must ONLY be set when actually returning from an OAuth
+  // bank (URL contains oauth_state_id). Passing it on initial open causes the
+  // Plaid SDK to enter resume mode and throw "oauth uri does not contain a
+  // valid oauth_state_id query parameter".
+  // Cache the URL in a const so the conditional and the value passed to the
+  // SDK are guaranteed to be the same string.
+  const url = typeof window !== "undefined" ? window.location.href : "";
+  const isOAuthReturn = url.includes("oauth_state_id");
+
+  const { open, ready } = usePlaidLink({
+    token,
+    onSuccess,
+    onExit,
+    receivedRedirectUri: isOAuthReturn ? url : undefined,
+  });
   useEffect(() => { if (ready) open(); }, [ready, open]);
   return null;
 }
@@ -74,7 +96,14 @@ export default function BankAccountsPage() {
   const [importedAccounts, setImportedAccounts] = useState<ImportedAccount[]>([]);
   const [accountsLoaded,   setAccountsLoaded]   = useState(false);
 
-  const [linkToken,    setLinkToken]    = useState<string | null>(null);
+  // Initialize linkToken from sessionStorage when returning from OAuth redirect
+  // (Chase / Capital One / BofA / Wells Fargo / etc.) so usePlaidLink can resume
+  // the same flow with the same token.
+  const [linkToken,    setLinkToken]    = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    if (!new URLSearchParams(window.location.search).has("oauth_state_id")) return null;
+    return sessionStorage.getItem("plaidLinkToken");
+  });
   const [connecting,   setConnecting]   = useState(false);
   const [linkingBank,  setLinkingBank]  = useState(false);
   const [successMsg,   setSuccessMsg]   = useState<string | null>(null);
@@ -134,6 +163,14 @@ export default function BankAccountsPage() {
 
   const [reclassifyLoading, setReclassifyLoading] = useState(false);
   const [reclassifyResult, setReclassifyResult] = useState<string | null>(null);
+  const [repairLoading, setRepairLoading] = useState(false);
+  const [repairResult, setRepairResult] = useState<string | null>(null);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<string | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<string | null>(null);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineResult, setPipelineResult] = useState<string | null>(null);
 
   // sync start date per account (defaults to 90 days ago)
   const defaultStartDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
@@ -178,9 +215,19 @@ export default function BankAccountsPage() {
 
   // ── Plaid link flow ──────────────────────────────────────────────────────────
 
+  // Clear OAuth-resume artifacts: sessionStorage token + ?oauth_state_id URL param
+  function clearOAuthState() {
+    try { sessionStorage.removeItem("plaidLinkToken"); } catch { /* ignore */ }
+    if (typeof window !== "undefined" && window.location.search.includes("oauth_state_id")) {
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  }
+
   const handlePlaidSuccess = useCallback(
     async (publicToken: string, metadata: PlaidMetadata) => {
       setLinkToken(null);
+      clearOAuthState();
       setLinkingBank(true);
       setError(null);
       try {
@@ -207,10 +254,18 @@ export default function BankAccountsPage() {
   );
 
   async function handleConnectBank() {
+    // Clear any stale ?oauth_state_id from a prior incomplete attempt — the
+    // new fresh link token can't resume an old OAuth session, and leaving
+    // the param around makes PlaidOpener pass receivedRedirectUri with a
+    // stale state_id, which throws "oauth uri does not contain a valid
+    // oauth_state_id query parameter".
+    clearOAuthState();
     setConnecting(true);
     setError(null);
     try {
       const res = await apiClient.call<{ linkToken: string }>("createPlaidLinkToken");
+      // Persist so OAuth banks can resume after redirect back from chase.com etc.
+      sessionStorage.setItem("plaidLinkToken", res.linkToken);
       setLinkToken(res.linkToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to initialize bank connection.");
@@ -219,11 +274,13 @@ export default function BankAccountsPage() {
   }
 
   async function handleAddAccounts(existingAccountId: string) {
+    clearOAuthState();
     setConnecting(true);
     setError(null);
     setUpdateModeAccountId(existingAccountId);
     try {
       const res = await apiClient.call<{ linkToken: string }>("createPlaidLinkToken", { existingAccountId });
+      sessionStorage.setItem("plaidLinkToken", res.linkToken);
       setLinkToken(res.linkToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to open account selection.");
@@ -389,21 +446,17 @@ export default function BankAccountsPage() {
     setDeleting(true);
     setError(null);
     try {
-      // Delete all transactions linked to this account in batches
-      const txnSnap = await getDocs(
-        query(
-          collection(db, "transactions"),
-          where("uid", "==", ownerUid),
-          where("accountId", "==", accountId)
-        )
-      );
-      for (let i = 0; i < txnSnap.docs.length; i += 499) {
-        const batch = writeBatch(db);
-        txnSnap.docs.slice(i, i + 499).forEach((d) => batch.delete(d.ref));
-        await batch.commit();
-      }
-      // Delete the account doc itself
-      await deleteDoc(doc(db, "accounts", accountId));
+      // Delegated to a backend callable so we can also tell Plaid to release the
+      // connection on their side (itemRemove) when this is the last account on
+      // its Plaid item. The callable handles transactions, imports, the
+      // account doc, and Plaid-side cleanup atomically.
+      await apiClient.call<{
+        txnsDeleted:        number;
+        importsDeleted:     number;
+        accountDocDeleted:  boolean;
+        plaidItemRemoved:   boolean;
+        plaidItemRemoveError?: string;
+      }>("deletePlaidAccount", { accountId });
       setConfirmDeleteId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed. Please try again.");
@@ -633,6 +686,111 @@ export default function BankAccountsPage() {
     }
   }
 
+  async function handleRunPipeline() {
+    setPipelineLoading(true);
+    setPipelineResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{
+        scanned:            number;
+        reclassified:       number;
+        pairedAsTransfer:   number;
+        flaggedAsRefund:    number;
+        flaggedNeedsReview: number;
+        unchanged:          number;
+      }>("applyClassificationPipeline", {});
+      setPipelineResult(
+        `Scanned ${res.scanned}: re-classified ${res.reclassified} ` +
+        `(${res.pairedAsTransfer} paired as transfers, ${res.flaggedAsRefund} flagged refunds, ` +
+        `${res.flaggedNeedsReview} P2P → needs review). ${res.unchanged} unchanged.`
+      );
+      setTimeout(() => setPipelineResult(null), 30000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Pipeline failed.");
+    } finally {
+      setPipelineLoading(false);
+    }
+  }
+
+  async function handleVerifyAndFix() {
+    setVerifyLoading(true);
+    setVerifyResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{
+        duplicateAccountsFound:   number;
+        duplicateAccountsDeleted: number;
+        duplicateTxnsDeleted:     number;
+        txnsRerouted:             number;
+        txnsReclassified:         number;
+        signConventionUpdated:    number;
+        finalAccountCount:        number;
+        finalTxnCount:            number;
+        errors:                   string[];
+      }>("verifyAndFixPlaidData", {});
+      const errNote = res.errors.length > 0 ? ` (${res.errors.length} error${res.errors.length !== 1 ? "s" : ""})` : "";
+      setVerifyResult(
+        `Cleanup: merged ${res.duplicateAccountsDeleted} duplicate account doc${res.duplicateAccountsDeleted !== 1 ? "s" : ""}. ` +
+        `Dedup: removed ${res.duplicateTxnsDeleted} duplicate txn${res.duplicateTxnsDeleted !== 1 ? "s" : ""}. ` +
+        `Re-classify: ${res.txnsRerouted} re-routed, ${res.txnsReclassified} re-typed, ${res.signConventionUpdated} sign convention update${res.signConventionUpdated !== 1 ? "s" : ""}. ` +
+        `Final state: ${res.finalAccountCount} account${res.finalAccountCount !== 1 ? "s" : ""}, ${res.finalTxnCount} txn${res.finalTxnCount !== 1 ? "s" : ""}${errNote}.`
+      );
+      setTimeout(() => setVerifyResult(null), 30000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verify & Fix failed.");
+    } finally {
+      setVerifyLoading(false);
+    }
+  }
+
+  async function handleCleanupDuplicates() {
+    setCleanupLoading(true);
+    setCleanupResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{
+        duplicateAccountsFound:   number;
+        duplicateAccountsDeleted: number;
+        txnsRerouted:             number;
+        duplicateTxnsDeleted:     number;
+      }>("cleanupDuplicateAccountDocs", {});
+      setCleanupResult(
+        `Merged ${res.duplicateAccountsDeleted} duplicate account doc${res.duplicateAccountsDeleted !== 1 ? "s" : ""}, ` +
+        `re-routed ${res.txnsRerouted} transaction${res.txnsRerouted !== 1 ? "s" : ""}, ` +
+        `deleted ${res.duplicateTxnsDeleted} duplicate transaction${res.duplicateTxnsDeleted !== 1 ? "s" : ""}.`
+      );
+      setTimeout(() => setCleanupResult(null), 20000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cleanup failed.");
+    } finally {
+      setCleanupLoading(false);
+    }
+  }
+
+  async function handleRepair() {
+    setRepairLoading(true);
+    setRepairResult(null);
+    setError(null);
+    try {
+      const res = await apiClient.call<{ rerouted: number; reclassified: number; unchanged: number; signConventionUpdated: number; accountsScanned: number; errors: string[] }>(
+        "repairPlaidData",
+        {}
+      );
+      const errNote = res.errors.length > 0 ? ` (${res.errors.length} account error${res.errors.length !== 1 ? "s" : ""})` : "";
+      setRepairResult(
+        `Scanned ${res.accountsScanned} account${res.accountsScanned !== 1 ? "s" : ""}: ` +
+        `re-routed ${res.rerouted}, re-classified ${res.reclassified}, ` +
+        `${res.signConventionUpdated} sign convention update${res.signConventionUpdated !== 1 ? "s" : ""}, ` +
+        `${res.unchanged} unchanged${errNote}.`
+      );
+      setTimeout(() => setRepairResult(null), 20000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Repair failed.");
+    } finally {
+      setRepairLoading(false);
+    }
+  }
+
   async function handleReclassify() {
     setReclassifyLoading(true);
     setReclassifyResult(null);
@@ -715,7 +873,7 @@ export default function BankAccountsPage() {
           key={linkToken}
           token={linkToken}
           onSuccess={handlePlaidSuccess}
-          onExit={() => { setLinkToken(null); setConnecting(false); setUpdateModeAccountId(null); }}
+          onExit={() => { setLinkToken(null); setConnecting(false); setUpdateModeAccountId(null); clearOAuthState(); }}
         />
       )}
       <AppNav />
@@ -1141,28 +1299,6 @@ export default function BankAccountsPage() {
               </div>
             )}
           </>
-        )}
-
-        {/* ── Re-classify income/expense (visible to all users with Plaid accounts) ── */}
-        {plaidAccounts.length > 0 && (
-          <div style={{ marginTop: "32px", padding: "16px 20px", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 6px rgba(0,0,0,0.05)" }}>
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "#374151", marginBottom: "6px" }}>Re-classify Transaction Types</div>
-            <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "12px" }}>
-              Re-runs the income/expense detection on all your Plaid-imported transactions using the latest classifier. Useful if older transactions were misclassified (e.g. expenses appearing as income). Non-destructive — only the income/expense field is updated; categories and notes are preserved.
-            </div>
-            {reclassifyResult && (
-              <div style={{ fontSize: "12px", color: "#15803d", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "8px 12px", marginBottom: "10px" }}>
-                ✓ {reclassifyResult}
-              </div>
-            )}
-            <button
-              onClick={handleReclassify}
-              disabled={reclassifyLoading}
-              style={{ padding: "7px 16px", backgroundColor: reclassifyLoading ? "#f3f4f6" : "#f9fafb", color: reclassifyLoading ? "#9ca3af" : "#374151", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: reclassifyLoading ? "default" : "pointer", fontFamily: font }}
-            >
-              {reclassifyLoading ? "Re-classifying… (this may take a minute)" : "Re-classify All Plaid Transactions"}
-            </button>
-          </div>
         )}
 
         {/* ── Data Tools (admin only — legacy migration + wipe) ────────── */}

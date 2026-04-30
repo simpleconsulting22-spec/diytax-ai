@@ -87,14 +87,19 @@ export function useScheduleA() {
           );
         });
 
-      const charityFromTxns = filterByYear(charitySnap.docs).reduce(
-        (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
-        0
-      );
-      const medicalFromTxns = filterByYear(medicalSnap.docs).reduce(
-        (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
-        0
-      );
+      // Refunds (type=refund) subtract from the deductible total — a refund of
+      // a charitable contribution or medical bill reduces the deduction.
+      const reduceWithRefunds = (docs: typeof charitySnap.docs) =>
+        docs.reduce((s, d) => {
+          const data = d.data();
+          const amt = Math.abs((data.amount as number) ?? 0);
+          if (data.type === "refund") return s - amt;
+          if (data.type === "expense") return s + amt;
+          return s;
+        }, 0);
+
+      const charityFromTxns = reduceWithRefunds(filterByYear(charitySnap.docs));
+      const medicalFromTxns = reduceWithRefunds(filterByYear(medicalSnap.docs));
 
       let medicalManual = 0;
       let taxesUncapped = 0;

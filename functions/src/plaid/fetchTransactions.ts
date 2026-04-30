@@ -3,7 +3,8 @@ import * as admin from "firebase-admin";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { requireAuth } from "../middleware/auth";
 import { categorizeTransactionLogic } from "../categorization/categorizeTransaction";
-import { classifyTransactionType } from "./classifyTransactionType";
+import { classifyTransactionType, detectAmountSignConvention } from "./classifyTransactionType";
+import { classifyTransaction, TxnInput } from "./classifyTransactionPipeline";
 
 function getPlaidClient(): PlaidApi {
   const clientId = process.env.PLAID_CLIENT_ID;
@@ -146,6 +147,47 @@ export async function fetchTransactionsForAccount(
 
   console.log(`[PLAID_FETCH] uid=${uid} acct=${accountId} from=${resolvedStart} to=${endDate} fetched=${plaidTransactions.length}/${totalAvailable}`);
 
+  // ── Detect amount-sign convention for this account ─────────────────────────
+  // Some institutions (e.g. PenFed and many credit unions) invert Plaid's
+  // documented sign convention. We auto-detect by sampling transactions Plaid
+  // classifies definitively (via PFC, legacy categories, or description keywords)
+  // and comparing to the amount sign. Persist on the account doc so it sticks.
+  const acctSnap = await db.collection("accounts").doc(accountId).get();
+  const acctData = acctSnap.data() ?? {};
+  const storedInverted: boolean | undefined = acctData.amountSignInverted;
+
+  const storedIgnoreSign: boolean | undefined = acctData.ignoreAmountSign;
+  const detected = detectAmountSignConvention(plaidTransactions);
+  let amountSignInverted: boolean;
+  let ignoreAmountSign: boolean;
+  if (detected === "inverted") {
+    amountSignInverted = true;
+    ignoreAmountSign = false;
+  } else if (detected === "standard") {
+    amountSignInverted = false;
+    ignoreAmountSign = false;
+  } else if (detected === "no-sign-info") {
+    // Every txn has the same sign — this account's sign field is meaningless.
+    amountSignInverted = false;
+    ignoreAmountSign = true;
+  } else {
+    // Couldn't auto-detect — preserve whatever we already had, default to Plaid standard.
+    amountSignInverted = storedInverted ?? false;
+    ignoreAmountSign  = storedIgnoreSign ?? false;
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (detected !== "unknown") {
+    if (storedInverted !== amountSignInverted) updates.amountSignInverted = amountSignInverted;
+    if (storedIgnoreSign !== ignoreAmountSign) updates.ignoreAmountSign  = ignoreAmountSign;
+    if (Object.keys(updates).length > 0) {
+      updates.amountSignDetectedAt       = admin.firestore.FieldValue.serverTimestamp();
+      updates.amountSignDetectionMethod  = "auto";
+      await db.collection("accounts").doc(accountId).update(updates);
+      console.log(`[SIGN_CONVENTION] uid=${uid} acct=${accountId} convention=${detected} (was inverted=${storedInverted ?? "unset"}, ignore=${storedIgnoreSign ?? "unset"})`);
+    }
+  }
+
   // Create an import record so this batch can be found / deleted later
   const importRef = db.collection("imports").doc();
   const importId = importRef.id;
@@ -168,20 +210,18 @@ export async function fetchTransactionsForAccount(
   let skipped = 0;
 
   for (const txn of plaidTransactions) {
-    // ── 1. Plaid-to-Plaid exact dedup ────────────────────────────────────────
-    const plaidDup = await db
-      .collection("transactions")
-      .where("plaidTransactionId", "==", txn.transaction_id)
-      .limit(1)
-      .get();
-
-    if (!plaidDup.empty) { skipped++; continue; }
+    // ── 0. Skip pending transactions ─────────────────────────────────────────
+    // Plaid issues a separate transaction_id for the pending state and another
+    // for the posted state of the same real-world transaction. Importing both
+    // creates duplicates that look like the same transaction listed twice.
+    // Posted is the source of truth; we only persist that.
+    if (txn.pending) { skipped++; continue; }
 
     const description = txn.name ?? "";
     const amount = Math.abs(txn.amount);
     const normDesc = normalize(description);
 
-    // ── 2. Cross-system fuzzy dedup (catches CSV / AI Parser imports) ─────────
+    // ── 1. Cross-system fuzzy dedup (catches CSV / AI Parser imports) ─────────
     // Skip the fuzzy match when the existing transaction is also from Plaid but
     // tied to a DIFFERENT plaid account — those are almost always the two sides
     // of an internal transfer (e.g. checking → savings) and both should be kept.
@@ -197,10 +237,41 @@ export async function fetchTransactionsForAccount(
 
     if (isCsvDup) { skipped++; continue; }
 
-    const transactionId = db.collection("transactions").doc().id;
+    // Defense in depth: even though Plaid already filtered by account_ids when we
+    // requested it, double-check that the returned txn really belongs to this
+    // account. This stops cross-account contamination if Plaid ever returns a
+    // wrong-account txn (which we've seen for credit unions in practice).
+    if (plaidAccountId && txn.account_id !== plaidAccountId) {
+      console.warn(`[CROSS_ACCT_DROP] uid=${uid} expected=${plaidAccountId} got=${txn.account_id} txn=${txn.transaction_id}`);
+      skipped++;
+      continue;
+    }
+
+    // Use Plaid's transaction_id as the Firestore doc ID. With create() this
+    // is atomically idempotent — concurrent syncs of the same transaction
+    // can't produce duplicate docs (the second create call errors with
+    // ALREADY_EXISTS, which we treat as a skip).
+    const transactionId = `plaid_${txn.transaction_id}`;
     const merchantName = txn.merchant_name ?? txn.name ?? "";
 
-    const { type, source: typeSource } = classifyTransactionType(txn);
+    // New pipeline: amount sign is the base direction (Plaid's documented
+    // convention). Description-based transfer / refund / P2P overrides apply.
+    // Cross-account pairing happens in a separate post-fetch sweep
+    // (applyClassificationPipeline) since it needs visibility into other
+    // accounts' transactions.
+    const pipelineInput: TxnInput = {
+      plaidTransactionId: txn.transaction_id,
+      accountId,
+      signedAmount: txn.amount,
+      absAmount: amount,
+      date: txn.date,
+      description,
+      merchantName,
+    };
+    const pipelineResult = classifyTransaction(pipelineInput, [pipelineInput]);
+    const type = pipelineResult.type;
+    const typeSource = `pipeline:${pipelineResult.reason}`;
+    void amountSignInverted; void ignoreAmountSign; void classifyTransactionType;
 
     // DIAGNOSTIC — log every transaction across every connected account
     console.log(`[TXN_DEBUG] uid=${uid} acct=${plaidAccountId ?? "all"} name="${txn.name}" amount=${txn.amount} pfc="${(txn.personal_finance_category?.primary ?? "").toUpperCase()}" legacy=${JSON.stringify(txn.category ?? [])} type=${type} src=${typeSource}`);
@@ -236,9 +307,19 @@ export async function fetchTransactionsForAccount(
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    await db.collection("transactions").doc(transactionId).set(txnData);
+    try {
+      await db.collection("transactions").doc(transactionId).create(txnData);
+    } catch (err) {
+      // ALREADY_EXISTS (Firestore code 6) means this Plaid transaction was
+      // already imported (concurrent sync, webhook + initial fetch overlap,
+      // etc.). That's a no-op — preserves whatever the user has already done
+      // with the existing doc (manual category, type override, etc.).
+      const code = (err as { code?: number }).code;
+      if (code === 6) { skipped++; continue; }
+      throw err;
+    }
 
-    // Categorize
+    // Categorize (only runs for genuinely new transactions)
     await categorizeTransactionLogic(uid, transactionId, merchantName, description, amount);
 
     imported++;
@@ -247,10 +328,22 @@ export async function fetchTransactionsForAccount(
   // Update import record with final counts
   await importRef.update({ importedCount: imported, skippedCount: skipped });
 
+  // Cross-account pairing + refund detection. Runs after every sync so as new
+  // transactions arrive on one account they immediately get paired with their
+  // matching counterpart on another account.
+  try {
+    const { runClassificationPipelineForUser } = await import("./applyClassificationPipeline");
+    await runClassificationPipelineForUser(uid);
+  } catch (e) {
+    console.error("[FETCH] classification pipeline failed:", e instanceof Error ? e.message : e);
+  }
+
   return imported;
 }
 
-export const fetchTransactions = onCall({ cors: true, invoker: "public" }, async (request) => {
+export const fetchTransactions = onCall(
+  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  async (request) => {
   const uid = await requireAuth(request);
 
   const data = request.data as { accountId?: string; startDate?: string };

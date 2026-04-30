@@ -21,7 +21,7 @@ export interface CategorizationResult {
   entityName?: string | null;
   entityType?: string;
   aiAssignment?: string | null;
-  aiType?: "income" | "expense" | "transfer";
+  aiType?: "income" | "expense" | "transfer" | "refund";
   categorizationExplanation: string;
 }
 
@@ -269,7 +269,7 @@ async function callAIBatch(
     `  Personal: Groceries, Dining & Restaurants, Entertainment, Healthcare, Other Personal\n\n` +
     `Transactions to classify:\n${txnLines.join("\n")}\n\n` +
     `Return ONLY a valid JSON array, one object per transaction, no markdown:\n` +
-    `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
+    `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer|refund>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
 
   try {
     const openai = new OpenAI({ apiKey });
@@ -289,8 +289,8 @@ async function callAIBatch(
     for (const item of parsed) {
       const rawConf = typeof item.confidence === "number" ? item.confidence : 0.75;
       const confidence = Math.min(0.9, Math.max(0.6, rawConf));
-      const aiType = (["income", "expense", "transfer"].includes(item.type ?? ""))
-        ? (item.type as "income" | "expense" | "transfer")
+      const aiType = (["income", "expense", "transfer", "refund"].includes(item.type ?? ""))
+        ? (item.type as "income" | "expense" | "transfer" | "refund")
         : undefined;
       const aiAssignment =
         item.assignment && validEntityNames.has(item.assignment) ? item.assignment : null;
