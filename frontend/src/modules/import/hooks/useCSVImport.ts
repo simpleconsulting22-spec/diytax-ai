@@ -5,8 +5,6 @@ import {
   query,
   where,
   getDocs,
-  addDoc,
-  updateDoc,
   deleteDoc,
   writeBatch,
   doc,
@@ -14,10 +12,9 @@ import {
   serverTimestamp,
   increment,
 } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
-import { getUserEntities, UserEntity } from "../../../services/entityService";
+import { apiClient } from "../../../services/apiClient";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -163,14 +160,6 @@ function deriveType(
   };
 }
 
-interface PreparedRow {
-  row: NormalizedRow;
-  accountId: string | null;
-  normalizedDescription: string;
-  importKey: string;
-  possibleDuplicate: boolean;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // Find the first header whose lowercase form contains any candidate substring
@@ -235,84 +224,6 @@ export function extractVendor(normalizedDescription: string): string {
   const words = s.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
   if (words.length === 0) return normalizedDescription.split(" ")[0] || "unknown";
   return words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
-}
-
-// ─── Fuzzy duplicate detection ────────────────────────────────────────────────
-
-// Word-bag Jaccard similarity — fast, no external deps
-function jaccardSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.split(/\s+/).filter((w) => w.length > 1));
-  const wordsB = new Set(b.split(/\s+/).filter((w) => w.length > 1));
-  if (wordsA.size === 0 && wordsB.size === 0) return 1;
-  let intersection = 0;
-  wordsA.forEach((w) => { if (wordsB.has(w)) intersection++; });
-  const union = new Set([...wordsA, ...wordsB]).size;
-  return union === 0 ? 1 : intersection / union;
-}
-
-// Returns a set of importKeys that appear to be cross-batch fuzzy duplicates.
-// Skips if date range > 90 days to bound query cost.
-async function findCrossBatchFuzzyDuplicates(
-  userId: string,
-  candidates: PreparedRow[]
-): Promise<Set<string>> {
-  const flagged = new Set<string>();
-  if (candidates.length === 0) return flagged;
-
-  const dates = candidates.map((p) => p.row.date).filter(Boolean).sort();
-  if (dates.length === 0) return flagged;
-
-  const minDate = dates[0];
-  const maxDate = dates[dates.length - 1];
-  const daySpan =
-    (new Date(maxDate).getTime() - new Date(minDate).getTime()) /
-    (1000 * 60 * 60 * 24);
-
-  // Skip fuzzy check for very wide date ranges — too many existing transactions
-  if (daySpan > 90) return flagged;
-
-  const uniqueDates = [...new Set(dates)];
-  const existingTxns: Array<{ date: string; amount: number; normalizedDescription: string }> = [];
-
-  for (let i = 0; i < uniqueDates.length; i += DEDUP_CHUNK_SIZE) {
-    const chunk = uniqueDates.slice(i, i + DEDUP_CHUNK_SIZE);
-    const snap = await getDocs(
-      query(
-        collection(db, "transactions"),
-        where("uid", "==", userId),
-        where("date", "in", chunk)
-      )
-    );
-    snap.docs.forEach((d) => {
-      const data = d.data();
-      if (data.date && data.amount !== undefined && data.normalizedDescription) {
-        existingTxns.push({
-          date: data.date as string,
-          amount: data.amount as number,
-          normalizedDescription: data.normalizedDescription as string,
-        });
-      }
-    });
-    // Guard: bail if we'd be comparing against a huge set
-    if (existingTxns.length > 2000) return flagged;
-  }
-
-  for (const candidate of candidates) {
-    for (const existing of existingTxns) {
-      if (candidate.row.date !== existing.date) continue;
-      if (Math.abs(candidate.row.amount - existing.amount) > 0.01) continue;
-      const sim = jaccardSimilarity(
-        candidate.normalizedDescription,
-        existing.normalizedDescription
-      );
-      if (sim >= 0.8) {
-        flagged.add(candidate.importKey);
-        break;
-      }
-    }
-  }
-
-  return flagged;
 }
 
 // Normalise a date string to YYYY-MM-DD; returns empty string when unrecognised
@@ -526,76 +437,19 @@ export function parseCSVFile(
   });
 }
 
-// ─── Account resolution ───────────────────────────────────────────────────────
-
-// Look up an existing account by name or last4; create one if not found.
-// Stores accountType ("bank" | "credit_card") on the account document.
-async function resolveAccount(
-  userId: string,
-  identifier: string,
-  accountType: "bank" | "credit_card"
-): Promise<string> {
-  const snap = await getDocs(
-    query(collection(db, "accounts"), where("uid", "==", userId))
-  );
-
-  const identLower = identifier.toLowerCase();
-  const possibleLast4 = identifier.replace(/\D/g, "").slice(-4);
-
-  for (const d of snap.docs) {
-    const data = d.data();
-    if (
-      (data.name ?? "").toLowerCase() === identLower ||
-      (data.last4 && data.last4 === possibleLast4)
-    ) {
-      // Update accountType if it changed or was never set
-      if (data.accountType !== accountType) {
-        await updateDoc(d.ref, { accountType });
-      }
-      return d.id;
-    }
-  }
-
-  const newDoc = await addDoc(collection(db, "accounts"), {
-    uid: userId,
-    name: identifier,
-    last4: possibleLast4.length === 4 ? possibleLast4 : null,
-    accountType,
-    createdAt: serverTimestamp(),
-  });
-  return newDoc.id;
-}
-
-// ─── Duplicate detection ──────────────────────────────────────────────────────
-
-// Firestore "in" operator accepts up to 30 values per query.
-// Requires composite index: transactions(uid ASC, importKey ASC) — see firestore.indexes.json
 const DEDUP_CHUNK_SIZE = 30;
 
-async function findExistingImportKeys(userId: string, keys: string[]): Promise<Set<string>> {
-  const existing = new Set<string>();
-  const uniqueKeys = [...new Set(keys)];
-
-  for (let i = 0; i < uniqueKeys.length; i += DEDUP_CHUNK_SIZE) {
-    const chunk = uniqueKeys.slice(i, i + DEDUP_CHUNK_SIZE);
-    const snap = await getDocs(
-      query(
-        collection(db, "transactions"),
-        where("uid", "==", userId),
-        where("importKey", "in", chunk)
-      )
-    );
-    snap.docs.forEach((d) => {
-      const k = d.data().importKey as string | undefined;
-      if (k) existing.add(k);
-    });
-  }
-  return existing;
-}
-
-// ─── Write logic ──────────────────────────────────────────────────────────────
+// ─── Write logic — delegates to unified backend ingestTransactions callable ──
 
 const BATCH_SIZE = 499;
+
+interface IngestReportLite {
+  total:    number;
+  imported: number;
+  skipped:  number;
+  errors:   string[];
+  importId: string | null;
+}
 
 interface WriteResult {
   importId: string;
@@ -606,139 +460,40 @@ interface WriteResult {
 }
 
 async function writeTransactions(
-  userId: string,
   rows: NormalizedRow[],
   fileName: string,
-  accountType: "bank" | "credit_card",
-  defaultAccountName?: string
+  accountId: string,
 ): Promise<WriteResult> {
-  // ── 0. Resolve default entity (auto-assign if exactly one entity) ──────────
-  const entities = await getUserEntities(userId);
-  const defaultEntity: UserEntity | null =
-    entities.length === 1 ? entities[0] : null;
-
-  // ── 1. Validation ──────────────────────────────────────────────────────────
-  let skippedCount = 0;
+  // Validation: drop rows missing date or amount before sending to backend.
+  let validationSkipped = 0;
   const validRows: NormalizedRow[] = [];
-
   for (const row of rows) {
-    if (!row.date) {
-      skippedCount++;
-      continue;
-    }
-    if (isNaN(row.amount)) {
-      skippedCount++;
-      continue;
-    }
+    if (!row.date || isNaN(row.amount)) { validationSkipped++; continue; }
     validRows.push(row);
   }
 
-  console.log(`[CSV Import] Total rows parsed: ${rows.length}`);
-  console.log(`[CSV Import] Valid rows: ${validRows.length}`);
-  console.log(`[CSV Import] Skipped rows (validation): ${skippedCount}`);
+  const transactions = validRows.map((r) => ({
+    date:        r.date,
+    description: r.description,
+    amount:      r.amount,
+    rawRow:      r.rawData,
+  }));
 
-  // ── 2. Resolve accounts ────────────────────────────────────────────────────
-  const accountMap = new Map<string, string>();
-  const uniqueIdentifiers = [
-    ...new Set(
-      validRows
-        .map((r) => r.accountIdentifier ?? (defaultAccountName || null))
-        .filter((id): id is string => id !== null)
-    ),
-  ];
-  for (const ident of uniqueIdentifiers) {
-    accountMap.set(ident, await resolveAccount(userId, ident, accountType));
-  }
-
-  // ── 3. Build importKeys ────────────────────────────────────────────────────
-  const prepared: PreparedRow[] = validRows.map((row) => {
-    const identifier = row.accountIdentifier ?? (defaultAccountName || null);
-    const accountId = identifier ? (accountMap.get(identifier) ?? null) : null;
-    const normalizedDescription = normalize(row.description);
-    const importKey = `${userId}|${accountId ?? "na"}|${row.date}|${row.amount}|${normalizedDescription}`;
-    return { row, accountId, normalizedDescription, importKey, possibleDuplicate: false };
+  // Backend pipeline: normalize → enrich → classify → store + categorize.
+  const report = await apiClient.call<IngestReportLite>("ingestTransactions", {
+    source:       "csv",
+    accountId,
+    transactions,
+    importLabel:  fileName,
   });
 
-  // ── 4. Strict deduplication against existing transactions ─────────────────
-  const allKeys = prepared.map((p) => p.importKey);
-  const existingKeys = await findExistingImportKeys(userId, allKeys);
-
-  let duplicateCount = 0;
-  let transferCount = 0;
-  const rowsToWrite = prepared.filter(({ importKey }) => {
-    if (existingKeys.has(importKey)) {
-      duplicateCount++;
-      return false;
-    }
-    return true;
-  });
-
-  // ── 4b. Fuzzy duplicate detection (cross-batch) ────────────────────────────
-  // Flag rows that look like near-duplicates of existing transactions.
-  // These are still written but marked possibleDuplicate: true so the
-  // review UI can surface them for user confirmation.
-  try {
-    const fuzzyKeys = await findCrossBatchFuzzyDuplicates(userId, rowsToWrite);
-    for (const row of rowsToWrite) {
-      if (fuzzyKeys.has(row.importKey)) row.possibleDuplicate = true;
-    }
-  } catch {
-    // Non-blocking — fuzzy detection is best-effort
-  }
-
-  console.log(`[CSV Import] Duplicates skipped: ${duplicateCount}`);
-  console.log(`[CSV Import] Rows to write: ${rowsToWrite.length}`);
-
-  // ── 5. Create import record ────────────────────────────────────────────────
-  const importRef = await addDoc(collection(db, "imports"), {
-    userId,
-    fileName,
-    rowCount: rows.length,
-    importedCount: rowsToWrite.length,
-    skippedCount: skippedCount + duplicateCount,
-    createdAt: serverTimestamp(),
-  });
-  const importId = importRef.id;
-
-  // ── 6. Write transactions in batches ───────────────────────────────────────
-  for (let i = 0; i < rowsToWrite.length; i += BATCH_SIZE) {
-    const batch = writeBatch(db);
-    const chunk = rowsToWrite.slice(i, i + BATCH_SIZE);
-
-    for (const { row, accountId, normalizedDescription, importKey, possibleDuplicate } of chunk) {
-      const ref = doc(collection(db, "transactions"));
-      if (row.isTransfer) transferCount++;
-      const vendor = extractVendor(normalizedDescription);
-      batch.set(ref, {
-        uid: userId,
-        accountId,
-        accountType: row.accountType,
-        date: row.date,
-        description: row.description,
-        normalizedDescription,
-        vendor,
-        amount: row.amount,
-        type: row.type,
-        ...(row.subType ? { subType: row.subType } : {}),
-        originalType: row.type,
-        status: row.isTransfer ? "transfer" : "needs_review",
-        source: "csv",
-        importId,
-        importKey,
-        rawData: row.rawData,
-        entityId: row.isTransfer ? null : (defaultEntity?.id ?? null),
-        entityType: row.isTransfer ? null : (defaultEntity?.type ?? "personal"),
-        entityName: row.isTransfer ? null : (defaultEntity?.name ?? null),
-        taxYear: parseInt(row.date.slice(0, 4)) || null,
-        ...(possibleDuplicate ? { possibleDuplicate: true } : {}),
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    await batch.commit();
-  }
-
-  return { importId, importedCount: rowsToWrite.length, skippedCount, duplicateCount, transferCount };
+  return {
+    importId:      report.importId ?? "",
+    importedCount: report.imported,
+    skippedCount:  validationSkipped + report.errors.length,
+    duplicateCount: report.skipped,
+    transferCount: 0, // Backend pipeline classifies transfers; not tracked client-side anymore.
+  };
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -880,11 +635,15 @@ export function useCSVImport() {
     }
   }
 
-  async function handleImport(defaultAccountName?: string) {
+  async function handleImport(accountId: string) {
     if (!user || state.rows.length === 0) return;
+    if (!accountId) {
+      setState((prev) => ({ ...prev, importError: "Please select an account before importing." }));
+      return;
+    }
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      const result = await writeTransactions(ownerUid, state.rows, state.fileName, state.accountType, defaultAccountName);
+      const result = await writeTransactions(state.rows, state.fileName, accountId);
       setState((prev) => ({
         ...prev,
         importing: false,

@@ -2,9 +2,9 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { requireAuth } from "../middleware/auth";
-import { categorizeTransactionLogic } from "../categorization/categorizeTransaction";
-import { classifyTransactionType, detectAmountSignConvention } from "./classifyTransactionType";
-import { classifyTransaction, TxnInput } from "./classifyTransactionPipeline";
+import { detectAmountSignConvention } from "./classifyTransactionType";
+import { ingestTransactionsCore } from "../ingestion/ingestTransactions";
+import { RawPlaidInput } from "../ingestion/transactionPipeline";
 
 function getPlaidClient(): PlaidApi {
   const clientId = process.env.PLAID_CLIENT_ID;
@@ -28,10 +28,12 @@ function getPlaidClient(): PlaidApi {
   return new PlaidApi(configuration);
 }
 
-// ─── Fuzzy dedup helpers ──────────────────────────────────────────────────────
+// ─── Fuzzy cross-source dedup ─────────────────────────────────────────────────
+// Catches descriptions that differ slightly between Plaid and a prior CSV
+// import (e.g. "Amazon.com*K1" vs "AMAZON.COM"). The unified pipeline's
+// dedupeHash only catches exact matches, so we pre-filter here before handing
+// to ingestTransactionsCore.
 
-// Must match the normalize() function in useCSVImport.ts so descriptions
-// stored by CSV imports are comparable to Plaid descriptions.
 function normalize(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -45,8 +47,6 @@ function jaccard(a: string, b: string): number {
   return union === 0 ? 1 : intersection / union;
 }
 
-// Builds a map of date → existing transactions for cross-system dedup.
-// Batches date lookups in groups of 30 (Firestore "in" limit).
 interface ExistingTxn {
   amount: number;
   normalizedDescription: string;
@@ -188,157 +188,68 @@ export async function fetchTransactionsForAccount(
     }
   }
 
-  // Create an import record so this batch can be found / deleted later
-  const importRef = db.collection("imports").doc();
-  const importId = importRef.id;
-  const syncLabel = accountLabel ?? "Plaid Sync";
-  await importRef.set({
-    userId: uid,
-    fileName: syncLabel,
-    importedCount: 0,
-    skippedCount: 0,
-    source: "plaid",
-    accountId,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  void amountSignInverted; void ignoreAmountSign;
 
-  // Pre-build lookup of existing transactions by date for cross-system fuzzy dedup
+  // ── Pre-filter: cross-system fuzzy dedup (catches CSV/AI imports of same
+  // transactions before this Plaid sync) + drop pending + drop wrong-account
+  // contamination. Survivors go through the unified ingestion pipeline.
   const dates = plaidTransactions.map((t) => t.date);
   const existingByDate = await buildExistingByDate(db, uid, dates);
 
-  let imported = 0;
-  let skipped = 0;
+  const survivors: RawPlaidInput[] = [];
+  let preFilteredOut = 0;
 
   for (const txn of plaidTransactions) {
-    // ── 0. Skip pending transactions ─────────────────────────────────────────
-    // Plaid issues a separate transaction_id for the pending state and another
-    // for the posted state of the same real-world transaction. Importing both
-    // creates duplicates that look like the same transaction listed twice.
-    // Posted is the source of truth; we only persist that.
-    if (txn.pending) { skipped++; continue; }
+    if (txn.pending) { preFilteredOut++; continue; }
+
+    if (plaidAccountId && txn.account_id !== plaidAccountId) {
+      console.warn(`[CROSS_ACCT_DROP] uid=${uid} expected=${plaidAccountId} got=${txn.account_id} txn=${txn.transaction_id}`);
+      preFilteredOut++;
+      continue;
+    }
 
     const description = txn.name ?? "";
     const amount = Math.abs(txn.amount);
     const normDesc = normalize(description);
 
-    // ── 1. Cross-system fuzzy dedup (catches CSV / AI Parser imports) ─────────
-    // Skip the fuzzy match when the existing transaction is also from Plaid but
-    // tied to a DIFFERENT plaid account — those are almost always the two sides
-    // of an internal transfer (e.g. checking → savings) and both should be kept.
+    // Skip fuzzy match against same-Plaid-but-different-account txns —
+    // those are almost always the two sides of an internal transfer.
     const sameDay = existingByDate.get(txn.date) ?? [];
-    const isCsvDup = sameDay.some((e) => {
+    const isCrossSourceDup = sameDay.some((e) => {
       if (Math.abs(e.amount - amount) > 0.01) return false;
       if (jaccard(normDesc, e.normalizedDescription) < 0.75) return false;
-      if (e.source === "plaid" && e.plaidAccountId && e.plaidAccountId !== txn.account_id) {
-        return false;
-      }
+      if (e.source === "plaid" && e.plaidAccountId && e.plaidAccountId !== txn.account_id) return false;
       return true;
     });
+    if (isCrossSourceDup) { preFilteredOut++; continue; }
 
-    if (isCsvDup) { skipped++; continue; }
-
-    // Defense in depth: even though Plaid already filtered by account_ids when we
-    // requested it, double-check that the returned txn really belongs to this
-    // account. This stops cross-account contamination if Plaid ever returns a
-    // wrong-account txn (which we've seen for credit unions in practice).
-    if (plaidAccountId && txn.account_id !== plaidAccountId) {
-      console.warn(`[CROSS_ACCT_DROP] uid=${uid} expected=${plaidAccountId} got=${txn.account_id} txn=${txn.transaction_id}`);
-      skipped++;
-      continue;
-    }
-
-    // Use Plaid's transaction_id as the Firestore doc ID. With create() this
-    // is atomically idempotent — concurrent syncs of the same transaction
-    // can't produce duplicate docs (the second create call errors with
-    // ALREADY_EXISTS, which we treat as a skip).
-    const transactionId = `plaid_${txn.transaction_id}`;
-    const merchantName = txn.merchant_name ?? txn.name ?? "";
-
-    // New pipeline: amount sign is the base direction (Plaid's documented
-    // convention). Description-based transfer / refund / P2P overrides apply.
-    // Cross-account pairing happens in a separate post-fetch sweep
-    // (applyClassificationPipeline) since it needs visibility into other
-    // accounts' transactions.
-    const pipelineInput: TxnInput = {
-      plaidTransactionId: txn.transaction_id,
-      accountId,
-      signedAmount: txn.amount,
-      absAmount: amount,
-      date: txn.date,
-      description,
-      merchantName,
-    };
-    const pipelineResult = classifyTransaction(pipelineInput, [pipelineInput]);
-    const type = pipelineResult.type;
-    const typeSource = `pipeline:${pipelineResult.reason}`;
-    void amountSignInverted; void ignoreAmountSign; void classifyTransactionType;
-
-    // DIAGNOSTIC — log every transaction across every connected account
-    console.log(`[TXN_DEBUG] uid=${uid} acct=${plaidAccountId ?? "all"} name="${txn.name}" amount=${txn.amount} pfc="${(txn.personal_finance_category?.primary ?? "").toUpperCase()}" legacy=${JSON.stringify(txn.category ?? [])} type=${type} src=${typeSource}`);
-
-    const taxYear = parseInt(txn.date.split("-")[0]);
-
-    const txnData = {
-      transactionId,
-      uid,
-      accountId,
-      importId,
-      plaidTransactionId: txn.transaction_id,
-      plaidAccountId: txn.account_id,
-      amount,
-      type,
-      typeSource,
-      taxYear,
-      date: txn.date,
-      description,
-      normalizedDescription: normDesc,
-      merchantName,
-      // Raw Plaid signals — kept so backfill can re-classify without re-fetching
-      plaidSignedAmount: txn.amount,
-      plaidPfcPrimary: txn.personal_finance_category?.primary ?? null,
-      plaidLegacyCategories: (txn.category ?? []) as string[],
-      category: "",
-      taxCategory: "",
-      taxSchedule: "",
-      aiCategory: "",
-      confidenceScore: 0,
-      status: "needs_review",
-      source: "plaid",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-
-    try {
-      await db.collection("transactions").doc(transactionId).create(txnData);
-    } catch (err) {
-      // ALREADY_EXISTS (Firestore code 6) means this Plaid transaction was
-      // already imported (concurrent sync, webhook + initial fetch overlap,
-      // etc.). That's a no-op — preserves whatever the user has already done
-      // with the existing doc (manual category, type override, etc.).
-      const code = (err as { code?: number }).code;
-      if (code === 6) { skipped++; continue; }
-      throw err;
-    }
-
-    // Categorize (only runs for genuinely new transactions)
-    await categorizeTransactionLogic(uid, transactionId, merchantName, description, amount);
-
-    imported++;
+    survivors.push({
+      transaction_id: txn.transaction_id,
+      account_id:     txn.account_id,
+      amount:         txn.amount,
+      date:           txn.date,
+      name:           txn.name ?? "",
+      merchant_name:  txn.merchant_name ?? null,
+      personal_finance_category: txn.personal_finance_category
+        ? { primary: txn.personal_finance_category.primary ?? null }
+        : null,
+      category:       (txn.category ?? null) as string[] | null,
+      pending:        txn.pending,
+    });
   }
 
-  // Update import record with final counts
-  await importRef.update({ importedCount: imported, skippedCount: skipped });
+  // ── Hand off to unified ingestion pipeline ───────────────────────────────
+  const syncLabel = accountLabel ?? "Plaid Sync";
+  const report = await ingestTransactionsCore(uid, {
+    source:        "plaid",
+    accountId,
+    transactions:  survivors,
+    importLabel:   syncLabel,
+  });
 
-  // Cross-account pairing + refund detection. Runs after every sync so as new
-  // transactions arrive on one account they immediately get paired with their
-  // matching counterpart on another account.
-  try {
-    const { runClassificationPipelineForUser } = await import("./applyClassificationPipeline");
-    await runClassificationPipelineForUser(uid);
-  } catch (e) {
-    console.error("[FETCH] classification pipeline failed:", e instanceof Error ? e.message : e);
-  }
+  console.log(`[FETCH] uid=${uid} acct=${accountId} prefiltered=${preFilteredOut} ${JSON.stringify(report)}`);
 
-  return imported;
+  return report.imported;
 }
 
 export const fetchTransactions = onCall(

@@ -15,6 +15,7 @@ export * from "./plaid/dedupePlaidTransactions";
 export * from "./plaid/verifyAndFixPlaidData";
 export * from "./plaid/diagnoseSignDistribution";
 export * from "./plaid/applyClassificationPipeline";
+export * from "./ingestion/ingestTransactions";
 export * from "./categorization/categorizeTransaction";
 export * from "./categorization/updateTransactionCategory";
 export * from "./categorization/categorizeBatch";

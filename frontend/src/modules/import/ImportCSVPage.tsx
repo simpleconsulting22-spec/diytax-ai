@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { collection, query, where, getDocs, orderBy, limit, getDoc, doc, writeBatch } from "firebase/firestore";
+import { collection, query, where, getDocs, orderBy, limit, getDoc, doc, writeBatch, addDoc, serverTimestamp } from "firebase/firestore";
 import { CheckCircle2, FolderOpen, ChevronRight, Trash2 } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
@@ -8,6 +8,13 @@ import { findOrCreateAccountByName } from "../../services/accountService";
 import CSVPreviewTable from "./components/CSVPreviewTable";
 import { useCSVImport } from "./hooks/useCSVImport";
 import AppNav from "../../components/AppNav";
+
+interface AccountOption {
+  id:           string;
+  name:         string;
+  accountType?: string;
+  institutionName?: string;
+}
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -114,7 +121,30 @@ export default function ImportCSVPage() {
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
-  const [accountName, setAccountName] = useState("");
+
+  // Required account selector (replaces optional account-name text input).
+  // The unified backend pipeline requires accountId on every ingest.
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [newAccountName, setNewAccountName] = useState<string>("");
+
+  const loadAccounts = useCallback(async () => {
+    if (!ownerUid) return;
+    const snap = await getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid)));
+    const opts: AccountOption[] = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id:              d.id,
+        name:            (data.name as string) ?? "(unnamed)",
+        accountType:     data.accountType as string | undefined,
+        institutionName: data.institutionName as string | undefined,
+      };
+    });
+    opts.sort((a, b) => a.name.localeCompare(b.name));
+    setAccounts(opts);
+  }, [ownerUid]);
+
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
 
   // ── Import expansion ───────────────────────────────────────────────────────
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -287,7 +317,7 @@ export default function ImportCSVPage() {
             </div>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
-                onClick={() => { resetImport(); setAccountName(""); }}
+                onClick={() => { resetImport(); setSelectedAccountId(""); setNewAccountName(""); }}
                 style={{ padding: "10px 20px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
               >
                 Import Another File
@@ -447,16 +477,14 @@ export default function ImportCSVPage() {
                   )}
                 </div>
 
-                {/* Account name (used when the CSV has no Account column) */}
+                {/* Required account selector */}
                 <div style={{ marginTop: "20px" }}>
                   <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
-                    Account name <span style={{ fontWeight: 400, color: "#9ca3af" }}>(optional — used for filtering in Review)</span>
+                    Account <span style={{ color: "#dc2626" }}>*</span>
                   </label>
-                  <input
-                    type="text"
-                    value={accountName}
-                    onChange={(e) => setAccountName(e.target.value)}
-                    placeholder="e.g. Chase Checking, Amex Gold"
+                  <select
+                    value={selectedAccountId}
+                    onChange={(e) => setSelectedAccountId(e.target.value)}
                     style={{
                       width: "100%",
                       padding: "8px 12px",
@@ -467,18 +495,80 @@ export default function ImportCSVPage() {
                       fontFamily: font,
                       outline: "none",
                       boxSizing: "border-box",
+                      backgroundColor: "#fff",
                     }}
-                  />
+                  >
+                    <option value="">— Select account —</option>
+                    {accounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name}{acc.institutionName ? ` (${acc.institutionName})` : ""}
+                      </option>
+                    ))}
+                    <option value="__new__">+ Create new account…</option>
+                  </select>
+
+                  {selectedAccountId === "__new__" && (
+                    <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+                      <input
+                        type="text"
+                        value={newAccountName}
+                        onChange={(e) => setNewAccountName(e.target.value)}
+                        placeholder="New account name (e.g. Chase Checking, Amex Gold)"
+                        style={{
+                          flex: 1,
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          border: "1px solid #d1d5db",
+                          fontSize: "13px",
+                          color: "#374151",
+                          fontFamily: font,
+                          outline: "none",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                      <button
+                        onClick={async () => {
+                          const name = newAccountName.trim();
+                          if (!name || !ownerUid) return;
+                          const docRef = await addDoc(collection(db, "accounts"), {
+                            uid:         ownerUid,
+                            name,
+                            accountType,
+                            createdAt:   serverTimestamp(),
+                          });
+                          await loadAccounts();
+                          setSelectedAccountId(docRef.id);
+                          setNewAccountName("");
+                        }}
+                        disabled={!newAccountName.trim()}
+                        style={{
+                          padding: "8px 14px",
+                          backgroundColor: newAccountName.trim() ? "#16A34A" : "#d1d5db",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "8px",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          cursor: newAccountName.trim() ? "pointer" : "not-allowed",
+                          fontFamily: font,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        Create
+                      </button>
+                    </div>
+                  )}
+
                   <div style={{ marginTop: "4px", fontSize: "12px", color: "#9ca3af" }}>
-                    If your CSV already has an Account column, this is ignored.
+                    Every CSV import must be assigned to one account.
                   </div>
                 </div>
 
                 <div style={{ marginTop: "16px", display: "flex", gap: "12px" }}>
                   <button
-                    onClick={() => handleImport(accountName.trim() || undefined)}
-                    disabled={importing}
-                    style={{ flex: 1, padding: "14px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "10px", fontSize: "15px", fontWeight: 600, cursor: importing ? "not-allowed" : "pointer", opacity: importing ? 0.65 : 1, fontFamily: font }}
+                    onClick={() => handleImport(selectedAccountId)}
+                    disabled={importing || !selectedAccountId || selectedAccountId === "__new__"}
+                    style={{ flex: 1, padding: "14px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "10px", fontSize: "15px", fontWeight: 600, cursor: (importing || !selectedAccountId || selectedAccountId === "__new__") ? "not-allowed" : "pointer", opacity: (importing || !selectedAccountId || selectedAccountId === "__new__") ? 0.55 : 1, fontFamily: font }}
                   >
                     {importing
                       ? `Importing ${rows.length} transaction${rows.length !== 1 ? "s" : ""}…`

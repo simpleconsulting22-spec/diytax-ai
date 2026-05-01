@@ -1,11 +1,25 @@
-import React, { useState, useRef, useCallback } from "react";
-import { collection, doc, setDoc, addDoc, serverTimestamp } from "firebase/firestore";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import { collection, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
 import { Camera } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { apiClient } from "../../services/apiClient";
 import AppNav from "../../components/AppNav";
+
+interface AccountOption {
+  id:               string;
+  name:             string;
+  institutionName?: string;
+}
+
+interface IngestReportLite {
+  total:    number;
+  imported: number;
+  skipped:  number;
+  errors:   string[];
+  importId: string | null;
+}
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -40,15 +54,16 @@ async function prepareImage(file: File): Promise<{ base64: string; mimeType: str
 
 function downloadCSV(rows: ParsedRow[], accountName: string) {
   const header = ["Date", "Description", "Amount", "Type", "Account"];
+  const safeAccount = accountName || "parsed";
   const lines  = rows.map((r) =>
-    [r.date, `"${r.description.replace(/"/g, '""')}"`, r.amount.toFixed(2), r.type, `"${accountName}"`].join(",")
+    [r.date, `"${r.description.replace(/"/g, '""')}"`, r.amount.toFixed(2), r.type, `"${safeAccount}"`].join(",")
   );
   const csv  = [header.join(","), ...lines].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href     = url;
-  a.download = `transactions-${accountName || "parsed"}.csv`;
+  a.download = `transactions-${safeAccount}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -62,13 +77,36 @@ export default function AIParserPage() {
   const [textContent, setTextContent] = useState("");
   const [imageFile, setImageFile]   = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [accountName, setAccountName]   = useState("");
   const [parsing, setParsing]       = useState(false);
   const [importing, setImporting]   = useState(false);
   const [importCount, setImportCount] = useState<number | null>(null);
   const [error, setError]           = useState<string | null>(null);
   const [rows, setRows]             = useState<ParsedRow[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Required account selector — backend ingestTransactions requires an accountId.
+  const [accounts, setAccounts]               = useState<AccountOption[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [newAccountName, setNewAccountName]   = useState<string>("");
+
+  const loadAccounts = useCallback(async () => {
+    if (!ownerUid) return;
+    const snap = await getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid)));
+    const opts: AccountOption[] = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id:              d.id,
+        name:            (data.name as string) ?? "(unnamed)",
+        institutionName: data.institutionName as string | undefined,
+      };
+    });
+    opts.sort((a, b) => a.name.localeCompare(b.name));
+    setAccounts(opts);
+  }, [ownerUid]);
+
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
 
   const handleImageDrop = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) { setError("Please upload an image file (PNG, JPG, WEBP)."); return; }
@@ -116,44 +154,27 @@ export default function AIParserPage() {
 
   async function handleImport() {
     if (rows.length === 0) return;
+    if (!selectedAccountId || selectedAccountId === "__new__") {
+      setError("Please select an account before importing.");
+      return;
+    }
     setImporting(true);
     setError(null);
     try {
-      // Create import record first so we have an importId to stamp on each transaction
-      const importRef = await addDoc(collection(db, "imports"), {
-        userId:        ownerUid,
-        fileName:      `[AI] ${accountName.trim() || "Imported"}`,
-        importedCount: rows.length,
-        skippedCount:  0,
-        source:        "ai_parser",
-        createdAt:     serverTimestamp(),
+      const transactions = rows.map((row) => ({
+        date:        row.date,
+        description: row.description,
+        amount:      Math.abs(row.amount),
+        type:        row.type,
+      }));
+      const label = `[AI] ${selectedAccount?.name ?? "Imported"}`;
+      const report = await apiClient.call<IngestReportLite>("ingestTransactions", {
+        source:       "ai",
+        accountId:    selectedAccountId,
+        transactions,
+        importLabel:  label,
       });
-      const importId = importRef.id;
-
-      await Promise.all(
-        rows.map((row) => {
-          const txnRef = doc(collection(db, "transactions"));
-          return setDoc(txnRef, {
-            transactionId: txnRef.id,
-            uid:           ownerUid,
-            amount:        row.amount,
-            type:          row.type,
-            taxYear:       parseInt(row.date.slice(0, 4)) || selectedYear,
-            date:          row.date,
-            description:   row.description,
-            merchantName:  row.description,
-            accountName:   accountName.trim() || "Imported",
-            category:      "",
-            taxCategory:   "",
-            taxSchedule:   "",
-            status:        "needs_review",
-            source:        "ai_parser",
-            importId,
-            createdAt:     serverTimestamp(),
-          });
-        })
-      );
-      setImportCount(rows.length);
+      setImportCount(report.imported);
       setRows([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed.");
@@ -184,17 +205,64 @@ export default function AIParserPage() {
         </div>
 
         {/* Account + year row */}
-        <div style={{ display: "flex", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 220px" }}>
+        <div style={{ display: "flex", gap: "12px", marginBottom: "20px", flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ flex: "1 1 260px" }}>
             <label style={{ fontSize: "12px", fontWeight: 600, color: "#374151", display: "block", marginBottom: "4px" }}>
-              Account Name
+              Account <span style={{ color: "#dc2626" }}>*</span>
             </label>
-            <input
-              style={inputBase}
-              placeholder="e.g. Chase Checking, Wells Fargo Visa"
-              value={accountName}
-              onChange={(e) => setAccountName(e.target.value)}
-            />
+            <select
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+              style={{ ...inputBase, backgroundColor: "#fff" }}
+            >
+              <option value="">— Select account —</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.name}{acc.institutionName ? ` (${acc.institutionName})` : ""}
+                </option>
+              ))}
+              <option value="__new__">+ Create new account…</option>
+            </select>
+
+            {selectedAccountId === "__new__" && (
+              <div style={{ marginTop: "8px", display: "flex", gap: "6px" }}>
+                <input
+                  style={{ ...inputBase, flex: 1 }}
+                  placeholder="New account name"
+                  value={newAccountName}
+                  onChange={(e) => setNewAccountName(e.target.value)}
+                />
+                <button
+                  onClick={async () => {
+                    const name = newAccountName.trim();
+                    if (!name || !ownerUid) return;
+                    const docRef = await addDoc(collection(db, "accounts"), {
+                      uid:       ownerUid,
+                      name,
+                      createdAt: serverTimestamp(),
+                    });
+                    await loadAccounts();
+                    setSelectedAccountId(docRef.id);
+                    setNewAccountName("");
+                  }}
+                  disabled={!newAccountName.trim()}
+                  style={{
+                    padding: "6px 14px",
+                    backgroundColor: newAccountName.trim() ? "#16A34A" : "#d1d5db",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: newAccountName.trim() ? "pointer" : "not-allowed",
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+            )}
           </div>
           <div style={{ flex: "0 0 auto", alignSelf: "flex-end" }}>
             <span style={{ fontSize: "13px", color: "#6b7280", padding: "8px 0", display: "block" }}>
@@ -344,15 +412,27 @@ Or paste a CSV, email, or any text containing transactions.`}
               </div>
               <div style={{ display: "flex", gap: "8px" }}>
                 <button
-                  onClick={() => downloadCSV(rows, accountName)}
+                  onClick={() => downloadCSV(rows, selectedAccount?.name ?? "")}
                   style={{ padding: "6px 14px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "7px", fontSize: "12px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
                 >
                   Download CSV
                 </button>
                 <button
                   onClick={handleImport}
-                  disabled={importing}
-                  style={{ padding: "6px 14px", backgroundColor: importing ? "#86efac" : "#16A34A", color: "#fff", border: "none", borderRadius: "7px", fontSize: "12px", fontWeight: 700, cursor: importing ? "default" : "pointer", fontFamily: font }}
+                  disabled={importing || !selectedAccountId || selectedAccountId === "__new__"}
+                  style={{
+                    padding: "6px 14px",
+                    backgroundColor: (importing || !selectedAccountId || selectedAccountId === "__new__") ? "#86efac" : "#16A34A",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "7px",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    cursor: (importing || !selectedAccountId || selectedAccountId === "__new__") ? "not-allowed" : "pointer",
+                    fontFamily: font,
+                    opacity: (!selectedAccountId || selectedAccountId === "__new__") ? 0.65 : 1,
+                  }}
+                  title={!selectedAccountId ? "Select an account first" : undefined}
                 >
                   {importing ? "Importing…" : `Import ${rows.length}`}
                 </button>
