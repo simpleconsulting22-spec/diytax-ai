@@ -53,34 +53,30 @@ interface PlaidMetadata {
 // Detects when Plaid Link has redirected back from an OAuth bank (Chase,
 // Capital One, BofA, Wells Fargo, etc.). Plaid appends ?oauth_state_id=...
 // to the redirect URI; usePlaidLink uses receivedRedirectUri to resume.
-function isOAuthRedirect(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.location.href.includes("oauth_state_id");
-}
+const PLAID_TOKEN_KEY = "plaidLinkToken";
 
 function PlaidOpener({
   token,
+  receivedRedirectUri,
   onSuccess,
   onExit,
 }: {
   token: string;
+  receivedRedirectUri?: string;
   onSuccess: (publicToken: string, metadata: PlaidMetadata) => void;
   onExit: () => void;
 }) {
-  // receivedRedirectUri must ONLY be set when actually returning from an OAuth
-  // bank (URL contains oauth_state_id). Passing it on initial open causes the
-  // Plaid SDK to enter resume mode and throw "oauth uri does not contain a
-  // valid oauth_state_id query parameter".
-  // Cache the URL in a const so the conditional and the value passed to the
-  // SDK are guaranteed to be the same string.
-  const url = typeof window !== "undefined" ? window.location.href : "";
-  const isOAuthReturn = url.includes("oauth_state_id");
-
+  // Mirrors Expense Workflow Platform's working pattern:
+  // receivedRedirectUri is ONLY included in the config when explicitly passed
+  // by the parent (i.e. when we're returning from OAuth and have the URL).
+  // The conditional spread ensures the field is omitted entirely on initial
+  // open, instead of passing undefined — some Plaid SDK paths treat the two
+  // differently.
   const { open, ready } = usePlaidLink({
     token,
+    ...(receivedRedirectUri ? { receivedRedirectUri } : {}),
     onSuccess,
     onExit,
-    receivedRedirectUri: isOAuthReturn ? url : undefined,
   });
   useEffect(() => { if (ready) open(); }, [ready, open]);
   return null;
@@ -89,6 +85,38 @@ function PlaidOpener({
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BankAccountsPage() {
+  // Plaid OAuth bounce — redirect_uri is registered as
+  // https://diytax-ai.web.app/bank-accounts (Firebase domain, accepted by all
+  // OAuth banks including Capital One). After OAuth completes we land on the
+  // web.app domain; immediately redirect to the canonical custom domain
+  // preserving the oauth_state_id query param so usePlaidLink can resume the
+  // flow on diytaxai.com (where the rest of the UX lives).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (
+      window.location.hostname === "diytax-ai.web.app" &&
+      params.has("oauth_state_id")
+    ) {
+      window.location.href =
+        "https://diytaxai.com/bank-accounts" + window.location.search;
+    }
+  }, []);
+
+  // OAuth resume detection — mirrors Expense Workflow Platform.
+  // When we land on /bank-accounts with ?oauth_state_id=… AND we previously
+  // saved a link token to sessionStorage, restore both into state so the
+  // PlaidOpener mounts with receivedRedirectUri set and the SDK resumes.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const href = window.location.href;
+    if (!href.includes("oauth_state_id")) return;
+    const stored = sessionStorage.getItem(PLAID_TOKEN_KEY);
+    if (!stored) return;
+    setLinkToken(stored);
+    setOauthRedirectUri(href);
+  }, []);
+
   const { user } = useAuth();
   const ownerUid = user?.uid;
 
@@ -96,14 +124,11 @@ export default function BankAccountsPage() {
   const [importedAccounts, setImportedAccounts] = useState<ImportedAccount[]>([]);
   const [accountsLoaded,   setAccountsLoaded]   = useState(false);
 
-  // Initialize linkToken from sessionStorage when returning from OAuth redirect
-  // (Chase / Capital One / BofA / Wells Fargo / etc.) so usePlaidLink can resume
-  // the same flow with the same token.
-  const [linkToken,    setLinkToken]    = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    if (!new URLSearchParams(window.location.search).has("oauth_state_id")) return null;
-    return sessionStorage.getItem("plaidLinkToken");
-  });
+  // Mirrors the Expense Workflow Platform pattern: linkToken + a separate
+  // oauthRedirectUri that's only set when we're returning from an OAuth bank.
+  // A useEffect below populates both from URL + sessionStorage on mount.
+  const [linkToken,        setLinkToken]        = useState<string | null>(null);
+  const [oauthRedirectUri, setOauthRedirectUri] = useState<string | undefined>(undefined);
   const [connecting,   setConnecting]   = useState(false);
   const [linkingBank,  setLinkingBank]  = useState(false);
   const [successMsg,   setSuccessMsg]   = useState<string | null>(null);
@@ -215,9 +240,12 @@ export default function BankAccountsPage() {
 
   // ── Plaid link flow ──────────────────────────────────────────────────────────
 
-  // Clear OAuth-resume artifacts: sessionStorage token + ?oauth_state_id URL param
+  // Clear OAuth-resume artifacts: sessionStorage token + ?oauth_state_id URL
+  // param + the in-memory oauthRedirectUri so a fresh Plaid Link can't be
+  // launched with stale OAuth state.
   function clearOAuthState() {
-    try { sessionStorage.removeItem("plaidLinkToken"); } catch { /* ignore */ }
+    try { sessionStorage.removeItem(PLAID_TOKEN_KEY); } catch { /* ignore */ }
+    setOauthRedirectUri(undefined);
     if (typeof window !== "undefined" && window.location.search.includes("oauth_state_id")) {
       const cleanUrl = window.location.pathname + window.location.hash;
       window.history.replaceState({}, "", cleanUrl);
@@ -264,8 +292,9 @@ export default function BankAccountsPage() {
     setError(null);
     try {
       const res = await apiClient.call<{ linkToken: string }>("createPlaidLinkToken");
-      // Persist so OAuth banks can resume after redirect back from chase.com etc.
-      sessionStorage.setItem("plaidLinkToken", res.linkToken);
+      // Persist so OAuth banks can resume after redirect back from the bank.
+      sessionStorage.setItem(PLAID_TOKEN_KEY, res.linkToken);
+      setOauthRedirectUri(undefined);
       setLinkToken(res.linkToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to initialize bank connection.");
@@ -280,7 +309,8 @@ export default function BankAccountsPage() {
     setUpdateModeAccountId(existingAccountId);
     try {
       const res = await apiClient.call<{ linkToken: string }>("createPlaidLinkToken", { existingAccountId });
-      sessionStorage.setItem("plaidLinkToken", res.linkToken);
+      sessionStorage.setItem(PLAID_TOKEN_KEY, res.linkToken);
+      setOauthRedirectUri(undefined);
       setLinkToken(res.linkToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to open account selection.");
@@ -872,6 +902,7 @@ export default function BankAccountsPage() {
         <PlaidOpener
           key={linkToken}
           token={linkToken}
+          receivedRedirectUri={oauthRedirectUri}
           onSuccess={handlePlaidSuccess}
           onExit={() => { setLinkToken(null); setConnecting(false); setUpdateModeAccountId(null); clearOAuthState(); }}
         />
