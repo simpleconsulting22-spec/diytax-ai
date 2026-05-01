@@ -5,10 +5,12 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
   deleteDoc,
   writeBatch,
   doc,
   setDoc,
+  updateDoc,
   serverTimestamp,
   increment,
 } from "firebase/firestore";
@@ -477,6 +479,11 @@ async function writeTransactions(
     description: r.description,
     amount:      r.amount,
     rawRow:      r.rawData,
+    // Honor preview edits: only ship type/subType when the user explicitly
+    // changed it. Unmodified rows fall through to the unified backend
+    // classifier (which has cross-account context the frontend doesn't).
+    ...(r.userModified ? { type: r.type } : {}),
+    ...(r.userModified && r.subType ? { subType: r.subType } : {}),
   }));
 
   // Backend pipeline: normalize → enrich → classify → store + categorize.
@@ -517,6 +524,9 @@ interface ImportState {
   flipSign: boolean;
   signWarning: boolean;
   accountType: "bank" | "credit_card";
+  cascadeMessage: string;
+  signConventionMessage: string;   // "Auto-detected positive=charge for this account…"
+  signConventionLocked: boolean;   // true once amountSignInverted is persisted on the account
 }
 
 export function useCSVImport() {
@@ -534,9 +544,49 @@ export function useCSVImport() {
     flipSign: false,
     signWarning: false,
     accountType: "bank",
+    cascadeMessage: "",
+    signConventionMessage: "",
+    signConventionLocked: false,
   });
 
-  async function handleFileChange(file: File | null) {
+  // Look up the persisted sign convention on the account doc (set by either
+  // Plaid sync's per-account auto-detection or a prior CSV import).
+  async function loadAccountSignConvention(accountId: string): Promise<{
+    flipSign: boolean;
+    locked: boolean;
+  }> {
+    if (!accountId || accountId === "__new__") return { flipSign: false, locked: false };
+    try {
+      const snap = await getDoc(doc(db, "accounts", accountId));
+      if (!snap.exists()) return { flipSign: false, locked: false };
+      const data = snap.data();
+      const inverted = data.amountSignInverted === true;
+      const locked   = !!data.amountSignDetectedAt;
+      return { flipSign: inverted, locked };
+    } catch {
+      return { flipSign: false, locked: false };
+    }
+  }
+
+  // Persist sign convention to the account doc so future imports auto-apply.
+  async function persistAccountSignConvention(
+    accountId: string,
+    flipSign: boolean,
+    method: "csv-auto" | "csv-manual",
+  ): Promise<void> {
+    if (!accountId || accountId === "__new__") return;
+    try {
+      await updateDoc(doc(db, "accounts", accountId), {
+        amountSignInverted:        flipSign,
+        amountSignDetectedAt:      serverTimestamp(),
+        amountSignDetectionMethod: method,
+      });
+    } catch {
+      // Non-blocking — best-effort.
+    }
+  }
+
+  async function handleFileChange(file: File | null, accountId?: string) {
     if (!file) return;
     lastFileRef.current = file;
     setState((prev) => ({
@@ -547,12 +597,48 @@ export function useCSVImport() {
       importResult: null,
       flipSign: false,
       signWarning: false,
+      signConventionMessage: "",
+      signConventionLocked: false,
     }));
     try {
-      let rows = await parseCSVFile(file, { accountType: state.accountType });
+      // 1. Seed flip from the account's stored convention (if any)
+      const { flipSign: storedFlip, locked: convLocked } = accountId
+        ? await loadAccountSignConvention(accountId)
+        : { flipSign: false, locked: false };
+
+      let rows = await parseCSVFile(file, { flipSign: storedFlip, accountType: state.accountType });
       if (user) rows = await applyTypeRules(ownerUid, rows);
-      const signWarning = state.accountType === "bank" && detectSignIssue(rows);
-      setState((prev) => ({ ...prev, rows, signWarning }));
+
+      // 2. If the account has no stored convention yet, auto-detect from this file
+      let resolvedFlip = storedFlip;
+      let conventionMessage = "";
+      if (!convLocked && accountId) {
+        const seemsInverted = detectSignIssue(rows);
+        if (seemsInverted !== storedFlip) {
+          resolvedFlip = seemsInverted;
+          rows = await parseCSVFile(file, {
+            flipSign: resolvedFlip,
+            accountType: state.accountType,
+          });
+          if (user) rows = await applyTypeRules(ownerUid, rows);
+        }
+        // 3. Persist whatever we landed on so we don't have to redo this
+        await persistAccountSignConvention(accountId, resolvedFlip, "csv-auto");
+        conventionMessage = resolvedFlip
+          ? `Auto-detected positive-charge format (e.g. American Express) for this account. Saved — future imports will apply automatically.`
+          : `Detected standard sign convention (negative=expense) for this account. Saved — future imports will apply automatically.`;
+      } else if (storedFlip) {
+        conventionMessage = `Sign convention already saved for this account: charges are positive. Auto-flipped on import.`;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        rows,
+        flipSign: resolvedFlip,
+        signWarning: false,
+        signConventionMessage: conventionMessage,
+        signConventionLocked: true,
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -561,7 +647,9 @@ export function useCSVImport() {
     }
   }
 
-  async function handleFlipSign() {
+  // Manual override — toggles the flip AND persists the user's choice to the
+  // account doc, so the override sticks for next time.
+  async function handleFlipSign(accountId?: string) {
     if (!lastFileRef.current) return;
     const nextFlip = !state.flipSign;
     setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
@@ -571,7 +659,16 @@ export function useCSVImport() {
         accountType: state.accountType,
       });
       if (user) rows = await applyTypeRules(ownerUid, rows);
-      setState((prev) => ({ ...prev, rows }));
+      if (accountId) {
+        await persistAccountSignConvention(accountId, nextFlip, "csv-manual");
+      }
+      setState((prev) => ({
+        ...prev,
+        rows,
+        signConventionMessage: nextFlip
+          ? "Flipped: charges are now read as expenses. Saved for this account."
+          : "Reverted: amounts read at face value. Saved for this account.",
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -599,32 +696,61 @@ export function useCSVImport() {
     }
   }
 
-  async function updateRowType(index: number, newType: TransactionType) {
+  async function updateRowType(
+    index: number,
+    newType: TransactionType,
+    newSubType?: TransactionSubType,
+  ) {
     const row = state.rows[index];
     if (!row || !user) return;
 
-    // Update preview immediately
+    const targetVendor = extractVendor(normalize(row.description));
+
+    // Cascade to all rows with the same extracted vendor — turns "fix one"
+    // into "fix every Amazon row in this preview" without the user having to
+    // click each one. The target row is included so its userModified flag is
+    // set even if its type already matched.
+    let cascadeCount = 0;
     setState((prev) => {
-      const rows = [...prev.rows];
-      rows[index] = {
-        ...rows[index],
-        type: newType,
-        isTransfer: newType === "transfer",
-        userModified: true,
+      const rows = prev.rows.map((r, i) => {
+        if (!r || isNaN(r.amount)) return r;
+        const sameVendor =
+          targetVendor && extractVendor(normalize(r.description)) === targetVendor;
+        if (!sameVendor) return r;
+        if (i !== index && r.type === newType && r.subType === newSubType) {
+          // Already matches — nothing to change.
+          return r;
+        }
+        if (i !== index) cascadeCount++;
+        return {
+          ...r,
+          type: newType,
+          subType: newSubType,
+          isTransfer: newType === "transfer",
+          userModified: true,
+        };
+      });
+      return {
+        ...prev,
+        rows,
+        cascadeMessage: cascadeCount > 0
+          ? `Applied to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} in this preview.`
+          : "",
       };
-      return { ...prev, rows };
     });
 
-    // Persist as a learned type rule for future imports
+    // Persist as a learned type rule for future imports.
+    // Note: this is a frontend-only learning loop today — typeRules informs
+    // future imports' preview, not backend ingest classification.
     try {
-      const vendor = extractVendor(normalize(row.description));
-      const ruleRef = doc(db, "typeRules", `${ownerUid}_${vendor}`);
+      const ruleRef = doc(db, "typeRules", `${ownerUid}_${targetVendor}`);
       await setDoc(
         ruleRef,
         {
           uid: ownerUid,
-          vendorName: vendor,
+          vendorName: targetVendor,
           type: newType,
+          ...(newSubType ? { subType: newSubType } : {}),
           usageCount: increment(1),
           updatedAt: serverTimestamp(),
         },
@@ -633,6 +759,10 @@ export function useCSVImport() {
     } catch {
       // Non-blocking — rule writing is best-effort
     }
+  }
+
+  function clearCascadeMessage() {
+    setState((prev) => ({ ...prev, cascadeMessage: "" }));
   }
 
   async function handleImport(accountId: string) {
@@ -671,6 +801,9 @@ export function useCSVImport() {
       flipSign: false,
       signWarning: false,
       accountType: "bank",
+      cascadeMessage: "",
+      signConventionMessage: "",
+      signConventionLocked: false,
     });
   }
 
@@ -693,5 +826,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType };
+  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage };
 }

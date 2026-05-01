@@ -129,7 +129,10 @@ export async function ingestTransactionsCore(
       type:                  finalType,
       typeSource:            `pipeline:${result.reason}`,
       confidence:            result.confidence,
-      status:                result.status === "auto_resolved" ? "auto_resolved"
+      // AI transfer with missing direction → force needs_review regardless of
+      // what the classifier returned, so the user can confirm the side.
+      status:                n.needsManualReview ? "needs_review"
+                            : result.status === "auto_resolved" ? "auto_resolved"
                             : result.status === "needs_review" ? "needs_review"
                             : "needs_review",
       category:              "",
@@ -151,6 +154,8 @@ export async function ingestTransactionsCore(
     if (result.duplicateGroupId)    txnData.duplicateGroupId = result.duplicateGroupId;
     if (result.suggestedDirection)  txnData.suggestedDirection = result.suggestedDirection;
     if (result.excludeFromReports)  txnData.excludeFromReports = true;
+    if (n.subType)                  txnData.subType          = n.subType;
+    if (n.needsManualReview)        txnData.manualReviewReason = "ai-transfer-direction-missing";
 
     try {
       await db.collection("transactions").doc(docId).create(txnData);

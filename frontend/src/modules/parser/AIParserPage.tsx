@@ -6,11 +6,12 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { apiClient } from "../../services/apiClient";
 import AppNav from "../../components/AppNav";
+import { extractVendor, normalize } from "../import/hooks/useCSVImport";
 
 interface AccountOption {
-  id:               string;
-  name:             string;
-  institutionName?: string;
+  id:           string;
+  name:         string;       // raw "name" field — used by CSV download fallback
+  displayName:  string;       // human-readable display
 }
 
 interface IngestReportLite {
@@ -28,7 +29,8 @@ interface ParsedRow {
   date:        string;
   description: string;
   amount:      number;
-  type:        "expense" | "income" | "refund";
+  type:        "expense" | "income" | "refund" | "transfer";
+  direction?:  "outflow" | "inflow";
 }
 
 // Resize image to max 2048px and return {base64, mimeType}
@@ -94,13 +96,23 @@ export default function AIParserPage() {
     const snap = await getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid)));
     const opts: AccountOption[] = snap.docs.map((d) => {
       const data = d.data();
-      return {
-        id:              d.id,
-        name:            (data.name as string) ?? "(unnamed)",
-        institutionName: data.institutionName as string | undefined,
-      };
+      const institutionName = data.institutionName as string | undefined;
+      const accountName     = data.accountName     as string | undefined;
+      const mask            = data.mask            as string | undefined;
+      const rawName         = data.name            as string | undefined;
+
+      let displayName: string;
+      if (institutionName) {
+        const label = accountName?.trim() || rawName?.trim() || "Account";
+        const tail  = mask ? ` ····${mask}` : "";
+        displayName = `${institutionName} – ${label}${tail}`;
+      } else {
+        displayName = rawName?.trim() || "(unnamed account)";
+      }
+
+      return { id: d.id, name: rawName?.trim() || displayName, displayName };
     });
-    opts.sort((a, b) => a.name.localeCompare(b.name));
+    opts.sort((a, b) => a.displayName.localeCompare(b.displayName));
     setAccounts(opts);
   }, [ownerUid]);
 
@@ -142,7 +154,41 @@ export default function AIParserPage() {
     }
   }
 
+  const [cascadeMessage, setCascadeMessage] = useState<string>("");
+
+  // Auto-dismiss cascade banner after 4s.
+  useEffect(() => {
+    if (!cascadeMessage) return;
+    const t = setTimeout(() => setCascadeMessage(""), 4000);
+    return () => clearTimeout(t);
+  }, [cascadeMessage]);
+
   function updateRow(id: string, field: keyof ParsedRow, value: string | number) {
+    // Type changes cascade to other rows with the same extracted vendor in
+    // this preview — fix one Amazon row, fix every Amazon row.
+    if (field === "type") {
+      setRows((prev) => {
+        const target = prev.find((r) => r.id === id);
+        if (!target) return prev;
+        const targetVendor = extractVendor(normalize(target.description));
+        let cascadeCount = 0;
+        const updated = prev.map((r) => {
+          const sameVendor =
+            targetVendor && extractVendor(normalize(r.description)) === targetVendor;
+          if (!sameVendor) return r;
+          if (r.id !== id && r.type === value) return r;
+          if (r.id !== id) cascadeCount++;
+          return { ...r, type: value as ParsedRow["type"] };
+        });
+        if (cascadeCount > 0) {
+          setCascadeMessage(
+            `Applied to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} in this preview.`
+          );
+        }
+        return updated;
+      });
+      return;
+    }
     setRows((prev) =>
       prev.map((r) => r.id === id ? { ...r, [field]: value } : r)
     );
@@ -166,6 +212,9 @@ export default function AIParserPage() {
         description: row.description,
         amount:      Math.abs(row.amount),
         type:        row.type,
+        // Direction only meaningful for transfers — backend ignores it for
+        // other types and falls back to needs_review when missing on a transfer.
+        ...(row.type === "transfer" && row.direction ? { direction: row.direction } : {}),
       }));
       const label = `[AI] ${selectedAccount?.name ?? "Imported"}`;
       const report = await apiClient.call<IngestReportLite>("ingestTransactions", {
@@ -218,7 +267,7 @@ export default function AIParserPage() {
               <option value="">— Select account —</option>
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>
-                  {acc.name}{acc.institutionName ? ` (${acc.institutionName})` : ""}
+                  {acc.displayName}
                 </option>
               ))}
               <option value="__new__">+ Create new account…</option>
@@ -402,6 +451,22 @@ Or paste a CSV, email, or any text containing transactions.`}
           </div>
         )}
 
+        {/* Cascade banner — shows when a type edit was propagated to similar rows */}
+        {rows.length > 0 && cascadeMessage && (
+          <div style={{
+            marginBottom: "10px",
+            padding: "10px 14px",
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: "8px",
+            fontSize: "13px",
+            color: "#1d4ed8",
+            fontWeight: 500,
+          }}>
+            ✓ {cascadeMessage}
+          </div>
+        )}
+
         {/* Results table */}
         {rows.length > 0 && (
           <div style={{ backgroundColor: "#fff", borderRadius: "14px", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", overflow: "hidden", marginBottom: "16px" }}>
@@ -472,26 +537,72 @@ Or paste a CSV, email, or any text containing transactions.`}
                   value={row.amount}
                   onChange={(e) => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
                 />
-                <select
-                  value={row.type}
-                  onChange={(e) => updateRow(row.id, "type", e.target.value as "expense" | "income" | "refund")}
-                  style={{
-                    marginLeft: "6px",
-                    padding: "4px 8px",
-                    border: "none",
-                    borderRadius: "6px",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    fontFamily: font,
-                    backgroundColor: row.type === "expense" ? "#fee2e2" : row.type === "refund" ? "#f5f3ff" : "#dcfce7",
-                    color:           row.type === "expense" ? "#dc2626" : row.type === "refund" ? "#7c3aed" : "#16A34A",
-                  }}
-                >
-                  <option value="expense">Expense</option>
-                  <option value="income">Income</option>
-                  <option value="refund">Refund</option>
-                </select>
+                <div style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "6px" }}>
+                  <select
+                    value={row.type}
+                    onChange={(e) => {
+                      const next = e.target.value as ParsedRow["type"];
+                      updateRow(row.id, "type", next);
+                      // When type leaves "transfer", clear the dangling direction.
+                      if (next !== "transfer" && row.direction) {
+                        updateRow(row.id, "direction", "");
+                      }
+                      // When user manually sets transfer with no direction yet, default
+                      // to outflow so the row doesn't get flagged needs_review.
+                      if (next === "transfer" && !row.direction) {
+                        updateRow(row.id, "direction", "outflow");
+                      }
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: font,
+                      backgroundColor:
+                        row.type === "expense"  ? "#fee2e2" :
+                        row.type === "refund"   ? "#f5f3ff" :
+                        row.type === "transfer" ? "#f3f4f6" : "#dcfce7",
+                      color:
+                        row.type === "expense"  ? "#dc2626" :
+                        row.type === "refund"   ? "#7c3aed" :
+                        row.type === "transfer" ? "#374151" : "#16A34A",
+                    }}
+                  >
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                    <option value="transfer">Transfer</option>
+                    <option value="refund">Refund</option>
+                  </select>
+
+                  {/* Direction picker — only shown for transfer rows. Required so
+                     the backend can sign the row correctly and let the classifier
+                     pair the two halves of an internal transfer. */}
+                  {row.type === "transfer" && (
+                    <select
+                      value={row.direction ?? ""}
+                      onChange={(e) => updateRow(row.id, "direction", e.target.value)}
+                      title="Which way did the money move on this account's statement?"
+                      style={{
+                        padding: "4px 6px",
+                        border: row.direction ? "1px solid #d1d5db" : "1.5px solid #f59e0b",
+                        borderRadius: "6px",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        fontFamily: font,
+                        backgroundColor: "#fff",
+                        color: "#374151",
+                      }}
+                    >
+                      <option value="">— dir —</option>
+                      <option value="outflow">Out</option>
+                      <option value="inflow">In</option>
+                    </select>
+                  )}
+                </div>
                 <button
                   onClick={() => deleteRow(row.id)}
                   style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px", padding: "2px", marginLeft: "4px" }}

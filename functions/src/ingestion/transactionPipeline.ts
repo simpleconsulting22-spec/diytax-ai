@@ -36,6 +36,12 @@ export interface RawCsvInput {
   description: string;
   amount:      number;        // signed (positive = inflow per CSV convention; flipped to Plaid sign by normalizer)
   rawRow?:     Record<string, string>;
+  // When the user explicitly edits a row's type in the CSV preview, the
+  // frontend ships that override here. Treated identically to AI parser's
+  // preassigned type — wins over classifier output unless a transfer pair is
+  // detected (transfer pairing is the strongest cross-account signal).
+  type?:       "income" | "expense" | "refund" | "transfer";
+  subType?:    "credit_card_payment" | "loan_payment";
 }
 
 export interface RawAiInput {
@@ -43,6 +49,11 @@ export interface RawAiInput {
   description: string;
   amount:      number;        // POSITIVE; AI emits absolute value plus a type
   type:        "income" | "expense" | "refund" | "transfer";
+  // Only meaningful when type === "transfer". Lets the normalizer assign
+  // an opposite-sign signedAmount to each side of an internal transfer so
+  // the classifier's findTransferPairs can match them. When absent on a
+  // transfer, the row falls back to inflow + status: "needs_review".
+  direction?:  "outflow" | "inflow";
 }
 
 // ─── Normalized shape (what every source produces after normalize step) ─────
@@ -64,8 +75,14 @@ export interface NormalizedTransaction {
   plaidLegacyCategories?: string[];
   pending?:              boolean;
 
-  // Optional pre-classified type (AI parser explicitly tells us)
+  // Optional pre-classified type (AI parser, or CSV preview edit)
   preassignedType?:      "income" | "expense" | "refund" | "transfer";
+  // Sub-type tag (e.g. credit_card_payment); preserved on the saved doc for
+  // downstream UIs that want to distinguish a CC payment from a generic transfer.
+  subType?:              "credit_card_payment" | "loan_payment";
+  // Set true when an AI-parsed transfer row arrives with no direction. The
+  // ingest writer forces status="needs_review" so the user knows to verify.
+  needsManualReview?:    boolean;
 
   // Hash for cross-source dedup
   dedupeHash:            string;
@@ -108,6 +125,8 @@ export function normalizeTransaction(
   let description: string;
   let signedAmount: number;
   let preassignedType: NormalizedTransaction["preassignedType"];
+  let subType: NormalizedTransaction["subType"];
+  let needsManualReview: boolean | undefined;
   let plaidTransactionId:   string | undefined;
   let plaidAccountId:       string | undefined;
   let plaidPfcPrimary:      string | null | undefined;
@@ -135,16 +154,39 @@ export function normalizeTransaction(
       // Plaid convention: positive = outflow. Flip sign so the classifier
       // sees one canonical convention.
       signedAmount = -c.amount;
+      // Honor explicit user override from preview (only set when user edited).
+      if (c.type)    preassignedType = c.type;
+      if (c.subType) subType         = c.subType;
       break;
     }
     case "ai": {
       const a = input as RawAiInput;
       date         = a.date;
       description  = a.description ?? "";
+
       // AI emits a positive amount + an explicit type. We trust the type
       // (preassignedType) and synthesize a Plaid-convention sign so the
       // classifier still has a meaningful signedAmount.
-      signedAmount = a.type === "expense" ? Math.abs(a.amount) : -Math.abs(a.amount);
+      //
+      // For transfers, sign must come from the explicit `direction` field —
+      // otherwise both halves of an internal transfer collapse to the same
+      // sign and findTransferPairs can't match them. Existing income/expense/
+      // refund logic stays unchanged.
+      if (a.type === "transfer") {
+        if (a.direction === "outflow") {
+          signedAmount = +Math.abs(a.amount);
+        } else if (a.direction === "inflow") {
+          signedAmount = -Math.abs(a.amount);
+        } else {
+          // Direction missing — sign is unknown. Default to inflow (matches
+          // pre-fix behavior) but flag the row so ingest forces needs_review.
+          signedAmount       = -Math.abs(a.amount);
+          needsManualReview  = true;
+        }
+      } else {
+        signedAmount = a.type === "expense" ? Math.abs(a.amount) : -Math.abs(a.amount);
+      }
+
       preassignedType = a.type;
       break;
     }
@@ -165,6 +207,8 @@ export function normalizeTransaction(
     plaidLegacyCategories,
     pending,
     preassignedType,
+    subType,
+    needsManualReview,
     dedupeHash:            computeDedupeHash(accountId, date, signedAmount, description),
   };
 }

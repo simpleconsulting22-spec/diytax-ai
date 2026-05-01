@@ -1,21 +1,46 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { NormalizedRow, TransactionType } from "../hooks/useCSVImport";
+import { NormalizedRow, TransactionType, TransactionSubType } from "../hooks/useCSVImport";
 
-const ALL_TYPES: TransactionType[] = ["income", "expense", "transfer", "refund"];
+// Option keys shown in the dropdown. "cc_payment" is a virtual option that
+// maps to type=transfer + subType=credit_card_payment when selected.
+type TypeOption = TransactionType | "cc_payment";
+
+const ALL_TYPE_OPTIONS: TypeOption[] = [
+  "income",
+  "expense",
+  "transfer",
+  "cc_payment",
+  "refund",
+];
+
+function optionLabel(opt: TypeOption): string {
+  return opt === "cc_payment" ? "credit card payment" : opt;
+}
 
 interface CSVPreviewTableProps {
   rows: NormalizedRow[];
   totalCount: number;
-  onTypeChange?: (index: number, newType: TransactionType) => void;
+  onTypeChange?: (
+    index: number,
+    newType: TransactionType,
+    newSubType?: TransactionSubType,
+  ) => void;
 }
 
-function badgeStyle(type: TransactionType): React.CSSProperties {
-  switch (type) {
-    case "transfer": return { backgroundColor: "#f3f4f6", color: "#6b7280" };
-    case "expense":  return { backgroundColor: "#fef2f2", color: "#dc2626" };
-    case "refund":   return { backgroundColor: "#eff6ff", color: "#2563eb" };
-    default:         return { backgroundColor: "#f0fdf4", color: "#16A34A" };
+function badgeStyle(opt: TypeOption | TransactionType): React.CSSProperties {
+  switch (opt) {
+    case "transfer":   return { backgroundColor: "#f3f4f6", color: "#6b7280" };
+    case "cc_payment": return { backgroundColor: "#fef3c7", color: "#92400e" };
+    case "expense":    return { backgroundColor: "#fef2f2", color: "#dc2626" };
+    case "refund":     return { backgroundColor: "#eff6ff", color: "#2563eb" };
+    default:           return { backgroundColor: "#f0fdf4", color: "#16A34A" };
   }
+}
+
+// Map a (type, subType) pair from a row into the dropdown's TypeOption value.
+function rowOption(row: NormalizedRow): TypeOption {
+  if (row.type === "transfer" && row.subType === "credit_card_payment") return "cc_payment";
+  return row.type;
 }
 
 function amountColor(row: NormalizedRow): string {
@@ -34,15 +59,19 @@ function amountPrefix(row: NormalizedRow): string {
 // ─── Editable type badge ──────────────────────────────────────────────────────
 
 function TypeBadge({
-  type,
+  option,
   index,
   userModified,
   onTypeChange,
 }: {
-  type: TransactionType;
+  option: TypeOption;
   index: number;
   userModified?: boolean;
-  onTypeChange?: (index: number, newType: TransactionType) => void;
+  onTypeChange?: (
+    index: number,
+    newType: TransactionType,
+    newSubType?: TransactionSubType,
+  ) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -56,6 +85,8 @@ function TypeBadge({
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [open]);
 
+  const label = optionLabel(option);
+
   const badge = (
     <span
       style={{
@@ -64,14 +95,23 @@ function TypeBadge({
         borderRadius: "999px",
         fontSize: "11px",
         fontWeight: 600,
-        ...badgeStyle(type),
+        ...badgeStyle(option),
       }}
     >
-      {type}
+      {label}
     </span>
   );
 
   if (!onTypeChange) return badge;
+
+  function handlePick(opt: TypeOption) {
+    if (opt === "cc_payment") {
+      onTypeChange?.(index, "transfer", "credit_card_payment");
+    } else {
+      onTypeChange?.(index, opt);
+    }
+    setOpen(false);
+  }
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
@@ -89,10 +129,10 @@ function TypeBadge({
           cursor: "pointer",
           border: userModified ? "1.5px solid #3b82f6" : "1.5px solid transparent",
           outline: "none",
-          ...badgeStyle(type),
+          ...badgeStyle(option),
         }}
       >
-        {type}
+        {label}
         <span style={{ fontSize: "9px", opacity: 0.7 }}>{userModified ? "✏" : "▾"}</span>
       </button>
 
@@ -108,16 +148,13 @@ function TypeBadge({
             borderRadius: "8px",
             boxShadow: "0 4px 16px rgba(0,0,0,0.13)",
             padding: "4px",
-            minWidth: "110px",
+            minWidth: "160px",
           }}
         >
-          {ALL_TYPES.map((t) => (
+          {ALL_TYPE_OPTIONS.map((opt) => (
             <button
-              key={t}
-              onClick={() => {
-                onTypeChange(index, t);
-                setOpen(false);
-              }}
+              key={opt}
+              onClick={() => handlePick(opt)}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -128,10 +165,10 @@ function TypeBadge({
                 border: "none",
                 borderRadius: "6px",
                 fontSize: "12px",
-                fontWeight: t === type ? 700 : 500,
+                fontWeight: opt === option ? 700 : 500,
                 cursor: "pointer",
-                backgroundColor: t === type ? "#f3f4f6" : "transparent",
-                color: t === type ? "#111827" : "#374151",
+                backgroundColor: opt === option ? "#f3f4f6" : "transparent",
+                color: opt === option ? "#111827" : "#374151",
               }}
             >
               <span
@@ -140,12 +177,12 @@ function TypeBadge({
                   width: "8px",
                   height: "8px",
                   borderRadius: "50%",
-                  backgroundColor: badgeStyle(t).color as string,
+                  backgroundColor: badgeStyle(opt).color as string,
                   flexShrink: 0,
                 }}
               />
-              {t}
-              {t === type && <span style={{ marginLeft: "auto", fontSize: "10px" }}>✓</span>}
+              {optionLabel(opt)}
+              {opt === option && <span style={{ marginLeft: "auto", fontSize: "10px" }}>✓</span>}
             </button>
           ))}
         </div>
@@ -308,7 +345,7 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
                 </td>
                 <td style={{ padding: "10px 14px" }}>
                   <TypeBadge
-                    type={row.type}
+                    option={rowOption(row)}
                     index={originalIndex}
                     userModified={row.userModified}
                     onTypeChange={onTypeChange}

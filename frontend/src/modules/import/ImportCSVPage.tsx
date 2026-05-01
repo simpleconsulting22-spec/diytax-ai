@@ -11,9 +11,7 @@ import AppNav from "../../components/AppNav";
 
 interface AccountOption {
   id:           string;
-  name:         string;
-  accountType?: string;
-  institutionName?: string;
+  displayName:  string;
 }
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -115,9 +113,16 @@ export default function ImportCSVPage() {
   const navigate = useNavigate();
   const { user, effectiveOwnerUid } = useAuth();
   const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
-  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult, flipSign, signWarning, accountType } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage } = state;
+
+  // Auto-dismiss cascade banner after 4s
+  useEffect(() => {
+    if (!cascadeMessage) return;
+    const t = setTimeout(() => clearCascadeMessage(), 4000);
+    return () => clearTimeout(t);
+  }, [cascadeMessage, clearCascadeMessage]);
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const importHistory = useImportHistory(historyRefreshKey);
@@ -133,14 +138,25 @@ export default function ImportCSVPage() {
     const snap = await getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid)));
     const opts: AccountOption[] = snap.docs.map((d) => {
       const data = d.data();
-      return {
-        id:              d.id,
-        name:            (data.name as string) ?? "(unnamed)",
-        accountType:     data.accountType as string | undefined,
-        institutionName: data.institutionName as string | undefined,
-      };
+      const institutionName = data.institutionName as string | undefined;
+      const accountName     = data.accountName     as string | undefined;
+      const mask            = data.mask            as string | undefined;
+      const name            = data.name            as string | undefined;
+
+      // Plaid-managed accounts have institutionName + accountName + mask;
+      // CSV/manual accounts only have `name`.
+      let displayName: string;
+      if (institutionName) {
+        const label = accountName?.trim() || name?.trim() || "Account";
+        const tail  = mask ? ` ····${mask}` : "";
+        displayName = `${institutionName} – ${label}${tail}`;
+      } else {
+        displayName = name?.trim() || "(unnamed account)";
+      }
+
+      return { id: d.id, displayName };
     });
-    opts.sort((a, b) => a.name.localeCompare(b.name));
+    opts.sort((a, b) => a.displayName.localeCompare(b.displayName));
     setAccounts(opts);
   }, [ownerUid]);
 
@@ -368,6 +384,93 @@ export default function ImportCSVPage() {
               )}
             </div>
 
+            {/* Required account selector (visible before file upload) */}
+            <div style={{ marginBottom: "20px" }}>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
+                Account <span style={{ color: "#dc2626" }}>*</span>
+              </label>
+              <select
+                value={selectedAccountId}
+                onChange={(e) => setSelectedAccountId(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  borderRadius: "8px",
+                  border: "1px solid #d1d5db",
+                  fontSize: "13px",
+                  color: "#374151",
+                  fontFamily: font,
+                  outline: "none",
+                  boxSizing: "border-box",
+                  backgroundColor: "#fff",
+                }}
+              >
+                <option value="">— Select account —</option>
+                {accounts.map((acc) => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.displayName}
+                  </option>
+                ))}
+                <option value="__new__">+ Create new account…</option>
+              </select>
+
+              {selectedAccountId === "__new__" && (
+                <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+                  <input
+                    type="text"
+                    value={newAccountName}
+                    onChange={(e) => setNewAccountName(e.target.value)}
+                    placeholder="New account name (e.g. Chase Checking, Amex Gold)"
+                    style={{
+                      flex: 1,
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid #d1d5db",
+                      fontSize: "13px",
+                      color: "#374151",
+                      fontFamily: font,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <button
+                    onClick={async () => {
+                      const name = newAccountName.trim();
+                      if (!name || !ownerUid) return;
+                      const docRef = await addDoc(collection(db, "accounts"), {
+                        uid:         ownerUid,
+                        name,
+                        accountType,
+                        createdAt:   serverTimestamp(),
+                      });
+                      await loadAccounts();
+                      setSelectedAccountId(docRef.id);
+                      setNewAccountName("");
+                    }}
+                    disabled={!newAccountName.trim()}
+                    style={{
+                      padding: "8px 14px",
+                      backgroundColor: newAccountName.trim() ? "#16A34A" : "#d1d5db",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: "8px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      cursor: newAccountName.trim() ? "pointer" : "not-allowed",
+                      fontFamily: font,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Create
+                  </button>
+                </div>
+              )}
+
+              <div style={{ marginTop: "4px", fontSize: "12px", color: "#9ca3af" }}>
+                Pick the account these transactions belong to before uploading.
+              </div>
+            </div>
+
             {/* Drop zone */}
             <div style={{ marginBottom: hasParsed ? "28px" : "0" }}>
               <div
@@ -391,7 +494,12 @@ export default function ImportCSVPage() {
                 accept=".csv"
                 style={{ display: "none" }}
                 onChange={(e) => {
-                  handleFileChange(e.target.files?.[0] ?? null);
+                  // Pass selectedAccountId so the hook can read/persist the
+                  // account's sign convention and skip the flip-toggle ritual.
+                  handleFileChange(
+                    e.target.files?.[0] ?? null,
+                    selectedAccountId && selectedAccountId !== "__new__" ? selectedAccountId : undefined,
+                  );
                   e.target.value = "";        // allow re-selecting same file
                 }}
               />
@@ -412,155 +520,63 @@ export default function ImportCSVPage() {
             {/* Preview + import */}
             {hasParsed && (
               <>
+                {cascadeMessage && (
+                  <div style={{
+                    marginBottom: "10px",
+                    padding: "10px 14px",
+                    backgroundColor: "#eff6ff",
+                    border: "1px solid #bfdbfe",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                    color: "#1d4ed8",
+                    fontWeight: 500,
+                  }}>
+                    ✓ {cascadeMessage}
+                  </div>
+                )}
                 <CSVPreviewTable rows={rows} totalCount={rows.length} onTypeChange={updateRowType} />
 
-                {/* Sign-convention warning (auto-detected, bank mode only) */}
+                {/* Sign convention is auto-detected once per account and persisted.
+                   The user only sees this row to (a) confirm what was detected and
+                   (b) override if the auto-detect got it wrong. The override is
+                   also saved per account so the toggle isn't needed next time. */}
                 <div style={{ marginTop: "16px" }}>
-                  {accountType === "bank" && signWarning && !flipSign && (
+                  {signConventionMessage && (
                     <div style={{
-                      padding: "12px 16px",
-                      backgroundColor: "#fff7ed",
-                      border: "1px solid #fed7aa",
+                      padding: "10px 14px",
+                      backgroundColor: "#f0fdf4",
+                      border: "1px solid #bbf7d0",
                       borderRadius: "8px",
-                      fontSize: "13px",
-                      color: "#92400e",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: "12px",
-                      flexWrap: "wrap",
-                    }}>
-                      <span>
-                        ⚠ <strong>Sign convention detected:</strong> Most charges appear as positive amounts — this is typical of American Express exports. Expenses may be showing as income.
-                      </span>
-                      <button
-                        onClick={handleFlipSign}
-                        style={{
-                          padding: "6px 14px",
-                          backgroundColor: "#f97316",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "6px",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          fontFamily: font,
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                        }}
-                      >
-                        Flip signs →
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Manual flip toggle — only for bank accounts */}
-                  {accountType === "bank" && (
-                    <div style={{
-                      marginTop: signWarning && !flipSign ? "8px" : "0",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
                       fontSize: "12px",
-                      color: "#6b7280",
+                      color: "#166534",
+                      marginBottom: "8px",
                     }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={flipSign}
-                          onChange={handleFlipSign}
-                          style={{ cursor: "pointer" }}
-                        />
-                        Flip sign convention (charges are positive, e.g. some bank exports)
-                      </label>
+                      ✓ {signConventionMessage}
                     </div>
                   )}
-                </div>
 
-                {/* Required account selector */}
-                <div style={{ marginTop: "20px" }}>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
-                    Account <span style={{ color: "#dc2626" }}>*</span>
-                  </label>
-                  <select
-                    value={selectedAccountId}
-                    onChange={(e) => setSelectedAccountId(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      borderRadius: "8px",
-                      border: "1px solid #d1d5db",
-                      fontSize: "13px",
-                      color: "#374151",
-                      fontFamily: font,
-                      outline: "none",
-                      boxSizing: "border-box",
-                      backgroundColor: "#fff",
-                    }}
-                  >
-                    <option value="">— Select account —</option>
-                    {accounts.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name}{acc.institutionName ? ` (${acc.institutionName})` : ""}
-                      </option>
-                    ))}
-                    <option value="__new__">+ Create new account…</option>
-                  </select>
-
-                  {selectedAccountId === "__new__" && (
-                    <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    fontSize: "12px",
+                    color: "#6b7280",
+                  }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
                       <input
-                        type="text"
-                        value={newAccountName}
-                        onChange={(e) => setNewAccountName(e.target.value)}
-                        placeholder="New account name (e.g. Chase Checking, Amex Gold)"
-                        style={{
-                          flex: 1,
-                          padding: "8px 12px",
-                          borderRadius: "8px",
-                          border: "1px solid #d1d5db",
-                          fontSize: "13px",
-                          color: "#374151",
-                          fontFamily: font,
-                          outline: "none",
-                          boxSizing: "border-box",
-                        }}
+                        type="checkbox"
+                        checked={flipSign}
+                        onChange={() =>
+                          handleFlipSign(
+                            selectedAccountId && selectedAccountId !== "__new__"
+                              ? selectedAccountId
+                              : undefined,
+                          )
+                        }
+                        style={{ cursor: "pointer" }}
                       />
-                      <button
-                        onClick={async () => {
-                          const name = newAccountName.trim();
-                          if (!name || !ownerUid) return;
-                          const docRef = await addDoc(collection(db, "accounts"), {
-                            uid:         ownerUid,
-                            name,
-                            accountType,
-                            createdAt:   serverTimestamp(),
-                          });
-                          await loadAccounts();
-                          setSelectedAccountId(docRef.id);
-                          setNewAccountName("");
-                        }}
-                        disabled={!newAccountName.trim()}
-                        style={{
-                          padding: "8px 14px",
-                          backgroundColor: newAccountName.trim() ? "#16A34A" : "#d1d5db",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          cursor: newAccountName.trim() ? "pointer" : "not-allowed",
-                          fontFamily: font,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        Create
-                      </button>
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: "4px", fontSize: "12px", color: "#9ca3af" }}>
-                    Every CSV import must be assigned to one account.
+                      Charges are positive in this CSV (override auto-detection)
+                    </label>
                   </div>
                 </div>
 

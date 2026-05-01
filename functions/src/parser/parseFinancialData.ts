@@ -10,11 +10,22 @@ Return a JSON array where each item has:
 - date: string in YYYY-MM-DD format
 - description: string (clean merchant or payee name, max 60 chars, no account numbers)
 - amount: number (always positive)
-- type: "expense", "income", or "refund"
-  expense = debit / charge / withdrawal / payment made
-  income  = credit / deposit / payroll / dividend / interest earned (money genuinely earned)
-  refund  = a previously-paid expense being returned (REFUND, REVERSAL, REIMBURSEMENT, CHARGEBACK).
-            Refunds reduce the related expense category — they are NOT income.
+- type: "expense", "income", "refund", or "transfer"
+  expense  = debit / charge / withdrawal / payment made to an external party
+  income   = credit / deposit / payroll / dividend / interest earned (money genuinely earned)
+  refund   = a previously-paid expense being returned (REFUND, REVERSAL, REIMBURSEMENT, CHARGEBACK).
+             Refunds reduce the related expense category — they are NOT income.
+  transfer = movement of money between the user's own accounts. Includes:
+             credit-card payments (CRCARDPMT, AUTOPAY, "Payment Thank You"),
+             account-to-account transfers (FUNDS TRANSFER, OVERDRAFT TRANSFER, "Transfer to Savings"),
+             loan payments (LOANPMT, MORTGAGE PMT, AUTO LOAN PMT).
+             These are not expenses or income — they net out across the user's accounts.
+- direction: "outflow" | "inflow"  (REQUIRED ONLY when type === "transfer")
+  outflow = money LEAVING the account this statement belongs to (e.g. checking account paying a credit card)
+  inflow  = money ARRIVING in the account this statement belongs to (e.g. credit card receiving a payment)
+  Tip: read the row's sign / direction column. If the source shows -$500 or "Dr" or parentheses → outflow.
+       If the source shows +$500 or "Cr" → inflow.
+  Omit the field for non-transfer rows.
 
 CURRENT YEAR IS ${year}. Use ${year} for any date that has no year. Never use 2024 unless the source data explicitly says 2024.
 
@@ -43,7 +54,11 @@ export interface ParsedTransaction {
   date:        string;
   description: string;
   amount:      number;
-  type:        "expense" | "income" | "refund";
+  type:        "expense" | "income" | "refund" | "transfer";
+  // Only set when type === "transfer". Disambiguates which side of the
+  // transfer this row represents so signedAmount can be assigned correctly
+  // and the classifier's transfer-pairing logic can match the two halves.
+  direction?:  "outflow" | "inflow";
 }
 
 function extractJson(raw: string): string {
@@ -150,21 +165,36 @@ export const parseFinancialData = onCall(
       .filter((t) => t.date && t.amount)
       .map((t) => {
         const desc = String(t.description ?? "");
-        // Trust an explicit "refund" type from the model, otherwise infer from
-        // description keywords so refunds don't slip through as income.
-        let type: "expense" | "income" | "refund";
+        // Trust explicit "refund" / "transfer" types from the model. For
+        // anything ambiguous, infer refund from description keywords so they
+        // don't slip through as income/expense.
+        let type: ParsedTransaction["type"];
         if (t.type === "refund" || REFUND_KEYWORDS.test(desc)) {
           type = "refund";
+        } else if (t.type === "transfer") {
+          type = "transfer";
         } else if (t.type === "income") {
           type = "income";
         } else {
           type = "expense";
         }
+
+        // Direction only meaningful for transfers. Accept the model's value
+        // when it's one of the expected literals; otherwise leave undefined
+        // so the normalizer's fallback (needs_review) kicks in.
+        let direction: ParsedTransaction["direction"];
+        if (type === "transfer") {
+          if (t.direction === "outflow" || t.direction === "inflow") {
+            direction = t.direction;
+          }
+        }
+
         return {
           date:        String(t.date ?? ""),
           description: desc,
           amount:      Math.abs(Number(t.amount ?? 0)),
           type,
+          ...(direction ? { direction } : {}),
         };
       });
 
