@@ -474,6 +474,22 @@ export function useCSVImport() {
     engineErrors: [],
   });
 
+  // Per-vendor correction history for pattern-based learning. First correction
+  // of a vendor → only that row changes. Second matching correction of the
+  // same vendor → cascade to all matching rows + save typeRule.
+  // Lives in a ref because it should NOT trigger re-renders; UI reads
+  // cascadeMessage from state when the cascade actually fires.
+  const correctionHistoryRef = useRef<Map<string, {
+    type:    TransactionType;
+    subType?: TransactionSubType;
+    indices: Set<number>;
+  }>>(new Map());
+
+  // Reset correction history when a new file is parsed.
+  function resetCorrectionHistory() {
+    correctionHistoryRef.current.clear();
+  }
+
   // Look up the persisted sign convention on the account doc (set by either
   // Plaid sync's per-account auto-detection or a prior CSV import).
   async function loadAccountSignConvention(accountId: string): Promise<{
@@ -514,6 +530,7 @@ export function useCSVImport() {
   async function handleFileChange(file: File | null, accountId?: string) {
     if (!file) return;
     lastFileRef.current = file;
+    resetCorrectionHistory();
     setState((prev) => ({
       ...prev,
       fileName: file.name,
@@ -648,22 +665,57 @@ export function useCSVImport() {
 
     const targetVendor = extractVendor(normalize(row.description));
 
-    // Cascade to all rows with the same extracted vendor — turns "fix one"
-    // into "fix every Amazon row in this preview" without the user having to
-    // click each one. The target row is included so its userModified flag is
-    // set even if its type already matched.
+    // ── Pattern-based learning ──────────────────────────────────────────
+    // First correction of a vendor → only the clicked row changes. Second
+    // matching correction (same vendor → same type+subType) confirms the
+    // user's intent: cascade to every other matching row + persist the rule
+    // for future imports. A conflicting second correction (same vendor,
+    // different type) resets history so no false cascade fires.
+    const prior = correctionHistoryRef.current.get(targetVendor);
+    const sameAsPrior =
+      !!prior && prior.type === newType && prior.subType === newSubType;
+    const isPatternCommit = !!prior && sameAsPrior && !prior.indices.has(index);
+
+    if (!prior || !sameAsPrior) {
+      // First vote (or conflicting second vote that resets the pattern).
+      correctionHistoryRef.current.set(targetVendor, {
+        type: newType,
+        subType: newSubType,
+        indices: new Set([index]),
+      });
+    } else {
+      // Same-direction repeat (different row) — record before cascading so
+      // the cascade itself doesn't trip the threshold again.
+      prior.indices.add(index);
+    }
+
+    // ── Apply edits ────────────────────────────────────────────────────
     let cascadeCount = 0;
     setState((prev) => {
       const rows = prev.rows.map((r, i) => {
         if (!r || isNaN(r.amount)) return r;
+        const isTarget = i === index;
+
+        // Always update the clicked row.
+        if (isTarget) {
+          return {
+            ...r,
+            type: newType,
+            subType: newSubType,
+            isTransfer: newType === "transfer",
+            userModified: true,
+          };
+        }
+
+        // Cascade only on pattern commit. Skip rows that already match.
+        if (!isPatternCommit) return r;
+
         const sameVendor =
           targetVendor && extractVendor(normalize(r.description)) === targetVendor;
         if (!sameVendor) return r;
-        if (i !== index && r.type === newType && r.subType === newSubType) {
-          // Already matches — nothing to change.
-          return r;
-        }
-        if (i !== index) cascadeCount++;
+        if (r.type === newType && r.subType === newSubType) return r;
+
+        cascadeCount++;
         return {
           ...r,
           type: newType,
@@ -672,34 +724,39 @@ export function useCSVImport() {
           userModified: true,
         };
       });
+
       return {
         ...prev,
         rows,
-        cascadeMessage: cascadeCount > 0
-          ? `Applied to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} in this preview.`
-          : "",
+        cascadeMessage: isPatternCommit
+          ? cascadeCount > 0
+            ? `Pattern detected — applied "${newType}" to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} and saved a rule for future imports.`
+            : `Pattern detected for "${targetVendor}" — saved a rule for future imports.`
+          : prior
+          ? ""    // conflicting reset: don't surface anything
+          : `Got it — only this row changed. Mark another "${targetVendor}" row the same way to apply to all matching rows.`,
       };
     });
 
-    // Persist as a learned type rule for future imports.
-    // Note: this is a frontend-only learning loop today — typeRules informs
-    // future imports' preview, not backend ingest classification.
-    try {
-      const ruleRef = doc(db, "typeRules", `${ownerUid}_${targetVendor}`);
-      await setDoc(
-        ruleRef,
-        {
-          uid: ownerUid,
-          vendorName: targetVendor,
-          type: newType,
-          ...(newSubType ? { subType: newSubType } : {}),
-          usageCount: increment(1),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    } catch {
-      // Non-blocking — rule writing is best-effort
+    // ── Save typeRule only on pattern commit, never on a single edit ───
+    if (isPatternCommit) {
+      try {
+        const ruleRef = doc(db, "typeRules", `${ownerUid}_${targetVendor}`);
+        await setDoc(
+          ruleRef,
+          {
+            uid: ownerUid,
+            vendorName: targetVendor,
+            type: newType,
+            ...(newSubType ? { subType: newSubType } : {}),
+            usageCount: increment(1),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      } catch {
+        // Non-blocking — rule writing is best-effort.
+      }
     }
   }
 

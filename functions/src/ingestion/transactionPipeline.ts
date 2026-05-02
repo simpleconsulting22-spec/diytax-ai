@@ -54,6 +54,11 @@ export interface RawAiInput {
   // the classifier's findTransferPairs can match them. When absent on a
   // transfer, the row falls back to inflow + status: "needs_review".
   direction?:  "outflow" | "inflow";
+  // AI's self-assessment from parseFinancialData. Stored on the saved doc
+  // as aiConfidence / aiReasoning — distinct from the backend classifier's
+  // own `confidence` / `typeSource` (which are written by the pipeline).
+  confidence?: "high" | "medium" | "low";
+  reasoning?:  string;
 }
 
 // ─── Normalized shape (what every source produces after normalize step) ─────
@@ -83,6 +88,11 @@ export interface NormalizedTransaction {
   // Set true when an AI-parsed transfer row arrives with no direction. The
   // ingest writer forces status="needs_review" so the user knows to verify.
   needsManualReview?:    boolean;
+  // AI parser's self-reported confidence + reasoning. Saved on the doc as
+  // aiConfidence / aiReasoning — namespaced so they don't collide with the
+  // backend classifier's own `confidence` / `reason` fields.
+  aiConfidence?:         "high" | "medium" | "low";
+  aiReasoning?:          string;
 
   // Hash for cross-source dedup
   dedupeHash:            string;
@@ -127,6 +137,8 @@ export function normalizeTransaction(
   let preassignedType: NormalizedTransaction["preassignedType"];
   let subType: NormalizedTransaction["subType"];
   let needsManualReview: boolean | undefined;
+  let aiConfidence:  NormalizedTransaction["aiConfidence"];
+  let aiReasoning:   NormalizedTransaction["aiReasoning"];
   let plaidTransactionId:   string | undefined;
   let plaidAccountId:       string | undefined;
   let plaidPfcPrimary:      string | null | undefined;
@@ -188,6 +200,8 @@ export function normalizeTransaction(
       }
 
       preassignedType = a.type;
+      if (a.confidence) aiConfidence = a.confidence;
+      if (a.reasoning)  aiReasoning  = a.reasoning;
       break;
     }
   }
@@ -209,6 +223,8 @@ export function normalizeTransaction(
     preassignedType,
     subType,
     needsManualReview,
+    aiConfidence,
+    aiReasoning,
     dedupeHash:            computeDedupeHash(accountId, date, signedAmount, description),
   };
 }

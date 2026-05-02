@@ -31,6 +31,10 @@ interface ParsedRow {
   amount:      number;
   type:        "expense" | "income" | "refund" | "transfer";
   direction?:  "outflow" | "inflow";
+  // AI's self-assessed parse quality (separate from the backend classifier's
+  // own confidence — these reflect the AI parse step only).
+  confidence:  "high" | "medium" | "low";
+  reasoning:   string;
 }
 
 // Resize image to max 2048px and return {base64, mimeType}
@@ -163,28 +167,66 @@ export default function AIParserPage() {
     return () => clearTimeout(t);
   }, [cascadeMessage]);
 
+  // Per-vendor correction history for pattern-based learning. First edit of a
+  // vendor changes only that row. Second matching edit of the same vendor
+  // (same target type) commits the pattern: cascade to all matching rows.
+  // Conflicting second edits reset the history.
+  const correctionHistoryRef = useRef<Map<string, {
+    type:    ParsedRow["type"];
+    rowIds:  Set<string>;
+  }>>(new Map());
+
+  // Reset history each time a fresh parse populates rows.
+  useEffect(() => {
+    correctionHistoryRef.current.clear();
+  }, [parsing]);
+
   function updateRow(id: string, field: keyof ParsedRow, value: string | number) {
-    // Type changes cascade to other rows with the same extracted vendor in
-    // this preview — fix one Amazon row, fix every Amazon row.
     if (field === "type") {
       setRows((prev) => {
         const target = prev.find((r) => r.id === id);
         if (!target) return prev;
+
         const targetVendor = extractVendor(normalize(target.description));
+        const newType      = value as ParsedRow["type"];
+
+        const prior = correctionHistoryRef.current.get(targetVendor);
+        const sameAsPrior = !!prior && prior.type === newType;
+        const isPatternCommit = !!prior && sameAsPrior && !prior.rowIds.has(id);
+
+        if (!prior || !sameAsPrior) {
+          correctionHistoryRef.current.set(targetVendor, {
+            type:   newType,
+            rowIds: new Set([id]),
+          });
+        } else {
+          prior.rowIds.add(id);
+        }
+
         let cascadeCount = 0;
         const updated = prev.map((r) => {
+          if (r.id === id) return { ...r, type: newType };
+          if (!isPatternCommit) return r;
           const sameVendor =
             targetVendor && extractVendor(normalize(r.description)) === targetVendor;
           if (!sameVendor) return r;
-          if (r.id !== id && r.type === value) return r;
-          if (r.id !== id) cascadeCount++;
-          return { ...r, type: value as ParsedRow["type"] };
+          if (r.type === newType) return r;
+          cascadeCount++;
+          return { ...r, type: newType };
         });
-        if (cascadeCount > 0) {
+
+        if (isPatternCommit) {
           setCascadeMessage(
-            `Applied to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} in this preview.`
+            cascadeCount > 0
+              ? `Pattern detected — applied "${newType}" to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""}.`
+              : `Pattern detected for "${targetVendor}".`,
+          );
+        } else if (!prior) {
+          setCascadeMessage(
+            `Got it — only this row changed. Mark another "${targetVendor}" row the same way to apply to all matching rows.`,
           );
         }
+
         return updated;
       });
       return;
@@ -215,6 +257,10 @@ export default function AIParserPage() {
         // Direction only meaningful for transfers — backend ignores it for
         // other types and falls back to needs_review when missing on a transfer.
         ...(row.type === "transfer" && row.direction ? { direction: row.direction } : {}),
+        // AI's self-assessed quality — saved to Firestore as aiConfidence /
+        // aiReasoning on the transaction doc.
+        confidence:  row.confidence,
+        reasoning:   row.reasoning,
       }));
       const label = `[AI] ${selectedAccount?.name ?? "Imported"}`;
       const report = await apiClient.call<IngestReportLite>("ingestTransactions", {
@@ -513,105 +559,155 @@ Or paste a CSV, email, or any text containing transactions.`}
               ))}
             </div>
 
-            {/* Rows */}
-            {rows.map((row) => (
-              <div
-                key={row.id}
-                style={{ display: "grid", gridTemplateColumns: "130px 1fr 100px 110px 36px", gap: "0", padding: "6px 20px", borderBottom: "1px solid #f3f4f6", alignItems: "center" }}
-              >
-                <input
-                  style={{ ...inputBase, fontSize: "12px", padding: "4px 6px" }}
-                  value={row.date}
-                  onChange={(e) => updateRow(row.id, "date", e.target.value)}
-                />
-                <input
-                  style={{ ...inputBase, fontSize: "12px", padding: "4px 6px", marginLeft: "6px", marginRight: "6px" }}
-                  value={row.description}
-                  onChange={(e) => updateRow(row.id, "description", e.target.value)}
-                />
-                <input
-                  style={{ ...inputBase, fontSize: "12px", padding: "4px 6px", fontVariantNumeric: "tabular-nums" }}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={row.amount}
-                  onChange={(e) => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
-                />
-                <div style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "6px" }}>
-                  <select
-                    value={row.type}
-                    onChange={(e) => {
-                      const next = e.target.value as ParsedRow["type"];
-                      updateRow(row.id, "type", next);
-                      // When type leaves "transfer", clear the dangling direction.
-                      if (next !== "transfer" && row.direction) {
-                        updateRow(row.id, "direction", "");
-                      }
-                      // When user manually sets transfer with no direction yet, default
-                      // to outflow so the row doesn't get flagged needs_review.
-                      if (next === "transfer" && !row.direction) {
-                        updateRow(row.id, "direction", "outflow");
-                      }
-                    }}
-                    style={{
-                      padding: "4px 8px",
-                      border: "none",
-                      borderRadius: "6px",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      fontFamily: font,
-                      backgroundColor:
-                        row.type === "expense"  ? "#fee2e2" :
-                        row.type === "refund"   ? "#f5f3ff" :
-                        row.type === "transfer" ? "#f3f4f6" : "#dcfce7",
-                      color:
-                        row.type === "expense"  ? "#dc2626" :
-                        row.type === "refund"   ? "#7c3aed" :
-                        row.type === "transfer" ? "#374151" : "#16A34A",
-                    }}
+            {/* Rows — outer wrapper stacks the editable grid plus an optional
+               reasoning line beneath it for medium/low-confidence rows. High
+               confidence collapses (no reasoning shown) so the eye lands on
+               rows that actually need attention. */}
+            {rows.map((row) => {
+              const showReasoning = row.confidence !== "high" && !!row.reasoning;
+              const pillStyle = (() => {
+                switch (row.confidence) {
+                  case "high":   return { bg: "#dcfce7", color: "#166534", border: "#bbf7d0" };
+                  case "medium": return { bg: "#fef3c7", color: "#92400e", border: "#fde68a" };
+                  case "low":    return { bg: "#fee2e2", color: "#dc2626", border: "#fecaca" };
+                  default:       return { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb" };
+                }
+              })();
+              return (
+                <div
+                  key={row.id}
+                  style={{
+                    borderBottom: "1px solid #f3f4f6",
+                    backgroundColor: row.confidence === "low" ? "#fffbeb" : "transparent",
+                  }}
+                >
+                  <div
+                    style={{ display: "grid", gridTemplateColumns: "130px 1fr 100px 110px 36px", gap: "0", padding: "6px 20px", alignItems: "center" }}
                   >
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                    <option value="transfer">Transfer</option>
-                    <option value="refund">Refund</option>
-                  </select>
+                    <input
+                      style={{ ...inputBase, fontSize: "12px", padding: "4px 6px" }}
+                      value={row.date}
+                      onChange={(e) => updateRow(row.id, "date", e.target.value)}
+                    />
+                    <input
+                      style={{ ...inputBase, fontSize: "12px", padding: "4px 6px", marginLeft: "6px", marginRight: "6px" }}
+                      value={row.description}
+                      onChange={(e) => updateRow(row.id, "description", e.target.value)}
+                    />
+                    <input
+                      style={{ ...inputBase, fontSize: "12px", padding: "4px 6px", fontVariantNumeric: "tabular-nums" }}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.amount}
+                      onChange={(e) => updateRow(row.id, "amount", parseFloat(e.target.value) || 0)}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "6px", flexWrap: "wrap" }}>
+                      <select
+                        value={row.type}
+                        onChange={(e) => {
+                          const next = e.target.value as ParsedRow["type"];
+                          updateRow(row.id, "type", next);
+                          if (next !== "transfer" && row.direction) {
+                            updateRow(row.id, "direction", "");
+                          }
+                          if (next === "transfer" && !row.direction) {
+                            updateRow(row.id, "direction", "outflow");
+                          }
+                        }}
+                        style={{
+                          padding: "4px 8px",
+                          border: "none",
+                          borderRadius: "6px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          fontFamily: font,
+                          backgroundColor:
+                            row.type === "expense"  ? "#fee2e2" :
+                            row.type === "refund"   ? "#f5f3ff" :
+                            row.type === "transfer" ? "#f3f4f6" : "#dcfce7",
+                          color:
+                            row.type === "expense"  ? "#dc2626" :
+                            row.type === "refund"   ? "#7c3aed" :
+                            row.type === "transfer" ? "#374151" : "#16A34A",
+                        }}
+                      >
+                        <option value="expense">Expense</option>
+                        <option value="income">Income</option>
+                        <option value="transfer">Transfer</option>
+                        <option value="refund">Refund</option>
+                      </select>
 
-                  {/* Direction picker — only shown for transfer rows. Required so
-                     the backend can sign the row correctly and let the classifier
-                     pair the two halves of an internal transfer. */}
-                  {row.type === "transfer" && (
-                    <select
-                      value={row.direction ?? ""}
-                      onChange={(e) => updateRow(row.id, "direction", e.target.value)}
-                      title="Which way did the money move on this account's statement?"
-                      style={{
-                        padding: "4px 6px",
-                        border: row.direction ? "1px solid #d1d5db" : "1.5px solid #f59e0b",
-                        borderRadius: "6px",
-                        fontSize: "10px",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        fontFamily: font,
-                        backgroundColor: "#fff",
-                        color: "#374151",
-                      }}
+                      {row.type === "transfer" && (
+                        <select
+                          value={row.direction ?? ""}
+                          onChange={(e) => updateRow(row.id, "direction", e.target.value)}
+                          title="Which way did the money move on this account's statement?"
+                          style={{
+                            padding: "4px 6px",
+                            border: row.direction ? "1px solid #d1d5db" : "1.5px solid #f59e0b",
+                            borderRadius: "6px",
+                            fontSize: "10px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: font,
+                            backgroundColor: "#fff",
+                            color: "#374151",
+                          }}
+                        >
+                          <option value="">— dir —</option>
+                          <option value="outflow">Out</option>
+                          <option value="inflow">In</option>
+                        </select>
+                      )}
+
+                      {/* AI confidence pill. Always rendered so the user sees
+                         "high" rows are intentionally trusted, not unset. */}
+                      <span
+                        title={row.confidence === "high" ? row.reasoning : undefined}
+                        style={{
+                          padding: "2px 6px",
+                          borderRadius: "999px",
+                          fontSize: "9px",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.04em",
+                          backgroundColor: pillStyle.bg,
+                          color:           pillStyle.color,
+                          border:          `1px solid ${pillStyle.border}`,
+                          fontFamily:      font,
+                          whiteSpace:      "nowrap",
+                        }}
+                      >
+                        {row.confidence}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => deleteRow(row.id)}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px", padding: "2px", marginLeft: "4px" }}
+                      title="Remove"
                     >
-                      <option value="">— dir —</option>
-                      <option value="outflow">Out</option>
-                      <option value="inflow">In</option>
-                    </select>
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Inline reasoning — only for medium / low. High confidence
+                     collapses to keep the eye on rows that need review. */}
+                  {showReasoning && (
+                    <div style={{
+                      padding: "0 20px 8px 150px",
+                      fontSize: "11px",
+                      color: "#6b7280",
+                      fontStyle: "italic",
+                      lineHeight: 1.4,
+                    }}>
+                      {row.reasoning}
+                    </div>
                   )}
                 </div>
-                <button
-                  onClick={() => deleteRow(row.id)}
-                  style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px", padding: "2px", marginLeft: "4px" }}
-                  title="Remove"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

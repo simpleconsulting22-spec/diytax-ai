@@ -156,6 +156,8 @@ export async function ingestTransactionsCore(
     if (result.excludeFromReports)  txnData.excludeFromReports = true;
     if (n.subType)                  txnData.subType          = n.subType;
     if (n.needsManualReview)        txnData.manualReviewReason = "ai-transfer-direction-missing";
+    if (n.aiConfidence)             txnData.aiConfidence     = n.aiConfidence;
+    if (n.aiReasoning)              txnData.aiReasoning      = n.aiReasoning;
 
     try {
       await db.collection("transactions").doc(docId).create(txnData);
