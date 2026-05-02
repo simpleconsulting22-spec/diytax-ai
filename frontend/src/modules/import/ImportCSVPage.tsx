@@ -112,9 +112,9 @@ export default function ImportCSVPage() {
   const navigate = useNavigate();
   const { user, effectiveOwnerUid } = useAuth();
   const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
-  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport, acceptPatternPrompt, dismissPatternPrompt } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage, detection, engineWarnings, engineErrors, forceImportHashes, pendingPatternPrompt } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage, detection, engineWarnings, engineErrors, forceImportHashes } = state;
 
   // Auto-dismiss cascade banner after 4s
   useEffect(() => {
@@ -613,70 +613,6 @@ export default function ImportCSVPage() {
                     fontWeight: 500,
                   }}>
                     ✓ {cascadeMessage}
-                  </div>
-                )}
-                {pendingPatternPrompt && (
-                  <div style={{
-                    marginBottom: "10px",
-                    padding: "12px 16px",
-                    backgroundColor: "#fffbeb",
-                    border: "1px solid #fcd34d",
-                    borderRadius: "10px",
-                    fontSize: "13px",
-                    color: "#78350f",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: "12px",
-                    flexWrap: "wrap",
-                  }}>
-                    <div style={{ flex: "1 1 320px" }}>
-                      <div style={{ fontWeight: 700, marginBottom: "2px" }}>
-                        Apply this change to similar transactions?
-                      </div>
-                      <div style={{ color: "#92400e" }}>
-                        You changed 2 &ldquo;{pendingPatternPrompt.vendor}&rdquo; transactions to{" "}
-                        <strong>{pendingPatternPrompt.type}</strong>. Apply this to the
-                        remaining {pendingPatternPrompt.affectedCount} similar transaction
-                        {pendingPatternPrompt.affectedCount !== 1 ? "s" : ""}?
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-                      <button
-                        onClick={acceptPatternPrompt}
-                        style={{
-                          padding: "8px 16px",
-                          backgroundColor: "#16A34A",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          fontFamily: font,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        Apply to all
-                      </button>
-                      <button
-                        onClick={dismissPatternPrompt}
-                        style={{
-                          padding: "8px 16px",
-                          backgroundColor: "#fff",
-                          color: "#78350f",
-                          border: "1px solid #fcd34d",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          fontFamily: font,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        Just these
-                      </button>
-                    </div>
                   </div>
                 )}
                 <CSVPreviewTable

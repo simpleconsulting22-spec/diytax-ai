@@ -9,12 +9,6 @@ import AppNav from "../../components/AppNav";
 import { extractVendor, normalize } from "../import/hooks/useCSVImport";
 import { track } from "../../lib/telemetry";
 
-type PendingPatternPrompt = {
-  vendor:        string;
-  type:          "expense" | "income" | "transfer";
-  affectedCount: number;
-} | null;
-
 interface AccountOption {
   id:           string;
   name:         string;       // raw "name" field — used by CSV download fallback
@@ -174,9 +168,10 @@ export default function AIParserPage() {
     return () => clearTimeout(t);
   }, [cascadeMessage]);
 
-  // Per-vendor correction history for pattern-based learning. Refunds are
-  // intentionally excluded from this map — they're per-transaction by nature
-  // and never trigger cascades or rules.
+  // Per-vendor correction history for pattern-based learning. Refunds bypass
+  // this map — they're per-transaction by nature and never trigger cascades.
+  // For other types, the second matching edit on a vendor auto-cascades to
+  // every matching row in the preview.
   const correctionHistoryRef = useRef<Map<string, {
     type:    "expense" | "income" | "transfer";
     rowIds:  Set<string>;
@@ -186,10 +181,6 @@ export default function AIParserPage() {
   useEffect(() => {
     correctionHistoryRef.current.clear();
   }, [parsing]);
-
-  // Pending prompt — shown after a 2nd matching non-refund edit. User must
-  // explicitly click "Apply to all" or "Just these" before any cascade fires.
-  const [pendingPatternPrompt, setPendingPatternPrompt] = useState<PendingPatternPrompt>(null);
 
   function updateRow(id: string, field: keyof ParsedRow, value: string | number) {
     if (field !== "type") {
@@ -208,7 +199,6 @@ export default function AIParserPage() {
       setCascadeMessage(
         "Refunds are applied per transaction and won't be applied to other transactions.",
       );
-      setPendingPatternPrompt(null);   // any pending prompt is cleared
       return;
     }
 
@@ -216,12 +206,12 @@ export default function AIParserPage() {
       const target = prev.find((r) => r.id === id);
       if (!target) return prev;
 
-      const targetVendor = extractVendor(normalize(target.description));
+      const targetVendor   = extractVendor(normalize(target.description));
       const promotableType = newType as "expense" | "income" | "transfer";
 
-      const prior = correctionHistoryRef.current.get(targetVendor);
-      const sameAsPrior = !!prior && prior.type === promotableType;
-      const isSecondMatch = !!prior && sameAsPrior && !prior.rowIds.has(id);
+      const prior            = correctionHistoryRef.current.get(targetVendor);
+      const sameAsPrior      = !!prior && prior.type === promotableType;
+      const isPatternCommit  = !!prior && sameAsPrior && !prior.rowIds.has(id);
 
       if (!prior || !sameAsPrior) {
         correctionHistoryRef.current.set(targetVendor, {
@@ -232,77 +222,31 @@ export default function AIParserPage() {
         prior.rowIds.add(id);
       }
 
-      // Apply ONLY the clicked row.
-      const updated = prev.map((r) =>
-        r.id === id ? { ...r, type: promotableType } : r,
-      );
-
-      // Compute affected count for the prompt (rows with same vendor that
-      // don't already match the target type).
-      const affectedCount = updated.reduce((acc, r) => {
-        if (r.id === id) return acc;
+      let cascadeCount = 0;
+      const updated = prev.map((r) => {
+        if (r.id === id) return { ...r, type: promotableType };
+        if (!isPatternCommit) return r;
         const sameVendor =
           targetVendor && extractVendor(normalize(r.description)) === targetVendor;
-        if (!sameVendor) return acc;
-        if (r.type === promotableType) return acc;
-        return acc + 1;
-      }, 0);
-
-      // Manage the pending prompt outside this updater.
-      setPendingPatternPrompt((current) => {
-        // If a prompt is showing for a different vendor/type, the user has
-        // moved on — implicit decline.
-        let next = current;
-        if (
-          current &&
-          (current.vendor !== targetVendor || current.type !== promotableType)
-        ) {
-          track("pattern_prompt_declined", {
-            vendor: current.vendor, type: current.type, implicit: true,
-          });
-          next = null;
-        }
-        if (isSecondMatch && affectedCount > 0) {
-          next = { vendor: targetVendor, type: promotableType, affectedCount };
-          track("pattern_prompt_shown", {
-            vendor: targetVendor, type: promotableType, count: affectedCount,
-          });
-        }
-        return next;
+        if (!sameVendor) return r;
+        if (r.type === promotableType) return r;
+        cascadeCount++;
+        return { ...r, type: promotableType };
       });
 
-      return updated;
-    });
-  }
-
-  function acceptPatternPrompt() {
-    setPendingPatternPrompt((prompt) => {
-      if (!prompt) return null;
-      track("pattern_prompt_applied", { vendor: prompt.vendor, type: prompt.type });
-
-      let cascadeCount = 0;
-      setRows((prev) => prev.map((r) => {
-        const sameVendor = extractVendor(normalize(r.description)) === prompt.vendor;
-        if (!sameVendor) return r;
-        if (r.type === prompt.type) return r;
-        cascadeCount++;
-        return { ...r, type: prompt.type };
-      }));
-      setCascadeMessage(
-        cascadeCount > 0
-          ? `Applied "${prompt.type}" to ${cascadeCount} other "${prompt.vendor}" row${cascadeCount !== 1 ? "s" : ""}.`
-          : `No additional rows changed.`,
-      );
-      return null;
-    });
-  }
-
-  function dismissPatternPrompt() {
-    setPendingPatternPrompt((prompt) => {
-      if (prompt) {
-        track("pattern_prompt_declined", { vendor: prompt.vendor, type: prompt.type });
+      if (isPatternCommit) {
+        setCascadeMessage(
+          cascadeCount > 0
+            ? `Pattern detected — applied "${promotableType}" to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""}.`
+            : `Pattern detected for "${targetVendor}".`,
+        );
+      } else if (!prior) {
+        setCascadeMessage(
+          `Got it — only this row changed. Mark another "${targetVendor}" row the same way to apply to all matching rows.`,
+        );
       }
-      return null;
+
+      return updated;
     });
   }
 
@@ -580,73 +524,6 @@ Or paste a CSV, email, or any text containing transactions.`}
             fontWeight: 500,
           }}>
             ✓ {cascadeMessage}
-          </div>
-        )}
-
-        {/* Pattern-confirmation prompt — shown after a 2nd matching non-refund
-           edit. User must explicitly opt into the cascade. */}
-        {rows.length > 0 && pendingPatternPrompt && (
-          <div style={{
-            marginBottom: "10px",
-            padding: "12px 16px",
-            backgroundColor: "#fffbeb",
-            border: "1px solid #fcd34d",
-            borderRadius: "10px",
-            fontSize: "13px",
-            color: "#78350f",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-            flexWrap: "wrap",
-          }}>
-            <div style={{ flex: "1 1 320px" }}>
-              <div style={{ fontWeight: 700, marginBottom: "2px" }}>
-                Apply this change to similar transactions?
-              </div>
-              <div style={{ color: "#92400e" }}>
-                You changed 2 &ldquo;{pendingPatternPrompt.vendor}&rdquo; transactions to{" "}
-                <strong>{pendingPatternPrompt.type}</strong>. Apply this to the
-                remaining {pendingPatternPrompt.affectedCount} similar transaction
-                {pendingPatternPrompt.affectedCount !== 1 ? "s" : ""}?
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-              <button
-                onClick={acceptPatternPrompt}
-                style={{
-                  padding: "8px 16px",
-                  backgroundColor: "#16A34A",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "8px",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  fontFamily: font,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Apply to all
-              </button>
-              <button
-                onClick={dismissPatternPrompt}
-                style={{
-                  padding: "8px 16px",
-                  backgroundColor: "#fff",
-                  color: "#78350f",
-                  border: "1px solid #fcd34d",
-                  borderRadius: "8px",
-                  fontSize: "13px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: font,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Just these
-              </button>
-            </div>
           </div>
         )}
 
