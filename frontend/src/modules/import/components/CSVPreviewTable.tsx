@@ -25,6 +25,11 @@ interface CSVPreviewTableProps {
     newType: TransactionType,
     newSubType?: TransactionSubType,
   ) => void;
+  /** Hashes the user has clicked "import anyway" on. UI-only — backend reads
+   *  this list directly from useCSVImport state. */
+  forceImportHashes?: string[];
+  /** Toggle the override on a row. Only callable for hard / intra-csv matches. */
+  onToggleForceImport?: (rowIndex: number) => void;
 }
 
 function badgeStyle(opt: TypeOption | TransactionType): React.CSSProperties {
@@ -203,9 +208,157 @@ const COLUMNS: { key: SortCol; label: string; align: "left" | "right" }[] = [
   { key: "type",        label: "Type",        align: "left"  },
 ];
 
-export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVPreviewTableProps) {
+// ─── Duplicate badge ────────────────────────────────────────────────────────
+// Hard / intra-csv → amber by default (will be skipped); turns green when the
+// user clicks (force-import override). Soft → yellow informational, not clickable.
+
+function DuplicateBadge({
+  row,
+  rowIndex,
+  isOverridden,
+  onToggleForceImport,
+}: {
+  row: NormalizedRow;
+  rowIndex: number;
+  isOverridden: boolean;
+  onToggleForceImport?: (rowIndex: number) => void;
+}) {
+  const dup = row.possibleDuplicate;
+  if (!dup) return null;
+
+  const togglable = dup.kind !== "soft" && !!onToggleForceImport;
+
+  let label: string;
+  let bg: string;
+  let color: string;
+  let border: string;
+
+  if (dup.kind === "soft") {
+    label  = "Possible duplicate 🔍";
+    bg     = "#fef9c3"; color = "#854d0e"; border = "#fde68a";
+  } else if (isOverridden) {
+    label  = "Will import ✓";
+    bg     = "#dcfce7"; color = "#166534"; border = "#86efac";
+  } else if (dup.kind === "intra-csv") {
+    label  = "Same row in CSV ⚠";
+    bg     = "#fff7ed"; color = "#9a3412"; border = "#fed7aa";
+  } else {
+    label  = "Already imported ⚠";
+    bg     = "#fff7ed"; color = "#9a3412"; border = "#fed7aa";
+  }
+
+  return (
+    <span
+      onClick={() => togglable && onToggleForceImport?.(rowIndex)}
+      title={`${dup.matchSummary}${togglable ? "  (click to toggle import-anyway override)" : ""}`}
+      style={{
+        display: "inline-block",
+        padding: "1px 7px",
+        borderRadius: "999px",
+        fontSize: "10px",
+        fontWeight: 700,
+        backgroundColor: bg,
+        color,
+        border: `1px solid ${border}`,
+        cursor: togglable ? "pointer" : "default",
+        whiteSpace: "nowrap",
+        userSelect: "none",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+// ─── Clickable summary chip ─────────────────────────────────────────────────
+// Used for the badge counters above and inside the duplicate summary line.
+// Click toggles a preview filter to that subset; click again or click "Clear
+// filter" to return to all rows.
+
+function FilterChip({
+  label,
+  active,
+  baseBg,
+  baseColor,
+  baseBorder,
+  onClick,
+  size = "md",
+}: {
+  label:      string;
+  active:     boolean;
+  baseBg:     string;
+  baseColor:  string;
+  baseBorder: string;
+  onClick:    () => void;
+  size?:      "sm" | "md";
+}) {
+  const fontSize = size === "sm" ? "11px" : "12px";
+  return (
+    <button
+      onClick={onClick}
+      title={active ? "Click again to clear filter" : "Click to filter preview"}
+      style={{
+        fontSize,
+        backgroundColor: active ? baseColor : baseBg,
+        color:           active ? "#fff"     : baseColor,
+        padding: "2px 10px",
+        borderRadius: "999px",
+        fontWeight: 600,
+        border: `1px solid ${active ? baseColor : baseBorder}`,
+        cursor: "pointer",
+        fontFamily: "inherit",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+type FilterMode =
+  | "all"
+  | "corrected"
+  | "transfers"
+  | "refunds"
+  | "already-imported"
+  | "intra-csv-dup"
+  | "possible-dup";
+
+const FILTER_LABEL: Record<Exclude<FilterMode, "all">, string> = {
+  "corrected":         "user-corrected",
+  "transfers":         "transfers",
+  "refunds":           "refunds",
+  "already-imported":  "already imported",
+  "intra-csv-dup":     "duplicates within this CSV",
+  "possible-dup":      "possible duplicates",
+};
+
+function rowMatchesFilter(row: NormalizedRow, mode: FilterMode): boolean {
+  switch (mode) {
+    case "all":              return true;
+    case "corrected":        return !!row.userModified;
+    case "transfers":        return !!row.isTransfer;
+    case "refunds":          return row.type === "refund";
+    case "already-imported": return row.possibleDuplicate?.kind === "exact";
+    case "intra-csv-dup":    return row.possibleDuplicate?.kind === "intra-csv";
+    case "possible-dup":     return row.possibleDuplicate?.kind === "soft";
+  }
+}
+
+export default function CSVPreviewTable({ rows, totalCount, onTypeChange, forceImportHashes, onToggleForceImport }: CSVPreviewTableProps) {
   const [sortCol, setSortCol] = useState<SortCol | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
+
+  // Reset filter when the upstream rows array identity changes (new file / re-parse).
+  // Using rows.length as the cheap signal; if user just re-parses the same CSV
+  // we don't need to clear because the filter is still meaningful.
+  useEffect(() => {
+    if (rows.length === 0) setFilterMode("all");
+  }, [rows.length]);
+
+  const toggleFilter = (mode: Exclude<FilterMode, "all">) => {
+    setFilterMode((prev) => (prev === mode ? "all" : mode));
+  };
 
   function handleSort(col: SortCol) {
     if (sortCol === col) {
@@ -230,10 +383,25 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
     });
   }, [rows, sortCol, sortDir]);
 
-  const preview = sortedIndices.map((i) => ({ row: rows[i], originalIndex: i }));
+  const visibleIndices = sortedIndices.filter((i) => rowMatchesFilter(rows[i], filterMode));
+  const preview = visibleIndices.map((i) => ({ row: rows[i], originalIndex: i }));
   const transferCount = rows.filter((r) => r.isTransfer).length;
   const refundCount   = rows.filter((r) => r.type === "refund").length;
   const modifiedCount = rows.filter((r) => r.userModified).length;
+
+  // ── Duplicate summary counts ───────────────────────────────────────────
+  const overrideSet  = new Set(forceImportHashes ?? []);
+  const dupExact     = rows.filter((r) => r.possibleDuplicate?.kind === "exact").length;
+  const dupIntra     = rows.filter((r) => r.possibleDuplicate?.kind === "intra-csv").length;
+  const dupSoft      = rows.filter((r) => r.possibleDuplicate?.kind === "soft").length;
+  // "Will import" = rows with date+amount minus exact/intra-csv that were NOT overridden.
+  const willImport   = rows.reduce((acc, r) => {
+    if (!r.date || isNaN(r.amount)) return acc;
+    const dup = r.possibleDuplicate;
+    const blockingDup = dup && (dup.kind === "exact" || dup.kind === "intra-csv");
+    if (blockingDup && (!r.dedupeHash || !overrideSet.has(r.dedupeHash))) return acc;
+    return acc + 1;
+  }, 0);
 
   return (
     <div>
@@ -246,27 +414,137 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           {modifiedCount > 0 && (
-            <span style={{ fontSize: "12px", backgroundColor: "#eff6ff", color: "#2563eb", padding: "2px 10px", borderRadius: "999px", fontWeight: 600 }}>
-              {modifiedCount} corrected
-            </span>
+            <FilterChip
+              label={`${modifiedCount} corrected`}
+              active={filterMode === "corrected"}
+              baseBg="#eff6ff" baseColor="#2563eb" baseBorder="#bfdbfe"
+              onClick={() => toggleFilter("corrected")}
+            />
           )}
           {transferCount > 0 && (
-            <span style={{ fontSize: "12px", backgroundColor: "#f3f4f6", color: "#6b7280", padding: "2px 10px", borderRadius: "999px", fontWeight: 600 }}>
-              {transferCount} transfer{transferCount !== 1 ? "s" : ""}
-            </span>
+            <FilterChip
+              label={`${transferCount} transfer${transferCount !== 1 ? "s" : ""}`}
+              active={filterMode === "transfers"}
+              baseBg="#f3f4f6" baseColor="#6b7280" baseBorder="#e5e7eb"
+              onClick={() => toggleFilter("transfers")}
+            />
           )}
           {refundCount > 0 && (
-            <span style={{ fontSize: "12px", backgroundColor: "#eff6ff", color: "#2563eb", padding: "2px 10px", borderRadius: "999px", fontWeight: 600 }}>
-              {refundCount} refund{refundCount !== 1 ? "s" : ""}
-            </span>
+            <FilterChip
+              label={`${refundCount} refund${refundCount !== 1 ? "s" : ""}`}
+              active={filterMode === "refunds"}
+              baseBg="#eff6ff" baseColor="#2563eb" baseBorder="#bfdbfe"
+              onClick={() => toggleFilter("refunds")}
+            />
           )}
           <span style={{ fontSize: "13px", color: "#6b7280" }}>
             {totalCount} row{totalCount !== 1 ? "s" : ""}
           </span>
         </div>
       </div>
+
+      {/* Duplicate summary line — separate chips for "already imported" vs
+         "duplicates within this CSV", each filterable independently. */}
+      {(dupExact + dupIntra + dupSoft > 0) && (
+        <div style={{
+          marginBottom: "10px",
+          padding: "8px 12px",
+          backgroundColor: "#fff7ed",
+          border: "1px solid #fed7aa",
+          borderRadius: "8px",
+          fontSize: "12px",
+          color: "#9a3412",
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "8px",
+        }}>
+          {dupExact > 0 && (
+            <>
+              <FilterChip
+                label={`${dupExact} already imported`}
+                active={filterMode === "already-imported"}
+                baseBg="#fff7ed" baseColor="#9a3412" baseBorder="#fed7aa"
+                onClick={() => toggleFilter("already-imported")}
+                size="sm"
+              />
+              <span style={{ color: "#d4d4d8" }}>·</span>
+            </>
+          )}
+          {dupIntra > 0 && (
+            <>
+              <FilterChip
+                label={`${dupIntra} duplicate${dupIntra !== 1 ? "s" : ""} in this CSV`}
+                active={filterMode === "intra-csv-dup"}
+                baseBg="#fff7ed" baseColor="#9a3412" baseBorder="#fed7aa"
+                onClick={() => toggleFilter("intra-csv-dup")}
+                size="sm"
+              />
+              <span style={{ color: "#d4d4d8" }}>·</span>
+            </>
+          )}
+          {dupSoft > 0 && (
+            <>
+              <FilterChip
+                label={`${dupSoft} possible duplicate${dupSoft !== 1 ? "s" : ""}`}
+                active={filterMode === "possible-dup"}
+                baseBg="#fef9c3" baseColor="#854d0e" baseBorder="#fde68a"
+                onClick={() => toggleFilter("possible-dup")}
+                size="sm"
+              />
+              <span style={{ color: "#d4d4d8" }}>·</span>
+            </>
+          )}
+          <span style={{ color: "#166534", fontWeight: 600 }}>
+            {willImport} will import
+          </span>
+          {(dupExact + dupIntra > 0) && onToggleForceImport && (
+            <span style={{ color: "#9a3412", marginLeft: "4px" }}>
+              — click any <strong>Duplicate</strong> badge to override and import anyway.
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Clear-filter strip — only when a filter is active. */}
+      {filterMode !== "all" && (
+        <div style={{
+          marginBottom: "8px",
+          padding: "6px 12px",
+          backgroundColor: "#eff6ff",
+          border: "1px solid #bfdbfe",
+          borderRadius: "8px",
+          fontSize: "12px",
+          color: "#1d4ed8",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "8px",
+        }}>
+          <span>
+            Showing <strong>{preview.length}</strong> of {totalCount} rows · filtering by <strong>{FILTER_LABEL[filterMode]}</strong>
+          </span>
+          <button
+            onClick={() => setFilterMode("all")}
+            style={{
+              fontSize: "11px",
+              padding: "3px 10px",
+              backgroundColor: "#fff",
+              color: "#1d4ed8",
+              border: "1px solid #bfdbfe",
+              borderRadius: "999px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+            title="Clear filter and show all rows"
+          >
+            ✕ Clear filter
+          </button>
+        </div>
+      )}
 
       <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "480px", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
@@ -323,13 +601,24 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange }: CSVP
                   style={{
                     padding: "10px 14px",
                     color: row.isTransfer ? "#9ca3af" : "#111827",
-                    maxWidth: "220px",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    maxWidth: "420px",
                   }}
                 >
-                  {row.description}
+                  {/* Badge stacks ABOVE the description so a long description
+                     never clips it and we don't need to truncate. */}
+                  {row.possibleDuplicate && (
+                    <div style={{ marginBottom: "3px" }}>
+                      <DuplicateBadge
+                        row={row}
+                        rowIndex={originalIndex}
+                        isOverridden={!!row.dedupeHash && (forceImportHashes ?? []).includes(row.dedupeHash)}
+                        onToggleForceImport={onToggleForceImport}
+                      />
+                    </div>
+                  )}
+                  <div style={{ wordBreak: "break-word" }}>
+                    {row.description}
+                  </div>
                 </td>
                 <td
                   style={{

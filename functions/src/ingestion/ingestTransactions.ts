@@ -27,7 +27,17 @@ interface IngestRequest {
   accountId:   string;
   transactions: Array<RawCsvInput | RawAiInput | RawPlaidInput>;
   importLabel?: string;
+  /**
+   * Frontend "import anyway" overrides for rows the dedup engine flagged as
+   * exact (or intra-CSV) duplicates. Each entry is the canonical dedupeHash
+   * the user wants persisted alongside any existing matching row. Backend
+   * gives those rows a unique doc id suffix and tags them with
+   * `originalHash` + `isForceImport: true` for lineage.
+   */
+  forceImportHashes?: string[];
 }
+
+const DEDUPE_HASH_IN_LIMIT = 30;   // Firestore "in" operator caps at 30.
 
 /**
  * Core ingestion logic — Plaid sync, CSV import, and AI parser all funnel
@@ -103,9 +113,37 @@ export async function ingestTransactionsCore(
   });
   report.importId = importRef.id;
 
+  // 6b. Hash-based dedup pre-flight (CSV / AI only; Plaid keeps its existing
+  //     deterministic-doc-id idempotency). Query for any existing transaction
+  //     in this account whose dedupeHash matches a row in this batch. The
+  //     write loop below uses this set to decide skip vs write — single
+  //     source of truth on dedupeHash, doc-id collisions are no longer the
+  //     deciding factor (and force-imported rows have unique doc ids anyway).
+  const forceSet = new Set(req.forceImportHashes ?? []);
+  const existingHashes = req.source === "plaid"
+    ? new Set<string>()    // Plaid skips this — its uniqueness is via plaid_transaction_id
+    : await fetchExistingDedupeHashes(
+        db,
+        uid,
+        req.accountId,
+        filtered.map((n) => n.dedupeHash),
+      );
+  // Track hashes we've persisted in THIS batch so a CSV with intra-file dupes
+  // skips the second occurrence (unless that occurrence is force-imported).
+  const writtenInBatch = new Set<string>();
+
   // 7. Save each transaction with atomic create()
   for (const n of filtered) {
-    const docId = buildDocId(n);
+    const isForceImport = forceSet.has(n.dedupeHash);
+
+    // Hash-based dedup decision. Force-imported rows bypass; everything else
+    // skips when the hash already exists in Firestore or earlier in this batch.
+    if (!isForceImport && (existingHashes.has(n.dedupeHash) || writtenInBatch.has(n.dedupeHash))) {
+      report.skipped++;
+      continue;
+    }
+
+    const docId = buildDocId(n, { forceImport: isForceImport });
     const lookupKey = n.plaidTransactionId ?? n.dedupeHash;
     const proc = processed.get(lookupKey);
     if (!proc) {
@@ -158,10 +196,15 @@ export async function ingestTransactionsCore(
     if (n.needsManualReview)        txnData.manualReviewReason = "ai-transfer-direction-missing";
     if (n.aiConfidence)             txnData.aiConfidence     = n.aiConfidence;
     if (n.aiReasoning)              txnData.aiReasoning      = n.aiReasoning;
+    if (isForceImport) {
+      txnData.originalHash  = n.dedupeHash;
+      txnData.isForceImport = true;
+    }
 
     try {
       await db.collection("transactions").doc(docId).create(txnData);
       report.imported++;
+      writtenInBatch.add(n.dedupeHash);
 
       // Categorize newly-imported docs (rules + AI fallback). Skipped for
       // transfer/refund types — those don't go through expense categorization.
@@ -199,6 +242,53 @@ export async function ingestTransactionsCore(
 
   console.log(`[INGEST] uid=${uid} source=${req.source} acct=${req.accountId} ${JSON.stringify(report)}`);
   return report;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Query Firestore for the subset of `hashes` that already exist as the
+ * `dedupeHash` field on a transaction in (uid, accountId). Chunked by 30 to
+ * respect the Firestore "in" operator limit. Empty / missing hashes are
+ * filtered out (a row with no description+amount has no canonical key and
+ * will be handled at write time, not here).
+ *
+ * Requires composite index: transactions(uid ASC, accountId ASC, dedupeHash ASC).
+ */
+async function fetchExistingDedupeHashes(
+  db:        admin.firestore.Firestore,
+  uid:       string,
+  accountId: string,
+  hashes:    string[],
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  const unique = [...new Set(hashes.filter((h) => h && h.length > 0))];
+  if (unique.length === 0) return result;
+
+  for (let i = 0; i < unique.length; i += DEDUPE_HASH_IN_LIMIT) {
+    const chunk = unique.slice(i, i + DEDUPE_HASH_IN_LIMIT);
+    try {
+      const snap = await db
+        .collection("transactions")
+        .where("uid",        "==", uid)
+        .where("accountId",  "==", accountId)
+        .where("dedupeHash", "in", chunk)
+        .get();
+      snap.docs.forEach((d) => {
+        const h = d.data().dedupeHash as string | undefined;
+        if (h) result.add(h);
+      });
+    } catch (e) {
+      // Index missing or transient query failure — log and continue with
+      // whatever we've matched so far. Backend create() collision still
+      // protects us as defense-in-depth for any rows we'd've matched here.
+      console.warn(
+        `[fetchExistingDedupeHashes] chunk ${i}-${i + chunk.length} failed:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+  return result;
 }
 
 // ─── HTTPS callable wrapper ──────────────────────────────────────────────────

@@ -112,9 +112,9 @@ export default function ImportCSVPage() {
   const navigate = useNavigate();
   const { user, effectiveOwnerUid } = useAuth();
   const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
-  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage } = useCSVImport();
+  const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage, detection, engineWarnings, engineErrors } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage, detection, engineWarnings, engineErrors, forceImportHashes } = state;
 
   // Auto-dismiss cascade banner after 4s
   useEffect(() => {
@@ -276,6 +276,26 @@ export default function ImportCSVPage() {
   useEffect(() => {
     if (importResult) setHistoryRefreshKey((k) => k + 1);
   }, [importResult]);
+
+  // ── Diagnostic helpers ───────────────────────────────────────────────────
+  // Phase-1 instrumentation. Lets the user dump their typeRules collection
+  // to console with one click, and confirms the bundle fingerprint at the
+  // bottom of the page so we can disprove a stale-service-worker hypothesis.
+  async function dumpTypeRules() {
+    if (!ownerUid) {
+      console.log("[dumpTypeRules] no ownerUid yet");
+      return;
+    }
+    try {
+      const snap = await getDocs(query(collection(db, "typeRules"), where("uid", "==", ownerUid)));
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      console.log(`[dumpTypeRules] uid=${ownerUid} count=${rows.length}`);
+      if (rows.length === 0) console.log("(no typeRules saved for this user)");
+      else console.table(rows);
+    } catch (e) {
+      console.error("[dumpTypeRules] failed:", e);
+    }
+  }
 
   const hasParsed = rows.length > 0;
 
@@ -591,7 +611,13 @@ export default function ImportCSVPage() {
                     ✓ {cascadeMessage}
                   </div>
                 )}
-                <CSVPreviewTable rows={rows} totalCount={rows.length} onTypeChange={updateRowType} />
+                <CSVPreviewTable
+                  rows={rows}
+                  totalCount={rows.length}
+                  onTypeChange={updateRowType}
+                  forceImportHashes={forceImportHashes}
+                  onToggleForceImport={toggleForceImport}
+                />
 
                 {/* Sign convention is auto-detected once per account and persisted.
                    The user only sees this row to (a) confirm what was detected and
@@ -844,6 +870,41 @@ export default function ImportCSVPage() {
             })}
           </div>
         )}
+
+        {/* ── Phase-1 diagnostics ────────────────────────────────────────── */}
+        <div style={{
+          marginTop: "32px",
+          paddingTop: "16px",
+          borderTop: "1px solid #f3f4f6",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          fontSize: "11px",
+          color: "#9ca3af",
+          fontFamily: font,
+        }}>
+          <button
+            onClick={dumpTypeRules}
+            style={{
+              padding: "4px 10px",
+              backgroundColor: "#f9fafb",
+              color: "#6b7280",
+              border: "1px solid #e5e7eb",
+              borderRadius: "6px",
+              fontSize: "11px",
+              fontWeight: 500,
+              cursor: "pointer",
+              fontFamily: font,
+            }}
+            title="Console-dumps your saved typeRules for diagnostic purposes."
+          >
+            Dump typeRules → console
+          </button>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>
+            Build · {__BUILD_TIME__} · {__BUILD_SHA__}
+          </span>
+        </div>
       </div>
     </div>
   );

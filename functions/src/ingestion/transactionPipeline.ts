@@ -303,19 +303,40 @@ export function processBatch(
   return out;
 }
 
-// ─── Step 3: build deterministic Firestore doc id ───────────────────────────
+// ─── Step 3: build Firestore doc id ─────────────────────────────────────────
+
+import { nanoid } from "nanoid";
+
+export interface BuildDocIdOptions {
+  /**
+   * When true, append a unique suffix so the doc id does NOT collide with
+   * any prior write of the same canonical hash. Used for user-initiated
+   * "import anyway" overrides on rows the dedup engine flagged as duplicates.
+   * The dedupeHash field on the saved doc remains the canonical hash, so
+   * future dedup queries (which key on the field, not the doc id) still see
+   * this row as a member of the duplicate group.
+   */
+  forceImport?: boolean;
+}
 
 /**
- * Build a deterministic doc id. Plaid keeps its existing
- * `plaid_<transaction_id>` scheme to preserve idempotency with already-imported
- * docs. CSV and AI use the dedupe hash so the same content from the same
- * account never produces two docs no matter how many times you re-import.
+ * Build a Firestore doc id for a normalized transaction.
+ *
+ * Default (deterministic) — Plaid uses `plaid_<plaid_transaction_id>` for
+ * idempotency with the Plaid API; CSV / AI use `<source>_<dedupeHash>` so the
+ * same content from the same account never produces two docs.
+ *
+ * Force-import — `<source>_<dedupeHash>_<ts>_<nanoid(4)>`. Caller has decided
+ * the row should be persisted alongside (not replace) any existing matching
+ * row. Pair with `originalHash`/`isForceImport` lineage on the saved doc.
  */
-export function buildDocId(n: NormalizedTransaction): string {
+export function buildDocId(n: NormalizedTransaction, opts?: BuildDocIdOptions): string {
   if (n.source === "plaid" && n.plaidTransactionId) {
     return `plaid_${n.plaidTransactionId}`;
   }
-  // Sanitize: Firestore doc ids can't contain / and shouldn't be too long.
-  const safe = n.dedupeHash.replace(/[\/\|]/g, "_").slice(0, 250);
+  const safe = n.dedupeHash.replace(/[\/\|]/g, "_").slice(0, 220);
+  if (opts?.forceImport) {
+    return `${n.source}_${safe}_${Date.now()}_${nanoid(4)}`;
+  }
   return `${n.source}_${safe}`;
 }
