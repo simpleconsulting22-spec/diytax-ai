@@ -1,5 +1,4 @@
 import { useState, useRef } from "react";
-import Papa from "papaparse";
 import {
   collection,
   query,
@@ -17,6 +16,12 @@ import {
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
 import { apiClient } from "../../../services/apiClient";
+import {
+  ingestCsvFile,
+  summarizeResult,
+  type DetectionResult,
+  type RowError,
+} from "../csvEngine";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -164,16 +169,6 @@ function deriveType(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// Find the first header whose lowercase form contains any candidate substring
-function findColumn(headers: string[], candidates: string[]): string | undefined {
-  const lower = headers.map((h) => h.toLowerCase().trim());
-  for (const candidate of candidates) {
-    const idx = lower.findIndex((h) => h.includes(candidate));
-    if (idx !== -1) return headers[idx];
-  }
-  return undefined;
-}
-
 // Collapse whitespace, lowercase — used in importKey and stored on the doc
 export function normalize(desc: string): string {
   return desc.trim().toLowerCase().replace(/\s+/g, " ");
@@ -228,51 +223,8 @@ export function extractVendor(normalizedDescription: string): string {
   return words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
 }
 
-// Normalise a date string to YYYY-MM-DD; returns empty string when unrecognised
-function parseDate(raw: string): string {
-  const s = raw.trim();
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (mdy) {
-    const [, m, d, y] = mdy;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const mdyShort = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-  if (mdyShort) {
-    const [, m, d, y] = mdyShort;
-    const fullYear = parseInt(y) > 50 ? `19${y}` : `20${y}`;
-    return `${fullYear}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const mdyDash = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (mdyDash) {
-    const [, m, d, y] = mdyDash;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-
-  return "";
-}
-
-// Parse an amount string to a number.
-// Returns NaN for empty or unparseable input (not coerced to 0)
-// so validation in writeTransactions can detect missing/invalid amounts.
-function parseAmount(raw: string): number {
-  let s = raw.trim();
-  if (!s) return NaN;
-
-  // (123.45) → -123.45
-  const parens = s.match(/^\(([^)]+)\)$/);
-  if (parens) s = `-${parens[1]}`;
-
-  s = s.replace(/[$,\s]/g, "");
-  return parseFloat(s);
-}
+// Date and amount parsing live in the csvEngine module — see
+// frontend/src/modules/import/csvEngine/parsing.ts. Re-export not needed here.
 
 // ─── Sign-issue detection ─────────────────────────────────────────────────────
 
@@ -349,94 +301,61 @@ async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<No
  * @param accountType Controls type derivation logic. "credit_card" uses payment
  *                    pattern detection; "bank" uses amount sign. Default: "bank".
  */
-export function parseCSVFile(
-  file: File,
-  options?: { flipSign?: boolean; accountType?: "bank" | "credit_card" }
-): Promise<NormalizedRow[]> {
-  const flipSign = options?.flipSign ?? false;
+export interface ParseCsvOutput {
+  rows:      NormalizedRow[];
+  detection: DetectionResult;
+  errors:    RowError[];
+  warnings:  string[];
+}
+
+/**
+ * Parse a CSV file via the modular csvEngine and adapt its output to the
+ * NormalizedRow shape the rest of this hook expects.
+ *
+ * The engine emits canonical (positive=inflow) signed amounts based on file
+ * format; this wrapper applies the per-account flipSign override (Amex /
+ * Capital One credit-card style) AFTER the engine has parsed, then re-runs
+ * deriveType so the existing preview heuristics (credit-card-payment,
+ * loan-payment, refund keywords) still tag rows for the UI.
+ */
+export async function parseCSVFile(
+  file:    File,
+  options?: { flipSign?: boolean; accountType?: "bank" | "credit_card" },
+): Promise<ParseCsvOutput> {
+  const flipSign    = options?.flipSign    ?? false;
   const accountType = options?.accountType ?? "bank";
 
-  return new Promise((resolve, reject) => {
-    Papa.parse<Record<string, string>>(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const headers = results.meta.fields ?? [];
+  const engine = await ingestCsvFile(file);
 
-        const dateCol = findColumn(headers, ["date", "posted", "posting", "transaction date"]);
-        const descCol = findColumn(headers, ["description", "memo", "name", "payee", "desc", "narrative"]);
-        const acctCol = findColumn(headers, ["account", "account name", "account number"]);
+  const accountHeader = engine.detection.resolvedHeaders.account;
 
-        // ── Column layout detection ────────────────────────────────────────
-        // Prefer a single Amount column. Fall back to separate Debit/Credit
-        // columns only when there is no Amount column at all.
-        const singleAmtCol = findColumn(headers, ["amount", "transaction amount"]);
-        const debitCol  = findColumn(headers, ["debit"]);
-        const creditCol = findColumn(headers, ["credit"]);
+  const rows: NormalizedRow[] = engine.rows.map((r) => {
+    // Apply per-account sign-inversion override (e.g. Amex CSVs encode
+    // charges as positive in the source). The engine itself stays
+    // file-format-aware; account-aware sign correction lives here.
+    const amount = flipSign ? -r.amount : r.amount;
 
-        // "Split" layout: separate Debit + Credit columns, no Amount column
-        const hasSplitColumns =
-          !singleAmtCol && !!debitCol && !!creditCol && debitCol !== creditCol;
+    const { type, subType, isTransfer } = deriveType(r.description, amount, accountType);
 
-        const amtCol = singleAmtCol ?? (!hasSplitColumns ? (debitCol ?? creditCol) : undefined);
-
-        if (!dateCol || !descCol || (!amtCol && !hasSplitColumns)) {
-          reject(
-            new Error(
-              `Could not detect required columns. Found: ${headers.join(", ")}. ` +
-              `Need columns for Date, Description, and Amount (or separate Debit/Credit).`
-            )
-          );
-          return;
-        }
-
-        const rows: NormalizedRow[] = results.data
-          .map((row) => {
-            // ── Amount resolution ──────────────────────────────────────────
-            let amount: number;
-
-            if (hasSplitColumns) {
-              // Split Debit/Credit layout: both columns are positive values.
-              // Debit = money out (expense) → store as negative.
-              // Credit = money in (income) → store as positive.
-              const debitVal  = parseAmount(row[debitCol!]  ?? "");
-              const creditVal = parseAmount(row[creditCol!] ?? "");
-
-              if (!isNaN(debitVal) && debitVal > 0) {
-                amount = flipSign ? debitVal : -debitVal;
-              } else if (!isNaN(creditVal) && creditVal > 0) {
-                amount = flipSign ? -creditVal : creditVal;
-              } else {
-                amount = NaN;
-              }
-            } else {
-              // Single Amount column (positive or negative)
-              const raw = parseAmount(row[amtCol!] ?? "");
-              amount = flipSign ? -raw : raw;
-            }
-
-            const description = (row[descCol] ?? "").trim();
-            const { type, subType, isTransfer } = deriveType(description, amount, accountType);
-
-            return {
-              date: parseDate(row[dateCol] ?? ""),
-              description,
-              amount,
-              type,
-              subType,
-              isTransfer,
-              accountIdentifier: acctCol ? (row[acctCol] ?? "").trim() || null : null,
-              accountType,
-              rawData: row,
-            };
-          })
-          .filter((r) => r.description.length > 0 || !isNaN(r.amount));
-
-        resolve(rows);
-      },
-      error: (err) => reject(new Error(err.message)),
-    });
+    return {
+      date:              r.date,
+      description:       r.description,
+      amount,
+      type,
+      subType,
+      isTransfer,
+      accountIdentifier: accountHeader ? (r.rawRow[accountHeader] ?? "").trim() || null : null,
+      accountType,
+      rawData:           r.rawRow,
+    };
   });
+
+  return {
+    rows,
+    detection: engine.detection,
+    errors:    engine.errors,
+    warnings:  summarizeResult(engine),
+  };
 }
 
 const DEDUP_CHUNK_SIZE = 30;
@@ -527,6 +446,9 @@ interface ImportState {
   cascadeMessage: string;
   signConventionMessage: string;   // "Auto-detected positive=charge for this account…"
   signConventionLocked: boolean;   // true once amountSignInverted is persisted on the account
+  detection: DetectionResult | null;
+  engineWarnings: string[];
+  engineErrors: RowError[];
 }
 
 export function useCSVImport() {
@@ -547,6 +469,9 @@ export function useCSVImport() {
     cascadeMessage: "",
     signConventionMessage: "",
     signConventionLocked: false,
+    detection: null,
+    engineWarnings: [],
+    engineErrors: [],
   });
 
   // Look up the persisted sign convention on the account doc (set by either
@@ -606,7 +531,8 @@ export function useCSVImport() {
         ? await loadAccountSignConvention(accountId)
         : { flipSign: false, locked: false };
 
-      let rows = await parseCSVFile(file, { flipSign: storedFlip, accountType: state.accountType });
+      let parsed = await parseCSVFile(file, { flipSign: storedFlip, accountType: state.accountType });
+      let rows   = parsed.rows;
       if (user) rows = await applyTypeRules(ownerUid, rows);
 
       // 2. If the account has no stored convention yet, auto-detect from this file
@@ -616,10 +542,11 @@ export function useCSVImport() {
         const seemsInverted = detectSignIssue(rows);
         if (seemsInverted !== storedFlip) {
           resolvedFlip = seemsInverted;
-          rows = await parseCSVFile(file, {
+          parsed = await parseCSVFile(file, {
             flipSign: resolvedFlip,
             accountType: state.accountType,
           });
+          rows = parsed.rows;
           if (user) rows = await applyTypeRules(ownerUid, rows);
         }
         // 3. Persist whatever we landed on so we don't have to redo this
@@ -638,6 +565,9 @@ export function useCSVImport() {
         signWarning: false,
         signConventionMessage: conventionMessage,
         signConventionLocked: true,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
       }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -654,10 +584,11 @@ export function useCSVImport() {
     const nextFlip = !state.flipSign;
     setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
     try {
-      let rows = await parseCSVFile(lastFileRef.current, {
+      const parsed = await parseCSVFile(lastFileRef.current, {
         flipSign: nextFlip,
         accountType: state.accountType,
       });
+      let rows = parsed.rows;
       if (user) rows = await applyTypeRules(ownerUid, rows);
       if (accountId) {
         await persistAccountSignConvention(accountId, nextFlip, "csv-manual");
@@ -665,6 +596,9 @@ export function useCSVImport() {
       setState((prev) => ({
         ...prev,
         rows,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
         signConventionMessage: nextFlip
           ? "Flipped: charges are now read as expenses. Saved for this account."
           : "Reverted: amounts read at face value. Saved for this account.",
@@ -681,13 +615,21 @@ export function useCSVImport() {
     setState((prev) => ({ ...prev, accountType, rows: [], signWarning: false }));
     if (!lastFileRef.current) return;
     try {
-      let rows = await parseCSVFile(lastFileRef.current, {
+      const parsed = await parseCSVFile(lastFileRef.current, {
         flipSign: state.flipSign,
         accountType,
       });
+      let rows = parsed.rows;
       if (user) rows = await applyTypeRules(ownerUid, rows);
       const signWarning = accountType === "bank" && detectSignIssue(rows);
-      setState((prev) => ({ ...prev, rows, signWarning }));
+      setState((prev) => ({
+        ...prev,
+        rows,
+        signWarning,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -804,6 +746,9 @@ export function useCSVImport() {
       cascadeMessage: "",
       signConventionMessage: "",
       signConventionLocked: false,
+      detection: null,
+      engineWarnings: [],
+      engineErrors: [],
     });
   }
 

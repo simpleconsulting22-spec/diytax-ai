@@ -18,13 +18,12 @@ const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 // ─── Template download ────────────────────────────────────────────────────────
 
+// Minimal template — matches the spec example. Engine detects it as
+// "template" mode: Date / Description / Amount, no Type column.
 const TEMPLATE_ROWS = [
-  ["Date", "Description", "Amount", "Account"],
-  ["2025-01-15", "Grocery Store", "-45.23", "Checking"],
-  ["2025-01-16", "Direct Deposit Payroll", "2500.00", "Checking"],
-  ["2025-01-17", "Electric Company", "-89.50", "Checking"],
-  ["2025-01-20", "Office Supplies", "-32.00", "Business Checking"],
-  ["2025-01-22", "Client Payment", "1200.00", "Business Checking"],
+  ["Date", "Description", "Amount"],
+  ["2026-01-16", "Zelle sent", "-120.00"],
+  ["2026-01-16", "Salary", "2500.00"],
 ];
 
 function downloadTemplate() {
@@ -115,7 +114,7 @@ export default function ImportCSVPage() {
   const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage } = useCSVImport();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage } = state;
+  const { fileName, parseError, rows, importing, importError, importResult, flipSign, accountType, cascadeMessage, signConventionMessage, detection, engineWarnings, engineErrors } = state;
 
   // Auto-dismiss cascade banner after 4s
   useEffect(() => {
@@ -291,7 +290,7 @@ export default function ImportCSVPage() {
           <div>
             <h1 style={{ fontSize: "24px", fontWeight: 700, color: "#111827", margin: 0 }}>Import CSV</h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
-              Upload a bank or credit card export — you can import multiple files
+              Upload your bank CSV — we’ll detect the format automatically. Prefer a clean format? Use our template.
             </p>
           </div>
           <button
@@ -518,6 +517,64 @@ export default function ImportCSVPage() {
             </div>
 
             {/* Preview + import */}
+            {/* csvEngine detection badge — shown as soon as a file parses, regardless
+               of whether any rows survived validation. Helps the user spot a
+               misdetected format before scanning the preview. */}
+            {detection && (
+              <div style={{
+                marginTop: "16px",
+                marginBottom: "12px",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                flexWrap: "wrap",
+              }}>
+                <span style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  fontFamily: font,
+                  backgroundColor:
+                    detection.mode === "unknown" ? "#fef2f2" :
+                    detection.mode === "template" ? "#eff6ff" : "#f0fdf4",
+                  color:
+                    detection.mode === "unknown" ? "#dc2626" :
+                    detection.mode === "template" ? "#1d4ed8" : "#166534",
+                  border:
+                    "1px solid " + (detection.mode === "unknown" ? "#fecaca"
+                      : detection.mode === "template" ? "#bfdbfe" : "#bbf7d0"),
+                }}>
+                  {detection.mode === "unknown" ? "⚠" : "✓"} {detection.badge}
+                </span>
+                {engineErrors.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "#92400e", fontWeight: 500 }}>
+                    {engineErrors.length} row{engineErrors.length !== 1 ? "s" : ""} skipped due to parse errors
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Engine warnings — soft messages (e.g. "All amounts positive — direction inferred") */}
+            {engineWarnings.length > 0 && (
+              <div style={{
+                marginBottom: "12px",
+                padding: "10px 14px",
+                backgroundColor: "#fff7ed",
+                border: "1px solid #fed7aa",
+                borderRadius: "8px",
+                fontSize: "12px",
+                color: "#92400e",
+              }}>
+                {engineWarnings.map((w, i) => (
+                  <div key={i} style={{ marginTop: i > 0 ? "4px" : 0 }}>⚠ {w}</div>
+                ))}
+              </div>
+            )}
+
             {hasParsed && (
               <>
                 {cascadeMessage && (
