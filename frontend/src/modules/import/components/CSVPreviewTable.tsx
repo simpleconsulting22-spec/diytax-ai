@@ -593,7 +593,6 @@ export default function CSVPreviewTable({ rows, totalCount, onTypeChange, forceI
                     : row.isTransfer
                     ? "#fafafa"
                     : "transparent",
-                  opacity: row.isTransfer && !row.userModified ? 0.7 : 1,
                 }}
               >
                 <td style={{ padding: "10px 14px", color: "#6b7280", whiteSpace: "nowrap" }}>{row.date}</td>
