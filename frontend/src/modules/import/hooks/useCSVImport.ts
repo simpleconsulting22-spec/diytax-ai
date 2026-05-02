@@ -176,13 +176,51 @@ export function normalize(desc: string): string {
 
 // ─── Vendor extraction ────────────────────────────────────────────────────────
 
-// Common payment-processor prefixes to strip before extracting vendor name
+// Common payment-processor prefixes to strip before extracting vendor name.
+//
+// The strip loop iterates this list in order, applies the first pattern that
+// matches, then restarts. MORE-SPECIFIC PATTERNS MUST COME FIRST — e.g.
+// "Zelle Sent to <name>" must be caught before the bare "Zelle <name>"
+// fallback, otherwise the wider pattern would strip too little and leave
+// "sent" as the apparent vendor.
+//
+// The P2P groups (Zelle / Venmo / Cash App / PayPal direct sends) intentionally
+// peel both the brand AND the verb (Sent / Payment / Received / Deposit /
+// Cashout) AND any to/from connector, so the recipient/sender NAME becomes
+// the vendor key. That's what the pattern-learning cascade keys off of —
+// without this, "Zelle Sent to Gregory" and "Zelle Sent to Pearl" both
+// collapse to vendor="zelle" and a single correction would falsely cascade
+// across unrelated recipients.
 const VENDOR_LEADING_NOISE = [
   /^sq\s*\*\s*/i, /^tst\s*\*\s*/i, /^pp\s*\*\s*/i, /^paypal\s*\*\s*/i,
   /^amzn\s+mktp(\s+us)?\s*/i, /^amazon\.com\/bill\s*/i,
   /^ach\s+(credit|debit)?\s*/i, /^pos\s*#?\s*\d*\s*/i,
   /^debit\s+card\s+/i, /^purchase\s+at\s+/i, /^payment\s+to\s+/i,
-  /^autopay\s+/i, /^zelle\s+(to|from)\s+/i, /^venmo\s+/i,
+  /^autopay\s+/i,
+
+  // ── P2P platforms ── most-specific first
+  // Zelle
+  /^zelle\s+(?:sent|payment|received|deposit|cashout)\s+(?:to|from)\s+/i,
+  /^zelle\s+(?:to|from)\s+/i,
+  /^zelle\s+(?:sent|payment|received|deposit|cashout)\s+/i,
+  /^zelle\s+/i,
+  // Venmo
+  /^venmo\s+(?:sent|payment|received|cashout|charge)\s+(?:to|from)\s+/i,
+  /^venmo\s+(?:to|from)\s+/i,
+  /^venmo\s+(?:sent|payment|received|cashout|charge)\s+/i,
+  /^venmo\s+/i,
+  // Cash App (handles "Cash App", "CashApp", "Cash app")
+  /^cash\s*app\s+(?:sent|payment|received|cashout)\s+(?:to|from)\s+/i,
+  /^cash\s*app\s+(?:to|from)\s+/i,
+  /^cash\s*app\s+(?:sent|payment|received|cashout)\s+/i,
+  /^cash\s*app\s+/i,
+  // PayPal direct sends. The "/^paypal\s*\*\s*/i" pattern above already
+  // handles the "PayPal*Merchant" form for merchants billing through PayPal.
+  /^paypal\s+(?:instant\s+transfer|sent|payment|received|transfer)\s+(?:to|from)\s+/i,
+  /^paypal\s+(?:to|from)\s+/i,
+  /^paypal\s+(?:instant\s+transfer|sent|payment|received|transfer)\s+/i,
+  /^paypal\s+/i,
+
   /^recurring\s+/i, /^online\s+(payment|purchase)\s*/i,
   /^\d{4,}\s+/,
 ];
