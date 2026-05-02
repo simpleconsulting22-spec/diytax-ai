@@ -27,6 +27,7 @@ import {
   computeRowDedupeHash,
   type MatchInfo,
 } from "../csvEngine/findDuplicates";
+import { track } from "../../../lib/telemetry";
 
 // Diagnostic logging — opt-in via ?debug=1 query param so the noisy
 // applyTypeRules / updateRowType / dumpTypeRules logs only appear when the
@@ -573,7 +574,16 @@ interface ImportState {
   engineErrors: RowError[];
   /** Hashes the user clicked to "import anyway" — bypasses backend dedup skip. */
   forceImportHashes: string[];
+  /** Shown after a 2nd matching correction on a non-refund type — user must
+   *  explicitly confirm "Apply to all" or "Just these" before any cascade. */
+  pendingPatternPrompt: PendingPatternPrompt;
 }
+
+export type PendingPatternPrompt = {
+  vendor:        string;
+  type:          "expense" | "income" | "transfer";
+  affectedCount: number;
+} | null;
 
 export function useCSVImport() {
   const { user, effectiveOwnerUid } = useAuth();
@@ -597,6 +607,7 @@ export function useCSVImport() {
     engineWarnings: [],
     engineErrors: [],
     forceImportHashes: [],
+    pendingPatternPrompt: null,
   });
 
   // Per-vendor correction history for pattern-based learning. First correction
@@ -717,6 +728,7 @@ export function useCSVImport() {
         engineWarnings: parsed.warnings,
         engineErrors:   parsed.errors,
         forceImportHashes: [],   // fresh parse → discard prior overrides
+        pendingPatternPrompt: null,
       }));
     } catch (e: unknown) {
       setState((prev) => ({
@@ -765,6 +777,7 @@ export function useCSVImport() {
         engineWarnings: parsed.warnings,
         engineErrors:   parsed.errors,
         forceImportHashes: [],   // overrides invalidated by re-parse
+        pendingPatternPrompt: null,
         signConventionMessage: nextFlip
           ? "Flipped: charges are now read as expenses. Saved for this account."
           : "Reverted: amounts read at face value. Saved for this account.",
@@ -804,6 +817,19 @@ export function useCSVImport() {
     }
   }
 
+  /**
+   * Apply a type change to one preview row.
+   *
+   * Refunds are special — they're transaction-level by nature (this charge
+   * was refunded, but the next one wasn't), so they NEVER cascade, never
+   * count toward pattern detection, and never write a typeRule. The user
+   * gets a one-line note explaining this on the first refund edit.
+   *
+   * For every other type, the 2-vote pattern detector still runs but does
+   * NOT cascade silently. On the second matching correction, a confirmation
+   * banner appears with "Apply to all" / "Just these" buttons. The cascade +
+   * rule write only happen if the user clicks Apply to all.
+   */
   async function updateRowType(
     index: number,
     newType: TransactionType,
@@ -812,118 +838,184 @@ export function useCSVImport() {
     const row = state.rows[index];
     if (!row || !user) return;
 
+    track("type_selected", { type: newType, subType: newSubType ?? null });
+
+    // ── Refunds: ALWAYS single-row, never learn ────────────────────────
+    if (newType === "refund") {
+      setState((prev) => ({
+        ...prev,
+        rows: prev.rows.map((r, i) =>
+          i === index
+            ? { ...r, type: "refund", subType: undefined, isTransfer: false, userModified: true }
+            : r,
+        ),
+        cascadeMessage:
+          "Refunds are applied per transaction and won't be applied to other transactions.",
+        // Editing a row to refund clears any pending non-refund prompt.
+        pendingPatternPrompt: null,
+      }));
+      // Refund does NOT advance the correction history — keep it pristine
+      // so subsequent expense/income/transfer edits aren't confused by a
+      // refund "vote" that doesn't apply to them.
+      return;
+    }
+
     const targetVendor = extractVendor(normalize(row.description));
 
-    // ── Pattern-based learning ──────────────────────────────────────────
-    // First correction of a vendor → only the clicked row changes. Second
-    // matching correction (same vendor → same type+subType) confirms the
-    // user's intent: cascade to every other matching row + persist the rule
-    // for future imports. A conflicting second correction (same vendor,
-    // different type) resets history so no false cascade fires.
+    // ── 2-vote detection (refund branch already returned above) ────────
     const prior = correctionHistoryRef.current.get(targetVendor);
     const sameAsPrior =
       !!prior && prior.type === newType && prior.subType === newSubType;
-    const isPatternCommit = !!prior && sameAsPrior && !prior.indices.has(index);
+    const isSecondMatch = !!prior && sameAsPrior && !prior.indices.has(index);
 
     if (DEBUG_LOGS) {
       console.log("[updateRowType]", {
-        index,
-        description: row.description,
-        targetVendor,
-        newType,
-        newSubType,
-        prior: prior
-          ? { type: prior.type, subType: prior.subType, indices: [...prior.indices] }
-          : null,
-        sameAsPrior,
-        isPatternCommit,
+        index, description: row.description, targetVendor, newType, newSubType,
+        prior: prior ? { type: prior.type, subType: prior.subType, indices: [...prior.indices] } : null,
+        sameAsPrior, isSecondMatch,
       });
     }
 
     if (!prior || !sameAsPrior) {
-      // First vote (or conflicting second vote that resets the pattern).
       correctionHistoryRef.current.set(targetVendor, {
-        type: newType,
-        subType: newSubType,
-        indices: new Set([index]),
+        type: newType, subType: newSubType, indices: new Set([index]),
       });
     } else {
-      // Same-direction repeat (different row) — record before cascading so
-      // the cascade itself doesn't trip the threshold again.
       prior.indices.add(index);
     }
 
-    // ── Apply edits ────────────────────────────────────────────────────
-    let cascadeCount = 0;
+    // Compute affected count = rows that share the vendor and DON'T already
+    // match the target type/subType. This is the number that "Apply to all"
+    // would change.
+    const affectedCount = state.rows.reduce((acc, r, i) => {
+      if (i === index || !r || isNaN(r.amount)) return acc;
+      const sameVendor =
+        targetVendor && extractVendor(normalize(r.description)) === targetVendor;
+      if (!sameVendor) return acc;
+      if (r.type === newType && r.subType === newSubType) return acc;
+      return acc + 1;
+    }, 0);
+
+    // ── Apply ONLY the clicked row + manage pendingPatternPrompt ───────
     setState((prev) => {
-      const rows = prev.rows.map((r, i) => {
-        if (!r || isNaN(r.amount)) return r;
-        const isTarget = i === index;
+      let pendingPatternPrompt = prev.pendingPatternPrompt;
 
-        // Always update the clicked row.
-        if (isTarget) {
-          return {
-            ...r,
-            type: newType,
-            subType: newSubType,
-            isTransfer: newType === "transfer",
-            userModified: true,
-          };
-        }
+      // If a prompt is already showing and this edit doesn't match its
+      // pattern (different vendor or different target type), clear it —
+      // user has moved on. Telemetry: implicit decline.
+      if (
+        pendingPatternPrompt &&
+        (pendingPatternPrompt.vendor !== targetVendor || pendingPatternPrompt.type !== newType)
+      ) {
+        track("pattern_prompt_declined", {
+          vendor: pendingPatternPrompt.vendor,
+          type:   pendingPatternPrompt.type,
+          implicit: true,
+        });
+        pendingPatternPrompt = null;
+      }
 
-        // Cascade only on pattern commit. Skip rows that already match.
-        if (!isPatternCommit) return r;
-
-        const sameVendor =
-          targetVendor && extractVendor(normalize(r.description)) === targetVendor;
-        if (!sameVendor) return r;
-        if (r.type === newType && r.subType === newSubType) return r;
-
-        cascadeCount++;
-        return {
-          ...r,
-          type: newType,
-          subType: newSubType,
-          isTransfer: newType === "transfer",
-          userModified: true,
+      // 2nd-or-later matching edit on a non-refund type → show / re-trigger
+      // the prompt with the latest affectedCount.
+      if (isSecondMatch && affectedCount > 0) {
+        pendingPatternPrompt = {
+          vendor:        targetVendor,
+          type:          newType as "expense" | "income" | "transfer",
+          affectedCount,
         };
-      });
+        track("pattern_prompt_shown", {
+          vendor: targetVendor, type: newType, count: affectedCount,
+        });
+      }
+
+      const rows = prev.rows.map((r, i) =>
+        i === index
+          ? {
+              ...r,
+              type: newType,
+              subType: newSubType,
+              isTransfer: newType === "transfer",
+              userModified: true,
+            }
+          : r,
+      );
 
       return {
         ...prev,
         rows,
-        cascadeMessage: isPatternCommit
-          ? cascadeCount > 0
-            ? `Pattern detected — applied "${newType}" to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} and saved a rule for future imports.`
-            : `Pattern detected for "${targetVendor}" — saved a rule for future imports.`
-          : prior
-          ? ""    // conflicting reset: don't surface anything
-          : `Got it — only this row changed. Mark another "${targetVendor}" row the same way to apply to all matching rows.`,
+        pendingPatternPrompt,
+        // Drop the legacy "first edit" hint message; the prompt itself
+        // carries the affordance now.
+        cascadeMessage: prev.pendingPatternPrompt && !pendingPatternPrompt
+          ? ""    // we just cleared an old prompt; don't leave stale text
+          : prev.cascadeMessage,
+      };
+    });
+  }
+
+  /**
+   * User clicked "Apply to all" on the pattern-confirmation prompt.
+   * Cascades the pending type to every matching row + saves a typeRule for
+   * future imports.
+   */
+  async function acceptPatternPrompt() {
+    const prompt = state.pendingPatternPrompt;
+    if (!prompt) return;
+
+    track("pattern_prompt_applied", { vendor: prompt.vendor, type: prompt.type });
+
+    let cascadeCount = 0;
+    setState((prev) => {
+      const rows = prev.rows.map((r) => {
+        if (!r || isNaN(r.amount)) return r;
+        const sameVendor = extractVendor(normalize(r.description)) === prompt.vendor;
+        if (!sameVendor) return r;
+        if (r.type === prompt.type) return r;
+        cascadeCount++;
+        return {
+          ...r,
+          type: prompt.type,
+          subType: undefined,    // pattern prompts don't carry subType
+          isTransfer: prompt.type === "transfer",
+          userModified: true,
+        };
+      });
+      return {
+        ...prev,
+        rows,
+        pendingPatternPrompt: null,
+        cascadeMessage: cascadeCount > 0
+          ? `Applied "${prompt.type}" to ${cascadeCount} other "${prompt.vendor}" row${cascadeCount !== 1 ? "s" : ""} and saved a rule for future imports.`
+          : `Saved a rule for future imports.`,
       };
     });
 
-    if (DEBUG_LOGS) console.log(`[updateRowType:result] cascadeCount=${cascadeCount} (isPatternCommit=${isPatternCommit})`);
-
-    // ── Save typeRule only on pattern commit, never on a single edit ───
-    if (isPatternCommit) {
-      try {
-        const ruleRef = doc(db, "typeRules", `${ownerUid}_${targetVendor}`);
-        await setDoc(
-          ruleRef,
-          {
-            uid: ownerUid,
-            vendorName: targetVendor,
-            type: newType,
-            ...(newSubType ? { subType: newSubType } : {}),
-            usageCount: increment(1),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true },
-        );
-      } catch {
-        // Non-blocking — rule writing is best-effort.
-      }
+    // Persist the rule for future imports.
+    try {
+      const ruleRef = doc(db, "typeRules", `${ownerUid}_${prompt.vendor}`);
+      await setDoc(
+        ruleRef,
+        {
+          uid:        ownerUid,
+          vendorName: prompt.vendor,
+          type:       prompt.type,
+          usageCount: increment(1),
+          updatedAt:  serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } catch {
+      // Non-blocking — rule writing is best-effort.
     }
+  }
+
+  /** User clicked "Just these" — dismiss the prompt without cascading or
+   *  saving a rule. */
+  function dismissPatternPrompt() {
+    const prompt = state.pendingPatternPrompt;
+    if (!prompt) return;
+    track("pattern_prompt_declined", { vendor: prompt.vendor, type: prompt.type });
+    setState((prev) => ({ ...prev, pendingPatternPrompt: null }));
   }
 
   function clearCascadeMessage() {
@@ -1000,6 +1092,7 @@ export function useCSVImport() {
       engineWarnings: [],
       engineErrors: [],
       forceImportHashes: [],
+      pendingPatternPrompt: null,
     });
   }
 
@@ -1022,5 +1115,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport };
+  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport, acceptPatternPrompt, dismissPatternPrompt };
 }
