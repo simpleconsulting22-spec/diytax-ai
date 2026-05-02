@@ -9,7 +9,7 @@ export type FilingStatus =
 
 export interface TaxableTransaction {
   amount: number;
-  type: "income" | "expense" | "refund";
+  type: "income" | "expense" | "refund" | "transfer";
   taxSchedule: string | null;
   status: string;
   taxYear?: number | null;
@@ -140,7 +140,12 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
   let totalTxnIncome = 0;
 
   for (const txn of transactions) {
-    if (txn.status === "needs_review" || txn.status === "transfer") continue;
+    // Skip transfers (filter on `type`, not legacy `status === "transfer"` —
+    // unified ingest writes status="needs_review"/"auto_resolved" with
+    // type="transfer", so the legacy status check missed every new transfer
+    // and they leaked into the tax estimate).
+    if (txn.type === "transfer") continue;
+    if (txn.status === "needs_review") continue;
     const abs = Math.abs(txn.amount);
 
     if (txn.type === "income") {

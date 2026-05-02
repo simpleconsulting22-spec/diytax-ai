@@ -28,7 +28,8 @@ import {
   computeBudgetStatus,
   analyzeSpending,
   generateInsights,
-  sumDebtPayments,
+  sumCreditCardPayments,
+  sumLoanPayments,
 } from "../utils/spendingAnalysis";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,7 +51,8 @@ interface BudgetState {
   budgetStatuses: BudgetStatus[];
   analysis: CategoryAnalysis[];
   insights: Insight[];
-  debtPayments: number;
+  creditCardPayments: number;
+  loanPayments: number;
   currentRange: DateRange;
   previousRange: DateRange;
   // UI state
@@ -71,7 +73,8 @@ const INITIAL_STATE: BudgetState = {
   budgetStatuses: [],
   analysis: [],
   insights: [],
-  debtPayments: 0,
+  creditCardPayments: 0,
+  loanPayments: 0,
   currentRange: DEFAULT_RANGE,
   previousRange: DEFAULT_PREV,
   periodType: "monthly",
@@ -98,11 +101,16 @@ export function useBudget() {
     const now = new Date();
     const currentRange  = getPeriodRange(now, periodType);
     const previousRange = getPreviousPeriodRange(now, periodType);
-    const budgetStatuses = computeBudgetStatus(transactions, budgetCategories, currentRange);
-    const analysis       = analyzeSpending(transactions, currentRange, previousRange);
-    const insights       = generateInsights(budgetStatuses, analysis);
-    const debtPayments   = sumDebtPayments(transactions, currentRange);
-    return { budgetStatuses, analysis, insights, debtPayments, currentRange, previousRange };
+    const budgetStatuses    = computeBudgetStatus(transactions, budgetCategories, currentRange);
+    const analysis          = analyzeSpending(transactions, currentRange, previousRange);
+    const insights          = generateInsights(budgetStatuses, analysis);
+    const creditCardPayments = sumCreditCardPayments(transactions, currentRange);
+    const loanPayments       = sumLoanPayments(transactions, currentRange);
+    return {
+      budgetStatuses, analysis, insights,
+      creditCardPayments, loanPayments,
+      currentRange, previousRange,
+    };
   }
 
   // ── Initial load ──────────────────────────────────────────────────────────

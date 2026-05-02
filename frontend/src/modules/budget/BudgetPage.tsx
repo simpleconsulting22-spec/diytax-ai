@@ -227,7 +227,7 @@ export default function BudgetPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { state, changePeriodType, saveBudget } = useBudget();
-  const { budget, budgetStatuses, analysis, insights, debtPayments, currentRange, previousRange, periodType, loading, saving, error } = state;
+  const { budget, budgetStatuses, analysis, insights, creditCardPayments, loanPayments, currentRange, previousRange, periodType, loading, saving, error } = state;
 
   const [showEditor, setShowEditor] = useState(false);
 
@@ -414,29 +414,62 @@ export default function BudgetPage() {
               )
             )}
 
-            {/* ── Debt Payments ─────────────────────────────────────────── */}
-            {debtPayments > 0 && (
+            {/* ── Debt Payments — credit card + loan, side-by-side ───────── */}
+            {(creditCardPayments > 0 || loanPayments > 0) && (
               <section style={{ marginBottom: "32px" }}>
                 <div style={{
-                  backgroundColor: "#fff",
-                  borderRadius: "12px",
-                  boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
-                  padding: "18px 24px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
+                  display: "grid",
+                  gridTemplateColumns: creditCardPayments > 0 && loanPayments > 0
+                    ? "1fr 1fr"
+                    : "1fr",
+                  gap: "12px",
                 }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "14px", color: "#111827" }}>
-                      Debt Payments
+                  {creditCardPayments > 0 && (
+                    <div style={{
+                      backgroundColor: "#fff",
+                      borderRadius: "12px",
+                      boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
+                      padding: "18px 24px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#111827" }}>
+                          Credit Card Payments
+                        </div>
+                        <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
+                          This period — excluded from expense totals
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 700, fontSize: "20px", color: "#2563eb" }}>
+                        {fmt(creditCardPayments)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
-                      Credit card payments this period — excluded from expense totals
+                  )}
+                  {loanPayments > 0 && (
+                    <div style={{
+                      backgroundColor: "#fff",
+                      borderRadius: "12px",
+                      boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
+                      padding: "18px 24px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: "14px", color: "#111827" }}>
+                          Loan Payments
+                        </div>
+                        <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "2px" }}>
+                          Mortgage / auto / student / personal — excluded from expense totals
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 700, fontSize: "20px", color: "#7c3aed" }}>
+                        {fmt(loanPayments)}
+                      </div>
                     </div>
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: "20px", color: "#2563eb" }}>
-                    {fmt(debtPayments)}
-                  </div>
+                  )}
                 </div>
               </section>
             )}

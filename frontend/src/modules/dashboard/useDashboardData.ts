@@ -8,7 +8,7 @@ import { useTaxYear, matchesTaxYear } from "../../contexts/TaxYearContext";
 
 interface TxnRecord {
   amount: number;
-  type: "income" | "expense" | "refund";
+  type: "income" | "expense" | "refund" | "transfer";
   category: string | null;
   taxCategory: string | null;
   taxSchedule: string | null;
@@ -99,8 +99,12 @@ function aggregate(txns: TxnRecord[]): DashboardData {
 
     categorized++;
 
-    // YTD income / expenses (all categorized, excluding transfers)
-    if (txn.status !== "transfer") {
+    // YTD income / expenses (all categorized, excluding transfers).
+    // Filter on `type` not `status`: legacy CSV path used status === "transfer",
+    // but the unified ingest writes type === "transfer" with a "needs_review"
+    // / "auto_resolved" status. Without this fix, every Plaid / new-CSV / AI
+    // transfer leaks into income/expense totals.
+    if (txn.type !== "transfer") {
       if (txn.type === "income") {
         ytdIncome += txn.amount > 0 ? txn.amount : Math.abs(txn.amount);
       } else if (txn.type === "refund") {

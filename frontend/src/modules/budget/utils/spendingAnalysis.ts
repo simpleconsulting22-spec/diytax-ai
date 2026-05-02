@@ -61,6 +61,12 @@ function round2(n: number): number {
  * Sum NET expense amounts by category within a date range. Refunds (type=refund)
  * subtract from the category total — net spending = gross expense − refund.
  * Excludes transfers and income rows.
+ *
+ * Filter on `type === "transfer"` (not `status === "transfer"`). Status was
+ * the legacy marker from the pre-unified-pipeline CSV path; the unified
+ * ingest writes `type: "transfer"` with status of "needs_review" or
+ * "auto_resolved", so the legacy status check missed every Plaid / new-CSV /
+ * AI transfer and they leaked into category totals.
  */
 function sumByCategory(
   transactions: SpendingRecord[],
@@ -69,7 +75,7 @@ function sumByCategory(
   const totals: Record<string, number> = {};
   for (const txn of transactions) {
     if (!txn.category) continue;
-    if (txn.status === "transfer") continue;
+    if (txn.type === "transfer") continue;
     if (txn.date < range.start || txn.date > range.end) continue;
     const amt = Math.abs(txn.amount);
     if (txn.type === "expense") {
@@ -82,10 +88,10 @@ function sumByCategory(
 }
 
 /**
- * Sum absolute amounts of debt payment transactions (subType === "credit_card_payment")
- * within a date range.
+ * Sum absolute amounts of credit-card payment transactions
+ * (subType === "credit_card_payment") within a date range.
  */
-export function sumDebtPayments(
+export function sumCreditCardPayments(
   transactions: SpendingRecord[],
   range: DateRange
 ): number {
@@ -100,6 +106,30 @@ export function sumDebtPayments(
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0)
   );
 }
+
+/**
+ * Sum absolute amounts of loan payment transactions
+ * (subType === "loan_payment") within a date range.
+ */
+export function sumLoanPayments(
+  transactions: SpendingRecord[],
+  range: DateRange
+): number {
+  return round2(
+    transactions
+      .filter(
+        (txn) =>
+          txn.subType === "loan_payment" &&
+          txn.date >= range.start &&
+          txn.date <= range.end
+      )
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0)
+  );
+}
+
+/** Backwards-compat alias — older callers used "debt payments" to mean
+ *  credit-card payments specifically. */
+export const sumDebtPayments = sumCreditCardPayments;
 
 // ─── Core analysis functions ──────────────────────────────────────────────────
 
