@@ -28,6 +28,14 @@ import {
   type MatchInfo,
 } from "../csvEngine/findDuplicates";
 
+// Diagnostic logging — opt-in via ?debug=1 query param so the noisy
+// applyTypeRules / updateRowType / dumpTypeRules logs only appear when the
+// user (or me) is intentionally instrumenting. Evaluated once at module load;
+// to toggle, append/remove ?debug=1 and reload.
+const DEBUG_LOGS =
+  typeof window !== "undefined" &&
+  /(?:\?|&)debug=1\b/.test(window.location.search);
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TransactionType = "income" | "expense" | "transfer" | "refund";
@@ -329,7 +337,7 @@ async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<No
       query(collection(db, "typeRules"), where("uid", "==", userId))
     );
     if (snap.empty) {
-      console.log(`[applyTypeRules] uid=${userId} rulesLoaded=0 — no rules to apply`);
+      if (DEBUG_LOGS) console.log(`[applyTypeRules] uid=${userId} rulesLoaded=0 — no rules to apply`);
       return rows;
     }
 
@@ -377,20 +385,22 @@ async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<No
       return row;
     });
 
-    console.groupCollapsed(
-      `[applyTypeRules] scanned=${rows.length} rulesLoaded=${rules.size} hits=${hits.length}`,
-    );
-    if (hits.length > 0) {
-      console.table(hits);
-    } else {
-      console.log("(no rule matched any row in this batch)");
+    if (DEBUG_LOGS) {
+      console.groupCollapsed(
+        `[applyTypeRules] scanned=${rows.length} rulesLoaded=${rules.size} hits=${hits.length}`,
+      );
+      if (hits.length > 0) {
+        console.table(hits);
+      } else {
+        console.log("(no rule matched any row in this batch)");
+      }
+      console.log("ruleKeys:", [...rules.keys()].sort());
+      console.groupEnd();
     }
-    console.log("ruleKeys:", [...rules.keys()].sort());
-    console.groupEnd();
 
     return out;
   } catch (e) {
-    console.warn("[applyTypeRules] failed:", e);
+    if (DEBUG_LOGS) console.warn("[applyTypeRules] failed:", e);
     return rows; // non-blocking — fail silently
   }
 }
@@ -815,18 +825,20 @@ export function useCSVImport() {
       !!prior && prior.type === newType && prior.subType === newSubType;
     const isPatternCommit = !!prior && sameAsPrior && !prior.indices.has(index);
 
-    console.log("[updateRowType]", {
-      index,
-      description: row.description,
-      targetVendor,
-      newType,
-      newSubType,
-      prior: prior
-        ? { type: prior.type, subType: prior.subType, indices: [...prior.indices] }
-        : null,
-      sameAsPrior,
-      isPatternCommit,
-    });
+    if (DEBUG_LOGS) {
+      console.log("[updateRowType]", {
+        index,
+        description: row.description,
+        targetVendor,
+        newType,
+        newSubType,
+        prior: prior
+          ? { type: prior.type, subType: prior.subType, indices: [...prior.indices] }
+          : null,
+        sameAsPrior,
+        isPatternCommit,
+      });
+    }
 
     if (!prior || !sameAsPrior) {
       // First vote (or conflicting second vote that resets the pattern).
@@ -890,7 +902,7 @@ export function useCSVImport() {
       };
     });
 
-    console.log(`[updateRowType:result] cascadeCount=${cascadeCount} (isPatternCommit=${isPatternCommit})`);
+    if (DEBUG_LOGS) console.log(`[updateRowType:result] cascadeCount=${cascadeCount} (isPatternCommit=${isPatternCommit})`);
 
     // ── Save typeRule only on pattern commit, never on a single edit ───
     if (isPatternCommit) {

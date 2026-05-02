@@ -277,10 +277,14 @@ export default function ImportCSVPage() {
     if (importResult) setHistoryRefreshKey((k) => k + 1);
   }, [importResult]);
 
-  // ── Diagnostic helpers ───────────────────────────────────────────────────
-  // Phase-1 instrumentation. Lets the user dump their typeRules collection
-  // to console with one click, and confirms the bundle fingerprint at the
-  // bottom of the page so we can disprove a stale-service-worker hypothesis.
+  // ── Diagnostic helpers (opt-in via ?debug=1) ─────────────────────────────
+  // Lets the user dump their typeRules collection to console with one click.
+  // Hidden from production UI by default; the button only renders when
+  // window.location.search contains debug=1.
+  const debugMode =
+    typeof window !== "undefined" &&
+    /(?:\?|&)debug=1\b/.test(window.location.search);
+
   async function dumpTypeRules() {
     if (!ownerUid) {
       console.log("[dumpTypeRules] no ownerUid yet");
@@ -871,40 +875,42 @@ export default function ImportCSVPage() {
           </div>
         )}
 
-        {/* ── Phase-1 diagnostics ────────────────────────────────────────── */}
-        <div style={{
-          marginTop: "32px",
-          paddingTop: "16px",
-          borderTop: "1px solid #f3f4f6",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "12px",
-          fontSize: "11px",
-          color: "#9ca3af",
-          fontFamily: font,
-        }}>
-          <button
-            onClick={dumpTypeRules}
-            style={{
-              padding: "4px 10px",
-              backgroundColor: "#f9fafb",
-              color: "#6b7280",
-              border: "1px solid #e5e7eb",
-              borderRadius: "6px",
-              fontSize: "11px",
-              fontWeight: 500,
-              cursor: "pointer",
-              fontFamily: font,
-            }}
-            title="Console-dumps your saved typeRules for diagnostic purposes."
-          >
-            Dump typeRules → console
-          </button>
-          <span style={{ fontVariantNumeric: "tabular-nums" }}>
-            Build · {__BUILD_TIME__} · {__BUILD_SHA__}
-          </span>
-        </div>
+        {/* ── Diagnostic footer (only visible with ?debug=1) ──────────────── */}
+        {debugMode && (
+          <div style={{
+            marginTop: "32px",
+            paddingTop: "16px",
+            borderTop: "1px solid #f3f4f6",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            fontSize: "11px",
+            color: "#9ca3af",
+            fontFamily: font,
+          }}>
+            <button
+              onClick={dumpTypeRules}
+              style={{
+                padding: "4px 10px",
+                backgroundColor: "#f9fafb",
+                color: "#6b7280",
+                border: "1px solid #e5e7eb",
+                borderRadius: "6px",
+                fontSize: "11px",
+                fontWeight: 500,
+                cursor: "pointer",
+                fontFamily: font,
+              }}
+              title="Console-dumps your saved typeRules for diagnostic purposes."
+            >
+              Dump typeRules → console
+            </button>
+            <span style={{ fontVariantNumeric: "tabular-nums" }}>
+              Build · {__BUILD_TIME__} · {__BUILD_SHA__}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
