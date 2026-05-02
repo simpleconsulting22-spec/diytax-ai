@@ -114,6 +114,24 @@ service cloud.firestore {
       allow delete: if canDelete(resource.data.uid);
     }
 
+    // ── Type Rules ────────────────────────────────────────────────────────────
+    // Frontend-only learning loop: when the user confirms a type pattern in
+    // the CSV / AI parser preview, a doc is written here keyed by extracted
+    // vendor. Future imports read these to pre-fill types in the preview.
+    // Same access model as categoryRules: owner + spouse can read/write,
+    // owner-only delete. No accountant write — these reflect the owner's
+    // personal categorization habits.
+
+    match /typeRules/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.uid
+                        || (isSharedUser(request.resource.data.uid)
+                            && sharedRole(request.resource.data.uid) == 'spouse'));
+      allow update: if canWrite(resource.data.uid);
+      allow delete: if canDelete(resource.data.uid);
+    }
+
     // ── Entities ──────────────────────────────────────────────────────────────
     // Accountants cannot create or delete entities.
 
