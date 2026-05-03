@@ -177,22 +177,31 @@ function AppRoutes() {
           </AuthGuard>
         }
       />
+      {/* Phase 1 (active): /budget renders the new Money Coach. The old
+         BudgetPage stays accessible at /budget-legacy as a fallback while
+         we shake out edge cases. /coach kept as an alias so dogfood
+         bookmarks from Phase 0 don't break. */}
       <Route
         path="/budget"
         element={
           <AuthGuard>
-            <BudgetPage />
+            <CoachPage />
           </AuthGuard>
         }
       />
-      {/* Phase 0: new Money Coach page available alongside the legacy budget
-         page. /budget continues to render BudgetPage by default; /coach
-         renders the new dashboard. Phase 1 will swap them. */}
       <Route
         path="/coach"
         element={
           <AuthGuard>
             <CoachPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/budget-legacy"
+        element={
+          <AuthGuard>
+            <BudgetPage />
           </AuthGuard>
         }
       />

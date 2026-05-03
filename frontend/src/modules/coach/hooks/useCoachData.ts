@@ -37,6 +37,7 @@ import {
 import { buildTrends } from "../insights/trendInsights";
 import { decide } from "../engine/decide";
 import { suppressInsight as suppressInsightLs } from "../insights/suppression";
+import { track } from "../../../lib/telemetry";
 
 const INITIAL: CoachPageState = {
   loading:    true,
@@ -202,6 +203,32 @@ export function useCoachData(): UseCoachDataReturn {
       snapshot.brief.keyInsightId =
         decision.risks[0]?.id ?? decision.primaryAction.id;
 
+      // ── Telemetry: fired once per successful snapshot build ───────────
+      track("coach.viewed", {
+        periodType,
+        snapshotConfidence: dataQuality.baseConfidence,
+        riskCount:        decision.risks.length,
+        secondaryCount:   decision.secondaryActions.length,
+        savingsCount:     savingsOpportunities.length,
+        wellnessCount:    wellness.length,
+        suppressedCount:  decision.suppressed.length,
+        syncedPct:        Math.round(dataQuality.syncedPct * 100),
+      });
+      const allShown = [
+        ...decision.risks,
+        decision.primaryAction,
+        ...decision.secondaryActions,
+      ];
+      for (const i of allShown) {
+        track("coach.insight_shown", {
+          insightId:     i.id,
+          kind:          i.kind,
+          urgency:       i.urgency,
+          monthlyImpact: i.monthlyImpact,
+          confidence:    i.trust.confidence,
+        });
+      }
+
       setState({ loading: false, error: null, snapshot, decision, periodType });
     } catch (e) {
       console.error("[useCoachData] failed:", e);
@@ -223,8 +250,12 @@ export function useCoachData(): UseCoachDataReturn {
 
   return {
     state,
-    setPeriodType: (p) => load(p),
+    setPeriodType: (p) => {
+      track("coach.period_changed", { from: state.periodType, to: p });
+      load(p);
+    },
     suppressInsight: (id) => {
+      track("coach.action_snoozed", { insightId: id, days: 7 });
       suppressInsightLs(id, 7);
       // Re-decide with updated suppression to immediately hide in the UI.
       if (state.snapshot) {
