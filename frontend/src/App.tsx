@@ -33,6 +33,7 @@ import TermsOfServicePage from "./pages/TermsOfServicePage";
 import LandingPage from "./pages/LandingPage";
 import QuickCaptureFAB from "./modules/capture/QuickCaptureFAB";
 import NotificationSettingsPage from "./modules/settings/NotificationSettingsPage";
+import CategoriesPage from "./modules/settings/CategoriesPage";
 import BankAccountsPage from "./modules/bank/BankAccountsPage";
 import SpendingForecastPage from "./modules/forecast/SpendingForecastPage";
 import TaxEstimatePage from "./modules/forecast/TaxEstimatePage";
@@ -251,6 +252,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <NotificationSettingsPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/categories"
+        element={
+          <AuthGuard>
+            <CategoriesPage />
           </AuthGuard>
         }
       />

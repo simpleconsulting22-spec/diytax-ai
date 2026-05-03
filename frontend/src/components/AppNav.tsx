@@ -85,10 +85,11 @@ const HUBS: Hub[] = [
     key: "settings",
     label: "Settings",
     primaryPath: "/manage-access",
-    routes: ["/manage-access", "/settings/notifications", "/onboarding"],
+    routes: ["/manage-access", "/settings/notifications", "/settings/categories", "/onboarding"],
     subLinks: [
       { path: "/manage-access", label: "Team" },
       { path: "/settings/notifications", label: "Notifications" },
+      { path: "/settings/categories", label: "Categories" },
       { path: "/onboarding", label: "Profile" },
     ],
     Icon: SettingsIcon,
