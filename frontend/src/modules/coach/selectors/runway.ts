@@ -36,8 +36,20 @@ export interface RunwayMetrics {
   leftover:       number;
   runwayDays:     number | null;
   dueThisWeek:    number;
+  /** Estimated dollars owed for bills whose nextExpectedDate is in the past
+   *  with no matching payment recorded since lastDate. */
+  overdueAmount:  number;
   weekStart:      string;
   weekEnd:        string;
+}
+
+export interface OverdueBill {
+  item:         CoachRecurringItem;
+  daysOverdue:  number;
+  /** Approximate count of billing periods missed (≥ 1). */
+  missedCycles: number;
+  /** amount × missedCycles (positive dollars). */
+  totalOwed:    number;
 }
 
 function iso(d: Date): string { return d.toISOString().slice(0, 10); }
@@ -50,6 +62,38 @@ export function totalAvailable(accounts: CoachAccount[]): number {
     if (typeof a.availableBalance === "number") total += a.availableBalance;
   }
   return round2(total);
+}
+
+/** Recurring items whose next-expected date is in the past — i.e. user hasn't
+ *  recorded a payment for the most-recently-expected cycle. The system can't
+ *  tell whether the user genuinely missed the payment or paid outside the app
+ *  (cash/check), so the caller should phrase carefully. */
+export function overdueBills(
+  recurring: CoachRecurringItem[],
+  today:     Date,
+): { items: OverdueBill[]; total: number } {
+  const todayIso = iso(today);
+  const out: OverdueBill[] = [];
+  let total = 0;
+  for (const r of recurring) {
+    if (!r.nextExpectedDate) continue;
+    if (r.nextExpectedDate >= todayIso) continue;
+    const nextMs  = Date.parse(`${r.nextExpectedDate}T00:00:00Z`);
+    const todayMs = Date.parse(`${todayIso}T00:00:00Z`);
+    if (Number.isNaN(nextMs)) continue;
+    const daysOverdue = Math.max(1, Math.floor((todayMs - nextMs) / 86_400_000));
+    const interval    = r.intervalDays > 0 ? r.intervalDays : 30;
+    // Include the missed nextExpected itself (+1) plus any further cycles
+    // that have elapsed since.
+    const missedCycles = Math.max(1, Math.floor(daysOverdue / interval) + 1);
+    const amt          = Math.abs(r.amount);
+    const owed         = amt * missedCycles;
+    out.push({ item: r, daysOverdue, missedCycles, totalOwed: round2(owed) });
+    total += owed;
+  }
+  // Largest debt first.
+  out.sort((a, b) => b.totalOwed - a.totalOwed);
+  return { items: out, total: round2(total) };
 }
 
 /** Sum of recurring items whose next-expected falls within [today, today+days]. */
@@ -103,7 +147,12 @@ export function computeRunway(
   const weekStart = iso(today);
   const weekEnd   = iso(new Date(today.getTime() + 7 * 86_400_000));
 
-  const safeToSpend = round2(Math.max(0, available - week.total));
+  const overdue = overdueBills(recurring, today);
+
+  // Subtract overdue too — those dollars are owed and shouldn't show as
+  // available to spend. Floors at zero so users falling behind don't see
+  // negative "safe to spend".
+  const safeToSpend = round2(Math.max(0, available - week.total - overdue.total));
 
   // Leftover for the current period
   let income = 0, expenses = 0;
@@ -124,7 +173,8 @@ export function computeRunway(
     safeToSpend,
     leftover,
     runwayDays,
-    dueThisWeek: week.total,
+    dueThisWeek:   week.total,
+    overdueAmount: overdue.total,
     weekStart,
     weekEnd,
   };

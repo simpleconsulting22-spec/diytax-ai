@@ -122,6 +122,9 @@ export default function CoachPage() {
                 <Metric label="Leftover"        value={fmtUsd(snapshot.brief.leftover)}    accent={snapshot.brief.leftover >= 0 ? "#111827" : "#dc2626"} />
                 <Metric label="Runway"          value={snapshot.brief.runwayDays !== null ? `${snapshot.brief.runwayDays} days` : "Cash-flow positive"} accent="#111827" />
                 <Metric label="Due this week"   value={fmtUsd(snapshot.brief.dueThisWeek)} accent="#dc2626" />
+                {snapshot.brief.overdueAmount > 0 && (
+                  <Metric label="Overdue" value={fmtUsd(snapshot.brief.overdueAmount)} accent="#dc2626" />
+                )}
               </div>
               <InsightCard insight={decision.primaryAction} emphasis="primary" />
             </section>

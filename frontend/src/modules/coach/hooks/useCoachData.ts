@@ -29,7 +29,7 @@ import {
   categoryIncreaseInsight, discretionaryOverspendInsight, asSavingsOpp,
 } from "../insights/savingsInsights";
 import {
-  dueSoonRisk, lowBalanceRisk,
+  dueSoonRisk, overdueRisk, lowBalanceRisk,
 } from "../insights/riskInsights";
 import {
   spendingDownInsight, savingsRateInsight,
@@ -157,6 +157,7 @@ export function useCoachData(): UseCoachDataReturn {
       const burn = avgDailyBurn(txns, now, 30);
 
       const risks = [
+        overdueRisk(recurring, now, baseTrust),
         dueSoonRisk(recurring, accounts, now, baseTrust),
         lowBalanceRisk(accounts, burn, baseTrust),
       ].filter(notNull);

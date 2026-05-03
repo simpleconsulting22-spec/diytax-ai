@@ -8,7 +8,7 @@ import type { Insight, InsightDriver, TrustMeta } from "../types";
 import type {
   CoachAccount, CoachRecurringItem,
 } from "../selectors/runway";
-import { dueWithinDays, totalAvailable } from "../selectors/runway";
+import { dueWithinDays, overdueBills, totalAvailable } from "../selectors/runway";
 import { fmtUsd } from "./format";
 
 export function dueSoonRisk(
@@ -45,6 +45,52 @@ export function dueSoonRisk(
     monthlyImpact: null,
     effort: overdraft ? "medium" : "low",
     urgency: overdraft ? 1 : 2,
+    trust: { ...baseTrust, drivers },
+  };
+}
+
+/** Bills whose nextExpectedDate is in the past — the user is behind. The
+ *  app can't tell whether the user genuinely missed the payment or paid
+ *  outside the app, so the action wording asks them to confirm. */
+export function overdueRisk(
+  recurring: CoachRecurringItem[],
+  today:     Date,
+  baseTrust: TrustMeta,
+): Insight | null {
+  const { items, total } = overdueBills(recurring, today);
+  if (items.length === 0) return null;
+
+  const drivers: InsightDriver[] = items.map((b) => ({
+    kind: "transaction",
+    label: b.missedCycles === 1
+      ? `${b.item.merchantName} — ${b.daysOverdue}d late (since ${b.item.nextExpectedDate})`
+      : `${b.item.merchantName} — ~${b.missedCycles}× missed (since ${b.item.nextExpectedDate})`,
+    amount: b.totalOwed,
+  }));
+
+  let fact: string;
+  let why:  string;
+  if (items.length === 1) {
+    const b = items[0];
+    fact = b.missedCycles === 1
+      ? `${b.item.merchantName} is ${b.daysOverdue} days overdue (${fmtUsd(b.totalOwed)}).`
+      : `${b.item.merchantName} is ~${b.missedCycles} cycles behind — ${fmtUsd(b.totalOwed)} estimated.`;
+    why = `Last expected: ${b.item.nextExpectedDate}. No matching payment in your imported transactions since ${b.item.lastDate || "earlier"}.`;
+  } else {
+    fact = `${items.length} bills overdue — ${fmtUsd(total)} estimated total.`;
+    const top = items[0];
+    why = `Largest: ${top.item.merchantName} (~${top.missedCycles}× missed = ${fmtUsd(top.totalOwed)}). Based on transactions you've imported.`;
+  }
+
+  const action = `Confirm whether these were paid outside the app. Catch up with the lender for any genuinely past-due.`;
+
+  return {
+    id: `risk:overdue:${today.toISOString().slice(0, 10)}`,
+    kind: "risk",
+    fact, why, action,
+    monthlyImpact: null,
+    effort:        "medium",
+    urgency:       1,
     trust: { ...baseTrust, drivers },
   };
 }

@@ -66,10 +66,11 @@ export interface Recommendation extends Insight {
 // ─── Headline metrics (Today's Brief) ────────────────────────────────────────
 
 export interface BriefMetrics {
-  safeToSpend:    number;            // available − committed − upcoming bills
+  safeToSpend:    number;            // available − upcoming bills − overdue
   leftover:       number;            // income − expenses (current period)
   runwayDays:     number | null;     // available / avg daily burn; null if cash flow positive
   dueThisWeek:    number;            // sum of recurring items in next 7d
+  overdueAmount:  number;            // sum of overdue recurring items × missed cycles
   weekStart:      string;
   weekEnd:        string;
   /** Optional pointer to the most-relevant insight (decision engine output) */
