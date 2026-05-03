@@ -180,23 +180,30 @@ function EntityDropdown({
     }
   }
 
-  const badge = autoAssigned
-    ? entityAssignmentSource === "ai"
-      ? { label: "AI", bg: "#fff7ed", color: "#c2410c" }
-      : entityAssignmentSource === "rule"
-      ? { label: "rule", bg: "#f0fdf4", color: "#15803d" }
-      : { label: "learned", bg: "#eff6ff", color: "#1d4ed8" }
-    : null;
+  // "Learned" shows whenever the entity assignment came from a saved user rule
+  // — whether the AI applied it OR the user just picked it (which writes
+  // entityAssignmentSource: "user_rule" via handleEntityChange). That's the
+  // signal the learning loop is active for this vendor.
+  const badge =
+    entityAssignmentSource === "user_rule"
+      ? { label: "Learned", bg: "#eff6ff", color: "#1d4ed8" }
+      : autoAssigned && entityAssignmentSource === "ai"
+        ? { label: "AI",   bg: "#fff7ed", color: "#c2410c" }
+        : autoAssigned && entityAssignmentSource === "rule"
+          ? { label: "rule", bg: "#f0fdf4", color: "#15803d" }
+          : null;
 
-  const borderColor = !autoAssigned ? "#e5e7eb"
-    : entityAssignmentSource === "ai" ? "#fed7aa"
-    : entityAssignmentSource === "rule" ? "#bbf7d0"
-    : "#bfdbfe";
+  const borderColor =
+    entityAssignmentSource === "user_rule" ? "#bfdbfe"
+    : autoAssigned && entityAssignmentSource === "ai"   ? "#fed7aa"
+    : autoAssigned && entityAssignmentSource === "rule" ? "#bbf7d0"
+    : "#e5e7eb";
 
-  const bgColor = !autoAssigned ? "#fff"
-    : entityAssignmentSource === "ai" ? "#fff7ed"
-    : entityAssignmentSource === "rule" ? "#f0fdf4"
-    : "#eff6ff";
+  const bgColor =
+    entityAssignmentSource === "user_rule" ? "#eff6ff"
+    : autoAssigned && entityAssignmentSource === "ai"   ? "#fff7ed"
+    : autoAssigned && entityAssignmentSource === "rule" ? "#f0fdf4"
+    : "#fff";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
@@ -246,6 +253,15 @@ type SortDir = "asc" | "desc";
 
 // ─── Table ────────────────────────────────────────────────────────────────────
 
+interface PendingCategoryPromptForUI {
+  editedRowId: string;
+  triggeredBy: "category" | "entity";
+  vendor: string;
+  category: string | null;
+  entityType: "business" | "rental" | "personal" | null;
+  affectedRowIds: string[];
+}
+
 interface ReviewTableProps {
   transactions: ReviewTransaction[];
   entities: UserEntity[];
@@ -265,6 +281,11 @@ interface ReviewTableProps {
   onTypeChange: (id: string, type: "income" | "expense" | "transfer" | "refund", subType?: "credit_card_payment" | "loan_payment" | null) => void;
   onConfirm: (id: string) => void;
   onCustomCategoryAdded: (category: string) => void;
+  /** Prompt to render inline beneath the edited row. Same prompt is also
+   *  surfaced as a sticky banner on the page above the table. */
+  pendingCategoryPrompt?: PendingCategoryPromptForUI | null;
+  onAcceptCategoryPrompt?: () => void | Promise<void>;
+  onDismissCategoryPrompt?: () => void;
 }
 
 const TH: React.CSSProperties = {
@@ -309,6 +330,9 @@ export default function ReviewTable({
   onTypeChange,
   onConfirm,
   onCustomCategoryAdded,
+  pendingCategoryPrompt,
+  onAcceptCategoryPrompt,
+  onDismissCategoryPrompt,
 }: ReviewTableProps) {
   const [sortCol, setSortCol] = useState<SortCol>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -403,10 +427,13 @@ export default function ReviewTable({
             const isUpdating = updating.has(txn.id);
             const isSelected = selectedIds.has(txn.id);
             const isAI       = txn.source === "ai";
+            const showInlinePrompt =
+              !!pendingCategoryPrompt && pendingCategoryPrompt.editedRowId === txn.id;
+            const totalCols = entities.length > 0 ? 10 : 9;
 
             return (
+              <React.Fragment key={txn.id}>
               <tr
-                key={txn.id}
                 style={{
                   backgroundColor: isSelected
                     ? "#f0fdf4"
@@ -415,7 +442,7 @@ export default function ReviewTable({
                     : idx % 2 === 0 ? "#fff" : "#fafafa",
                   opacity: isUpdating ? 0.5 : 1,
                   transition: "opacity 0.15s, background-color 0.1s",
-                  borderBottom: "1px solid #f3f4f6",
+                  borderBottom: showInlinePrompt ? "none" : "1px solid #f3f4f6",
                 }}
               >
                 {/* Checkbox */}
@@ -573,6 +600,87 @@ export default function ReviewTable({
                   </button>
                 </td>
               </tr>
+              {showInlinePrompt && pendingCategoryPrompt && (
+                <tr style={{
+                  backgroundColor: "#fffbeb",
+                  borderBottom: "1px solid #fcd34d",
+                }}>
+                  <td colSpan={totalCols} style={{
+                    padding: "10px 14px",
+                    borderTop: "1px solid #fcd34d",
+                  }}>
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "12px",
+                      flexWrap: "wrap",
+                      fontSize: "13px",
+                      color: "#78350f",
+                    }}>
+                      <div style={{ flex: "1 1 280px" }}>
+                        <div style={{ fontWeight: 700, marginBottom: "2px" }}>
+                          Apply this to similar transactions?
+                        </div>
+                        <div style={{ color: "#92400e" }}>
+                          You updated &ldquo;<strong>{pendingCategoryPrompt.vendor}</strong>&rdquo;.
+                          Apply{" "}
+                          {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
+                            ? "this category and assignment"
+                            : pendingCategoryPrompt.category
+                            ? "this category"
+                            : "this assignment"}{" "}
+                          to {pendingCategoryPrompt.affectedRowIds.length} similar transaction
+                          {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
+                        </div>
+                        <div style={{
+                          marginTop: "3px",
+                          fontSize: "11px",
+                          color: "#a16207",
+                          fontStyle: "italic",
+                        }}>
+                          Applies category, tax treatment, and Assign To.
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                        <button
+                          onClick={() => onAcceptCategoryPrompt?.()}
+                          style={{
+                            padding: "7px 14px",
+                            backgroundColor: "#16A34A",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Apply to all
+                        </button>
+                        <button
+                          onClick={() => onDismissCategoryPrompt?.()}
+                          style={{
+                            padding: "7px 14px",
+                            backgroundColor: "#fff",
+                            color: "#78350f",
+                            border: "1px solid #fcd34d",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Just this one
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
         </tbody>

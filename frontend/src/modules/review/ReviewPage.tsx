@@ -673,16 +673,20 @@ export default function ReviewPage() {
           </div>
         )}
 
-        {/* Pending category prompt — appears after a single-row category edit
-           when other same-vendor rows have a different category. The user
-           confirms before any cascade fires. */}
+        {/* Sticky pending-prompt banner — STAYS VISIBLE while scrolling so the
+           user can't miss the action. Mirrored by an inline prompt rendered
+           beneath the edited row in ReviewTable. */}
         {pendingCategoryPrompt && (
           <div style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 10,
             marginBottom: "12px",
             padding: "12px 16px",
             backgroundColor: "#fffbeb",
             border: "1px solid #fcd34d",
             borderRadius: "10px",
+            boxShadow: "0 4px 14px rgba(120, 53, 15, 0.08)",
             fontSize: "13px",
             color: "#78350f",
             display: "flex",
@@ -693,12 +697,17 @@ export default function ReviewPage() {
           }}>
             <div style={{ flex: "1 1 320px" }}>
               <div style={{ fontWeight: 700, marginBottom: "2px" }}>
-                Apply this category to similar transactions?
+                Apply this to similar transactions?
               </div>
               <div style={{ color: "#92400e" }}>
-                You categorized a &ldquo;{pendingCategoryPrompt.vendor}&rdquo; transaction as{" "}
-                <strong>{pendingCategoryPrompt.category}</strong>. Apply this to the
-                remaining {pendingCategoryPrompt.affectedRowIds.length} similar transaction
+                You updated &ldquo;<strong>{pendingCategoryPrompt.vendor}</strong>&rdquo;.
+                Apply{" "}
+                {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
+                  ? "this category and assignment"
+                  : pendingCategoryPrompt.category
+                  ? "this category"
+                  : "this assignment"}{" "}
+                to {pendingCategoryPrompt.affectedRowIds.length} similar transaction
                 {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
               </div>
               <div style={{
@@ -707,9 +716,7 @@ export default function ReviewPage() {
                 color: "#a16207",
                 fontStyle: "italic",
               }}>
-                {pendingCategoryPrompt.vendor} • {pendingCategoryPrompt.affectedRowIds.length} match
-                {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "es" : ""}. Applies category,
-                tax treatment, and entity assignment.
+                Applies category, tax treatment, and Assign To.
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
@@ -770,6 +777,9 @@ export default function ReviewPage() {
               onTypeChange={handleTypeChange}
               onConfirm={handleConfirm}
               onCustomCategoryAdded={handleCustomCategoryAdded}
+              pendingCategoryPrompt={pendingCategoryPrompt}
+              onAcceptCategoryPrompt={acceptCategoryPrompt}
+              onDismissCategoryPrompt={dismissCategoryPrompt}
             />
           )}
         </div>

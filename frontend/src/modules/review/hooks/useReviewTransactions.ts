@@ -117,13 +117,20 @@ interface ReviewState {
 }
 
 export type PendingCategoryPrompt = {
+  /** id of the row whose edit triggered this prompt — drives inline placement */
+  editedRowId:    string;
+  /** which field the user edited — drives copy variation */
+  triggeredBy:    "category" | "entity";
   vendor:         string;
-  category:       string;
+  /** Bundle to propagate. Empty values mean "do not override matching rows". */
+  category:       string | null;
   taxCategory:    string | null;
   taxSchedule:    string | null;
   entityId:       string | null;
-  entityType:     "business" | "rental" | "personal";
-  entityName?:    string;
+  entityType:     "business" | "rental" | "personal" | null;
+  entityName:     string | null;
+  /** Row ids the cascade would touch (matching same vendor, different bundle,
+   *  not user_rule). Length always >= 1; UI shouldn't render an empty prompt. */
   affectedRowIds: string[];
 } | null;
 
@@ -147,6 +154,44 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   // the same vendor (defensive — handleApplySimilar uses writeBatch directly
   // and shouldn't re-enter handleCategoryChange, but cheap insurance).
   const recentlyAppliedVendorRef = useRef<string | null>(null);
+
+  // ── Vendor-match helper (shared by category + entity edits) ──────────────
+  // Returns ids of rows that:
+  //   • share the edited row's vendor
+  //   • aren't the edited row itself
+  //   • have NOT been previously corrected by the user (source !== "user_rule")
+  //   • differ from the edited row on at least one bundle field that was set
+  //
+  // The "field was set" check is what enforces our selective-field policy:
+  // if the user only edited Assign To and Category is null, candidates are
+  // matched on entity differences only — null Category does NOT count as a
+  // "difference" that brings rows into the cascade.
+  function findVendorMatches(
+    transactions: ReviewTransaction[],
+    editedRow: ReviewTransaction,
+    bundle: {
+      category: string | null;
+      entityId: string | null;
+      entityType: "business" | "rental" | "personal" | null;
+    },
+  ): string[] {
+    const editedVendor = extractVendor(editedRow);
+    if (!editedVendor) return [];
+    const hasCategory = !!bundle.category && bundle.category.trim().length > 0;
+    const hasEntity   = !!bundle.entityType;     // entityId may be null for "personal"
+
+    return transactions
+      .filter((t) => {
+        if (t.id === editedRow.id) return false;
+        if (t.source === "user_rule") return false;
+        if (extractVendor(t) !== editedVendor) return false;
+        const categoryDiffers = hasCategory && t.category !== bundle.category;
+        const entityDiffers   = hasEntity   && (t.entityId !== bundle.entityId
+                                                || t.entityType !== bundle.entityType);
+        return categoryDiffers || entityDiffers;
+      })
+      .map((t) => t.id);
+  }
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
@@ -316,6 +361,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         entityId,
         entityType,
         entityName: entityName ?? null,
+        entityAssignmentSource: "user_rule",
         updatedBy:     user.uid,
         updatedByRole: role,
         updatedAt:     serverTimestamp(),
@@ -335,12 +381,52 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         });
       }
 
+      // Surface the apply-to-similar prompt if there are matching same-vendor
+      // rows whose entity assignment differs. Bundle reflects the row's NEW
+      // state (after edit). Selective-field policy: scan helper ignores empty
+      // category, so a category-less row's edit only matches on entity diff.
+      let pendingCategoryPrompt: PendingCategoryPrompt = null;
+      if (txn) {
+        const editedVendor = extractVendor(txn);
+        const guardrailHit = !!editedVendor &&
+          recentlyAppliedVendorRef.current === editedVendor;
+        if (editedVendor && !guardrailHit) {
+          const updatedRow = { ...txn, entityId, entityType, entityName };
+          const affectedRowIds = findVendorMatches(
+            state.transactions.map((t) => (t.id === id ? updatedRow : t)),
+            updatedRow,
+            {
+              category:   txn.category ?? null,
+              entityId:   entityId ?? null,
+              entityType,
+            },
+          );
+          if (affectedRowIds.length >= 1) {
+            pendingCategoryPrompt = {
+              editedRowId:    id,
+              triggeredBy:    "entity",
+              vendor:         editedVendor,
+              category:       txn.category    ?? null,
+              taxCategory:    txn.taxCategory ?? null,
+              taxSchedule:    txn.taxSchedule ?? null,
+              entityId:       entityId        ?? null,
+              entityType,
+              entityName:     entityName      ?? null,
+              affectedRowIds,
+            };
+          }
+        }
+      }
+
       setState((prev) => ({
         ...prev,
         updating: new Set([...prev.updating].filter((i) => i !== id)),
         transactions: prev.transactions.map((t) =>
-          t.id === id ? { ...t, entityId, entityType, entityName } : t
+          t.id === id
+            ? { ...t, entityId, entityType, entityName, entityAssignmentSource: "user_rule" as const }
+            : t
         ),
+        pendingCategoryPrompt,
       }));
     } catch {
       setState((prev) => ({
@@ -370,35 +456,38 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       });
 
       // ── Pending prompt: scan loaded rows for same-vendor candidates ─────
-      // Excludes:
-      //  • the row we just edited
-      //  • rows whose category already matches the new selection
-      //  • rows the user previously corrected (source === "user_rule") so we
-      //    don't undo deliberate edits
-      //  • rows for a vendor we just applied a cascade to (loop guardrail)
+      // Uses the shared findVendorMatches helper so category and entity edits
+      // share identical scan logic. Selective-field policy: only fields with
+      // a value on the edited row count as "differences" → null fields don't
+      // pull rows into the cascade or get propagated.
       const editedVendor = txn ? extractVendor(txn) : "";
       const guardrailHit = !!editedVendor &&
         recentlyAppliedVendorRef.current === editedVendor;
 
       let pendingCategoryPrompt: PendingCategoryPrompt = null;
       if (txn && editedVendor && !guardrailHit) {
-        const affected = state.transactions.filter((t) => {
-          if (t.id === id) return false;
-          if (t.category === newCategory) return false;
-          if (t.source === "user_rule") return false;
-          const otherVendor = extractVendor(t);
-          return otherVendor === editedVendor;
-        });
-        if (affected.length >= 1) {
+        const updatedRow = { ...txn, category: newCategory };
+        const affectedRowIds = findVendorMatches(
+          state.transactions.map((t) => (t.id === id ? updatedRow : t)),
+          updatedRow,
+          {
+            category:   newCategory,
+            entityId:   txn.entityId   ?? null,
+            entityType: txn.entityType,
+          },
+        );
+        if (affectedRowIds.length >= 1) {
           pendingCategoryPrompt = {
+            editedRowId:    id,
+            triggeredBy:    "category",
             vendor:         editedVendor,
             category:       newCategory,
             taxCategory:    txn.taxCategory ?? null,
             taxSchedule:    txn.taxSchedule ?? null,
             entityId:       txn.entityId    ?? null,
             entityType:     txn.entityType,
-            entityName:     txn.entityName,
-            affectedRowIds: affected.map((t) => t.id),
+            entityName:     txn.entityName  ?? null,
+            affectedRowIds,
           };
         }
       }
@@ -425,22 +514,93 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
   async function acceptCategoryPrompt() {
     const prompt = state.pendingCategoryPrompt;
-    if (!prompt) return;
-    // Loop guardrail: mark this vendor as recently applied so the cascade
-    // itself doesn't re-prompt.
+    if (!prompt || !user || !effectiveOwnerUid) return;
+
     recentlyAppliedVendorRef.current = prompt.vendor;
+    const ids = prompt.affectedRowIds;
+
+    // Selective-field write: only override candidates' fields when the edited
+    // row had a non-empty value for that field. Prevents wiping good data on
+    // matching rows when the user only edited one half of the bundle.
+    const hasCategory = !!prompt.category && prompt.category.trim().length > 0;
+    const hasEntity   = !!prompt.entityType;
+
+    const docUpdate: Record<string, unknown> = {
+      updatedBy:     user.uid,
+      updatedByRole: role,
+      updatedAt:     serverTimestamp(),
+    };
+    if (hasCategory) {
+      docUpdate.category             = prompt.category;
+      docUpdate.categorizationSource = "user_rule";
+      docUpdate.isUserModified       = true;
+      if (prompt.taxCategory) docUpdate.taxCategory = prompt.taxCategory;
+      if (prompt.taxSchedule) docUpdate.taxSchedule = prompt.taxSchedule;
+    }
+    if (hasEntity) {
+      docUpdate.entityId               = prompt.entityId;
+      docUpdate.entityType             = prompt.entityType;
+      docUpdate.entityName             = prompt.entityName ?? null;
+      docUpdate.entityAssignmentSource = "user_rule";
+    }
+
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
     try {
-      await handleApplySimilar(
-        prompt.affectedRowIds,
-        prompt.category,
-        prompt.entityId,
-        prompt.entityType,
-        prompt.entityName,
-      );
+      // Batch the writes
+      for (let i = 0; i < ids.length; i += 499) {
+        const batch = writeBatch(db);
+        for (const docId of ids.slice(i, i + 499)) {
+          batch.update(doc(db, "transactions", docId), docUpdate);
+        }
+        await batch.commit();
+      }
+
+      // Persist the vendor rule with whatever fields the bundle has.
+      // categoryRules whose `category` is empty wouldn't match anything at
+      // ingest time, so we only upsert when category is present.
+      if (hasCategory || hasEntity) {
+        await upsertVendorRule(effectiveOwnerUid, prompt.vendor, {
+          category:    prompt.category    ?? "",
+          taxCategory: prompt.taxCategory ?? "",
+          taxSchedule: prompt.taxSchedule ?? "",
+          entityId:    prompt.entityId    ?? null,
+          entityName:  prompt.entityName  ?? null,
+          entityType:  prompt.entityType  ?? null,
+        });
+      }
+
+      // Mirror the writes into local state so the UI updates immediately.
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        transactions: prev.transactions.map((t) => {
+          if (!ids.includes(t.id)) return t;
+          const next = { ...t };
+          if (hasCategory) {
+            next.category = prompt.category;
+            next.source   = "user_rule" as const;
+            if (prompt.taxCategory) next.taxCategory = prompt.taxCategory;
+            if (prompt.taxSchedule) next.taxSchedule = prompt.taxSchedule;
+          }
+          if (hasEntity) {
+            next.entityId   = prompt.entityId;
+            next.entityType = prompt.entityType ?? "personal";
+            next.entityName = prompt.entityName ?? undefined;
+            next.entityAssignmentSource = "user_rule" as const;
+          }
+          return next;
+        }),
+        pendingCategoryPrompt: null,
+      }));
+    } catch {
+      setState((prev) => ({
+        ...prev,
+        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        pendingCategoryPrompt: null,
+      }));
     } finally {
-      setState((prev) => ({ ...prev, pendingCategoryPrompt: null }));
       // Clear the guardrail one tick later so future independent edits to
-      // the same vendor (different category) do prompt again.
+      // the same vendor (different bundle) do prompt again.
       setTimeout(() => { recentlyAppliedVendorRef.current = null; }, 0);
     }
   }
