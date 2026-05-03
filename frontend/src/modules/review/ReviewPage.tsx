@@ -211,10 +211,12 @@ export default function ReviewPage() {
     clearSelection,
     toggleSelect,
     toggleSelectAll,
+    acceptCategoryPrompt,
+    dismissCategoryPrompt,
     reload,
   } = useReviewTransactions(statusFilter);
 
-  const { transactions, entities, customCategories, loading, error, selectedIds, updating } = state;
+  const { transactions, entities, customCategories, loading, error, selectedIds, updating, pendingCategoryPrompt } = state;
 
   const isMobile = useIsMobile();
   const isCategorizedView = statusFilter === "categorized";
@@ -667,6 +669,82 @@ export default function ReviewPage() {
                   </button>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pending category prompt — appears after a single-row category edit
+           when other same-vendor rows have a different category. The user
+           confirms before any cascade fires. */}
+        {pendingCategoryPrompt && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "12px 16px",
+            backgroundColor: "#fffbeb",
+            border: "1px solid #fcd34d",
+            borderRadius: "10px",
+            fontSize: "13px",
+            color: "#78350f",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}>
+            <div style={{ flex: "1 1 320px" }}>
+              <div style={{ fontWeight: 700, marginBottom: "2px" }}>
+                Apply this category to similar transactions?
+              </div>
+              <div style={{ color: "#92400e" }}>
+                You categorized a &ldquo;{pendingCategoryPrompt.vendor}&rdquo; transaction as{" "}
+                <strong>{pendingCategoryPrompt.category}</strong>. Apply this to the
+                remaining {pendingCategoryPrompt.affectedRowIds.length} similar transaction
+                {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
+              </div>
+              <div style={{
+                marginTop: "4px",
+                fontSize: "11px",
+                color: "#a16207",
+                fontStyle: "italic",
+              }}>
+                {pendingCategoryPrompt.vendor} • {pendingCategoryPrompt.affectedRowIds.length} match
+                {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "es" : ""}. Applies category,
+                tax treatment, and entity assignment.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              <button
+                onClick={acceptCategoryPrompt}
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#16A34A",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Apply to all
+              </button>
+              <button
+                onClick={dismissCategoryPrompt}
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#fff",
+                  color: "#78350f",
+                  border: "1px solid #fcd34d",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Just this one
+              </button>
             </div>
           </div>
         )}

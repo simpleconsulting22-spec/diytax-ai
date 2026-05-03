@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   collection,
   query,
@@ -111,7 +111,21 @@ interface ReviewState {
   error: string;
   selectedIds: Set<string>;
   updating: Set<string>;
+  /** Surfaced after a single category edit when other same-vendor rows have a
+   *  different category. User confirms before any cascade fires. */
+  pendingCategoryPrompt: PendingCategoryPrompt;
 }
+
+export type PendingCategoryPrompt = {
+  vendor:         string;
+  category:       string;
+  taxCategory:    string | null;
+  taxSchedule:    string | null;
+  entityId:       string | null;
+  entityType:     "business" | "rental" | "personal";
+  entityName?:    string;
+  affectedRowIds: string[];
+} | null;
 
 export function useReviewTransactions(statusFilter: "needs_review" | "categorized" = "needs_review") {
   const { user, role, effectiveOwnerUid } = useAuth();
@@ -125,7 +139,14 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     error: "",
     selectedIds: new Set(),
     updating: new Set(),
+    pendingCategoryPrompt: null,
   });
+
+  // Loop guardrail: when the user accepts an "Apply to all" prompt, we mark
+  // the vendor here so the cascade itself doesn't immediately re-prompt for
+  // the same vendor (defensive — handleApplySimilar uses writeBatch directly
+  // and shouldn't re-enter handleCategoryChange, but cheap insurance).
+  const recentlyAppliedVendorRef = useRef<string | null>(null);
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
@@ -348,12 +369,49 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         entityName:    txn?.entityName   ?? undefined,
       });
 
+      // ── Pending prompt: scan loaded rows for same-vendor candidates ─────
+      // Excludes:
+      //  • the row we just edited
+      //  • rows whose category already matches the new selection
+      //  • rows the user previously corrected (source === "user_rule") so we
+      //    don't undo deliberate edits
+      //  • rows for a vendor we just applied a cascade to (loop guardrail)
+      const editedVendor = txn ? extractVendor(txn) : "";
+      const guardrailHit = !!editedVendor &&
+        recentlyAppliedVendorRef.current === editedVendor;
+
+      let pendingCategoryPrompt: PendingCategoryPrompt = null;
+      if (txn && editedVendor && !guardrailHit) {
+        const affected = state.transactions.filter((t) => {
+          if (t.id === id) return false;
+          if (t.category === newCategory) return false;
+          if (t.source === "user_rule") return false;
+          const otherVendor = extractVendor(t);
+          return otherVendor === editedVendor;
+        });
+        if (affected.length >= 1) {
+          pendingCategoryPrompt = {
+            vendor:         editedVendor,
+            category:       newCategory,
+            taxCategory:    txn.taxCategory ?? null,
+            taxSchedule:    txn.taxSchedule ?? null,
+            entityId:       txn.entityId    ?? null,
+            entityType:     txn.entityType,
+            entityName:     txn.entityName,
+            affectedRowIds: affected.map((t) => t.id),
+          };
+        }
+      }
+
       setState((prev) => ({
         ...prev,
         updating: new Set([...prev.updating].filter((i) => i !== id)),
         transactions: prev.transactions.map((t) =>
           t.id === id ? { ...t, category: newCategory, source: "user_rule" as const } : t
         ),
+        // Replace any prior pending prompt — newest edit wins. Clears any
+        // stale prompt for a vendor the user has moved on from.
+        pendingCategoryPrompt,
       }));
     } catch {
       setState((prev) => ({
@@ -361,6 +419,34 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         updating: new Set([...prev.updating].filter((i) => i !== id)),
       }));
     }
+  }
+
+  // ── Pending category-prompt handlers ───────────────────────────────────────
+
+  async function acceptCategoryPrompt() {
+    const prompt = state.pendingCategoryPrompt;
+    if (!prompt) return;
+    // Loop guardrail: mark this vendor as recently applied so the cascade
+    // itself doesn't re-prompt.
+    recentlyAppliedVendorRef.current = prompt.vendor;
+    try {
+      await handleApplySimilar(
+        prompt.affectedRowIds,
+        prompt.category,
+        prompt.entityId,
+        prompt.entityType,
+        prompt.entityName,
+      );
+    } finally {
+      setState((prev) => ({ ...prev, pendingCategoryPrompt: null }));
+      // Clear the guardrail one tick later so future independent edits to
+      // the same vendor (different category) do prompt again.
+      setTimeout(() => { recentlyAppliedVendorRef.current = null; }, 0);
+    }
+  }
+
+  function dismissCategoryPrompt() {
+    setState((prev) => ({ ...prev, pendingCategoryPrompt: null }));
   }
 
   // ── Single confirm ─────────────────────────────────────────────────────────
@@ -800,6 +886,8 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     clearSelection,
     toggleSelect,
     toggleSelectAll,
+    acceptCategoryPrompt,
+    dismissCategoryPrompt,
     reload: loadTransactions,
   };
 }
