@@ -24,6 +24,7 @@ import DeductionsPage from "./modules/deductions/DeductionsPage";
 import SSAPage from "./modules/income/SSAPage";
 import RetirementPage from "./modules/income/RetirementPage";
 import BudgetPage from "./modules/budget/BudgetPage";
+import CoachPage from "./modules/coach/CoachPage";
 import TransfersPage from "./modules/transfers/TransfersPage";
 import ManageAccessPage from "./pages/ManageAccessPage";
 import AcceptInvitePage from "./pages/AcceptInvitePage";
@@ -181,6 +182,17 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <BudgetPage />
+          </AuthGuard>
+        }
+      />
+      {/* Phase 0: new Money Coach page available alongside the legacy budget
+         page. /budget continues to render BudgetPage by default; /coach
+         renders the new dashboard. Phase 1 will swap them. */}
+      <Route
+        path="/coach"
+        element={
+          <AuthGuard>
+            <CoachPage />
           </AuthGuard>
         }
       />
