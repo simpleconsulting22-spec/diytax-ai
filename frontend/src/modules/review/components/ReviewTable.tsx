@@ -526,17 +526,26 @@ export default function ReviewTable({
                   />
                 </td>
 
-                {/* Category — inline editable, filtered by entity type (Task 5) */}
+                {/* Category — disabled for transfers / cc-payment / loan-payment.
+                   Transfers don't have a category by design (they net out across
+                   accounts and don't belong to a tax category). The editor is
+                   replaced with a non-clickable em-dash for these rows. */}
                 <td style={TD}>
-                  <InlineCategoryEditor
-                    value={txn.category}
-                    source={txn.source}
-                    disabled={isUpdating}
-                    entityType={txn.entityType ?? null}
-                    customCategories={customCategories}
-                    onChange={(cat) => onCategoryChange(txn.id, cat)}
-                    onCustomCategoryAdded={onCustomCategoryAdded}
-                  />
+                  {txn.type === "transfer" ? (
+                    <span style={{ color: "#9ca3af", fontSize: "12px", fontStyle: "italic" }}>
+                      —
+                    </span>
+                  ) : (
+                    <InlineCategoryEditor
+                      value={txn.category}
+                      source={txn.source}
+                      disabled={isUpdating}
+                      entityType={txn.entityType ?? null}
+                      customCategories={customCategories}
+                      onChange={(cat) => onCategoryChange(txn.id, cat)}
+                      onCustomCategoryAdded={onCustomCategoryAdded}
+                    />
+                  )}
                 </td>
 
                 {/* Account */}
@@ -554,9 +563,14 @@ export default function ReviewTable({
                   )}
                 </td>
 
-                {/* Assign To */}
+                {/* Assign To — same rule as Category: not applicable for transfers. */}
                 {entities.length > 0 && (
                   <td style={TD}>
+                    {txn.type === "transfer" ? (
+                      <span style={{ color: "#9ca3af", fontSize: "12px", fontStyle: "italic" }}>
+                        —
+                      </span>
+                    ) : (
                     <EntityDropdown
                       value={txn.entityId}
                       entities={entities}
@@ -567,6 +581,7 @@ export default function ReviewTable({
                         onEntityChange(txn.id, entityId, entityType, entityName)
                       }
                     />
+                    )}
                   </td>
                 )}
 

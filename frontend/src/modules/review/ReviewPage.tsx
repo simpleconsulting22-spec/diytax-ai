@@ -8,6 +8,7 @@ import { useReviewTransactions } from "./hooks/useReviewTransactions";
 import AppNav from "../../components/AppNav";
 import { normalizeCategoryName } from "../../utils/normalizeCategory";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { apiClient } from "../../services/apiClient";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -227,6 +228,32 @@ export default function ReviewPage() {
   const [filterAccountInput, setFilterAccountInput] = useState("");
   const [applyingFilterAccount, setApplyingFilterAccount] = useState(false);
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
+
+  // Transfer-cleanup state. Surfaced as a small button on the header.
+  const [transferCleanup, setTransferCleanup] = useState<
+    { running: true } | { running: false; lastResult?: string } | null
+  >(null);
+
+  const handleCleanupTransfers = useCallback(async () => {
+    setTransferCleanup({ running: true });
+    try {
+      const res = await apiClient.call<{ scanned: number; updated: number }>(
+        "cleanupTransferCategorization",
+      );
+      setTransferCleanup({
+        running: false,
+        lastResult: res.updated > 0
+          ? `Cleared ${res.updated} transfer row${res.updated !== 1 ? "s" : ""}.`
+          : "Already clean — no transfers to update.",
+      });
+      await reload();
+    } catch (e) {
+      setTransferCleanup({
+        running: false,
+        lastResult: e instanceof Error ? `Failed: ${e.message}` : "Failed.",
+      });
+    }
+  }, [reload]);
   const [autoToast, setAutoToast] = useState<{ message: string; isError: boolean } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -463,6 +490,26 @@ export default function ReviewPage() {
               </button>
             )}
             <button
+              onClick={handleCleanupTransfers}
+              disabled={transferCleanup?.running ?? false}
+              title="Clear category, tax, and entity assignments on every transfer-typed transaction. Transfers don't have a category by design."
+              style={{
+                padding: "10px 14px",
+                backgroundColor: "#fff",
+                color: "#6b7280",
+                border: "1px solid #d1d5db",
+                borderRadius: "8px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: transferCleanup?.running ? "not-allowed" : "pointer",
+                opacity: transferCleanup?.running ? 0.6 : 1,
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {transferCleanup?.running ? "Cleaning…" : "Clean transfer rows"}
+            </button>
+            <button
               onClick={reload}
               style={{ padding: "10px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
             >
@@ -470,6 +517,21 @@ export default function ReviewPage() {
             </button>
           </div>
         </div>
+
+        {/* Transfer-cleanup status line */}
+        {transferCleanup && !transferCleanup.running && transferCleanup.lastResult && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "8px 12px",
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: "8px",
+            fontSize: "12px",
+            color: "#1d4ed8",
+          }}>
+            ✓ {transferCleanup.lastResult}
+          </div>
+        )}
 
         {/* Auto-categorize result toast */}
         {autoToast && (

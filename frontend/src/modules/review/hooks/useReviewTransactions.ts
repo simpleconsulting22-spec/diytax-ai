@@ -159,8 +159,15 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
   // Returns ids of rows that:
   //   • share the edited row's vendor
   //   • aren't the edited row itself
-  //   • have NOT been previously corrected by the user (source !== "user_rule")
   //   • differ from the edited row on at least one bundle field that was set
+  //   • are NOT type === "transfer" (transfers don't have category/entity)
+  //
+  // We deliberately do NOT exclude rows with source === "user_rule" — that
+  // signal conflates "user manually corrected" with "AI auto-applied a saved
+  // rule". When a stale rule has poisoned a vendor, the user needs to be able
+  // to cascade a new correction across rows that already say "Learned". The
+  // prompt is opt-in (Apply to all / Just this one) so the user always
+  // confirms before any cascade fires.
   //
   // The "field was set" check is what enforces our selective-field policy:
   // if the user only edited Assign To and Category is null, candidates are
@@ -183,7 +190,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     return transactions
       .filter((t) => {
         if (t.id === editedRow.id) return false;
-        if (t.source === "user_rule") return false;
+        if (t.type === "transfer") return false;       // transfers excluded entirely
         if (extractVendor(t) !== editedVendor) return false;
         const categoryDiffers = hasCategory && t.category !== bundle.category;
         const entityDiffers   = hasEntity   && (t.entityId !== bundle.entityId
@@ -819,10 +826,17 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     onProgress?: (processed: number, total: number) => void
   ): Promise<{ categorized: number; skipped: number; error?: string }> {
     if (!user) return { categorized: 0, skipped: 0 };
-    const targetIds =
+    // Skip transfer-typed rows (incl. credit-card-payment / loan-payment
+    // sub-types). They don't have a category by design — sending them to
+    // the AI just produces junk like "Funds Transfer Debit" → "Laundry".
+    const transferIds = new Set(
+      state.transactions.filter((t) => t.type === "transfer").map((t) => t.id)
+    );
+    const rawIds =
       ids === "all"
         ? state.transactions.map((t) => t.id)
         : ids;
+    const targetIds = rawIds.filter((id) => !transferIds.has(id));
     if (targetIds.length === 0) return { categorized: 0, skipped: 0 };
 
     const CHUNK = 40;
