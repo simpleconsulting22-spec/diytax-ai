@@ -23,9 +23,10 @@ export function dueSoonRisk(
   const available = totalAvailable(accounts);
   const overdraft = available > 0 && total > available;
 
-  // Sort by amount, take the top driver
+  // Sort by amount; include EVERY due bill as a driver so the UI can list
+  // them all when the user expands the card.
   const sorted = [...items].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
-  const drivers: InsightDriver[] = sorted.slice(0, 3).map((i) => ({
+  const drivers: InsightDriver[] = sorted.map((i) => ({
     kind: "transaction",
     label: `${i.merchantName} (${i.nextExpectedDate})`,
     amount: Math.abs(i.amount),

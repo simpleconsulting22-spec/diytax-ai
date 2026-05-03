@@ -1,8 +1,21 @@
 // Shared atom that renders any Insight uniformly: fact / why / action +
 // confidence pill + optional snooze. Used by every section.
 
-import React from "react";
+import React, { useState } from "react";
 import type { Insight, Confidence } from "../types";
+
+function fmtUsd(n: number): string {
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function driverNoun(insight: Insight): string {
+  switch (insight.kind) {
+    case "due-soon":
+    case "risk":     return insight.trust.drivers.length === 1 ? "bill" : "bills";
+    case "savings":  return insight.trust.drivers.length === 1 ? "merchant" : "merchants";
+    default:         return insight.trust.drivers.length === 1 ? "item" : "items";
+  }
+}
 
 const PILL: Record<Confidence, { bg: string; color: string; border: string }> = {
   high:   { bg: "#dcfce7", color: "#166534", border: "#86efac" },
@@ -29,6 +42,9 @@ export default function InsightCard({ insight, emphasis = "default", onSnooze }:
   const accent  = KIND_ACCENT[insight.kind];
   const conf    = PILL[insight.trust.confidence];
   const isPrimary = emphasis === "primary";
+  const [showDrivers, setShowDrivers] = useState(false);
+  const driverCount = insight.trust.drivers.length;
+  const canExpand   = driverCount > 0;
 
   return (
     <div style={{
@@ -86,6 +102,52 @@ export default function InsightCard({ insight, emphasis = "default", onSnooze }:
         <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "6px" }}>
           Estimated impact: <strong style={{ color: "#16A34A" }}>${Math.round(insight.monthlyImpact)}/mo</strong>
           {insight.effort && <> · effort: {insight.effort}</>}
+        </div>
+      )}
+      {canExpand && (
+        <div style={{ marginTop: "8px" }}>
+          <button
+            onClick={() => setShowDrivers((v) => !v)}
+            style={{
+              background: "none", border: "none", padding: 0, cursor: "pointer",
+              color: "#1d4ed8", fontSize: "11px", fontWeight: 600,
+              textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px",
+            }}
+          >
+            <span style={{ fontSize: "10px" }}>{showDrivers ? "▾" : "▸"}</span>
+            {showDrivers ? "Hide" : "View"} {driverCount} {driverNoun(insight)}
+          </button>
+          {showDrivers && (
+            <div style={{
+              marginTop: "6px",
+              backgroundColor: "rgba(255,255,255,0.7)",
+              borderRadius: "8px",
+              border: "1px solid rgba(0,0,0,0.06)",
+              overflow: "hidden",
+            }}>
+              {insight.trust.drivers.map((d, idx) => (
+                <div
+                  key={`${d.label}-${idx}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "6px 10px",
+                    borderTop: idx > 0 ? "1px solid rgba(0,0,0,0.05)" : "none",
+                    fontSize: "12px",
+                  }}
+                >
+                  <span style={{ color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {d.label}
+                  </span>
+                  <span style={{ color: "#6b7280", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                    {fmtUsd(Math.abs(d.amount))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       <div style={{
