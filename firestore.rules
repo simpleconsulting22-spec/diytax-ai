@@ -114,6 +114,15 @@ service cloud.firestore {
       allow delete: if canDelete(resource.data.uid);
     }
 
+    // ── Recurring Items ──────────────────────────────────────────────────────
+    // Written by the detectRecurring Cloud Function (admin SDK, bypasses rules).
+    // Read by the Money Coach page client-side. No client writes.
+
+    match /recurringItems/{doc} {
+      allow read:  if canRead(resource.data.uid);
+      allow write: if false;
+    }
+
     // ── Type Rules ────────────────────────────────────────────────────────────
     // Frontend-only learning loop: when the user confirms a type pattern in
     // the CSV / AI parser preview, a doc is written here keyed by extracted
