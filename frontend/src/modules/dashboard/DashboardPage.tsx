@@ -280,6 +280,47 @@ export default function DashboardPage() {
     () => localStorage.getItem("notif_prompt_dismissed") === "1"
   );
 
+  const [entityCleanup, setEntityCleanup] = useState<
+    { running: true } | { running: false; lastResult?: string } | null
+  >(null);
+
+  const hasEntityDupes = useMemo(() => {
+    const seen = new Set<string>();
+    for (const e of data.entityTotals) {
+      const k = (e.entityName ?? "").trim().toLowerCase();
+      if (!k) continue;
+      if (seen.has(k)) return true;
+      seen.add(k);
+    }
+    return false;
+  }, [data.entityTotals]);
+
+  async function handleEntityCleanup() {
+    setEntityCleanup({ running: true });
+    try {
+      const res = await apiClient.call<{
+        txns:  { reassigned: number; orphaned: number };
+        rules: { reassigned: number; orphaned: number };
+        entityDupsDeleted: number;
+      }>("cleanupEntityDuplicates");
+      const parts: string[] = [];
+      if (res.txns.reassigned)  parts.push(`${res.txns.reassigned} transaction${res.txns.reassigned !== 1 ? "s" : ""} reassigned`);
+      if (res.rules.reassigned) parts.push(`${res.rules.reassigned} rule${res.rules.reassigned !== 1 ? "s" : ""} reassigned`);
+      if (res.entityDupsDeleted) parts.push(`${res.entityDupsDeleted} duplicate entity record${res.entityDupsDeleted !== 1 ? "s" : ""} removed`);
+      const orphaned = res.txns.orphaned + res.rules.orphaned;
+      const summary = parts.length === 0
+        ? "Already clean — no duplicates found."
+        : parts.join(", ") + (orphaned ? `. ${orphaned} reference${orphaned !== 1 ? "s" : ""} couldn't be matched and were left as-is.` : ".");
+      setEntityCleanup({ running: false, lastResult: summary });
+      await reload();
+    } catch (e) {
+      setEntityCleanup({
+        running: false,
+        lastResult: e instanceof Error ? `Failed: ${e.message}` : "Failed.",
+      });
+    }
+  }
+
   // ── Spending forecast data ────────────────────────────────────────────────
   const [sfTransactions, setSfTransactions] = useState<any[]>([]);
   const [sfRecurring, setSfRecurring]       = useState<any[]>([]);
@@ -632,7 +673,44 @@ export default function DashboardPage() {
         {/* ── Section 2: By Entity ──────────────────────────────────────────── */}
         {!loading && hasEntityTotals && (
           <div style={card}>
-            <div style={sectionTitle}>Expenses by Business</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", gap: "12px", flexWrap: "wrap" }}>
+              <div style={{ ...sectionTitle, marginBottom: 0 }}>Expenses by Business</div>
+              {(hasEntityDupes || entityCleanup) && (
+                <button
+                  onClick={handleEntityCleanup}
+                  disabled={entityCleanup?.running ?? false}
+                  title="Reassign transactions and rules pointing at deleted entity records to the surviving entity that matches by name."
+                  style={{
+                    padding: "6px 12px",
+                    backgroundColor: "#fff",
+                    color: "#6b7280",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: entityCleanup?.running ? "not-allowed" : "pointer",
+                    opacity: entityCleanup?.running ? 0.6 : 1,
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {entityCleanup?.running ? "Merging…" : "Merge duplicates"}
+                </button>
+              )}
+            </div>
+            {entityCleanup && !entityCleanup.running && entityCleanup.lastResult && (
+              <div style={{
+                marginBottom: "12px",
+                padding: "8px 12px",
+                backgroundColor: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                fontSize: "12px",
+                color: "#1d4ed8",
+              }}>
+                ✓ {entityCleanup.lastResult}
+              </div>
+            )}
             {data.entityTotals.map((entity, i) => (
               <React.Fragment key={entity.entityId ?? "__unassigned__"}>
                 {i > 0 && (

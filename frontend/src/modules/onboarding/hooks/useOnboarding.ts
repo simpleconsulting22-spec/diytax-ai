@@ -263,38 +263,71 @@ export function useOnboarding() {
     try {
       const enabledSchedules = deriveEnabledSchedules(state.incomeSources);
 
-      // Delete existing entities before recreating to avoid duplicates
-      if (state.isEditing) {
-        const existingEntities = await getDocs(
-          query(collection(db, "entities"), where("userId", "==", user.uid))
-        );
-        const batch = writeBatch(db);
-        existingEntities.forEach((d) => batch.delete(d.ref));
-        await batch.commit();
-      }
+      // Reconcile entity docs in place instead of delete-then-recreate.
+      // Recreating mints new doc IDs, which leaves previously-categorized
+      // transactions and categoryRules pointing at the now-deleted entityId
+      // and causes the dashboard to show the same business as multiple
+      // sections (one per generation).
+      const existingSnap = await getDocs(
+        query(collection(db, "entities"), where("userId", "==", user.uid))
+      );
+      const existingByKey = new Map<
+        string,
+        { id: string; name: string; owner?: EntityOwner }
+      >();
+      existingSnap.forEach((d) => {
+        const data = d.data();
+        const t = data.type as string | undefined;
+        const n = data.name as string | undefined;
+        if (typeof t !== "string" || typeof n !== "string") return;
+        existingByKey.set(`${t}:${n.trim().toLowerCase()}`, {
+          id: d.id,
+          name: n,
+          owner: data.owner as EntityOwner | undefined,
+        });
+      });
 
-      // Create entity documents for business and/or rental
+      type Desired = { type: "business" | "rental"; name: string; owner: EntityOwner };
+      const desired: Desired[] = [];
       if (state.incomeSources.includes("business")) {
-        for (const entry of state.businesses.filter((e) => e.name.trim())) {
-          await addDoc(collection(db, "entities"), {
-            userId: user.uid,
-            type: "business",
-            name: entry.name.trim(),
-            owner: entry.owner,
-            createdAt: serverTimestamp(),
-          });
+        for (const e of state.businesses.filter((b) => b.name.trim())) {
+          desired.push({ type: "business", name: e.name.trim(), owner: e.owner });
         }
       }
       if (state.incomeSources.includes("rental")) {
-        for (const entry of state.rentals.filter((e) => e.name.trim())) {
+        for (const e of state.rentals.filter((r) => r.name.trim())) {
+          desired.push({ type: "rental", name: e.name.trim(), owner: e.owner });
+        }
+      }
+
+      const keepIds = new Set<string>();
+      for (const want of desired) {
+        const key = `${want.type}:${want.name.toLowerCase()}`;
+        const match = existingByKey.get(key);
+        if (match) {
+          keepIds.add(match.id);
+          if (match.name !== want.name || match.owner !== want.owner) {
+            await updateDoc(doc(db, "entities", match.id), {
+              name: want.name,
+              owner: want.owner,
+            });
+          }
+        } else {
           await addDoc(collection(db, "entities"), {
             userId: user.uid,
-            type: "rental",
-            name: entry.name.trim(),
-            owner: entry.owner,
+            type: want.type,
+            name: want.name,
+            owner: want.owner,
             createdAt: serverTimestamp(),
           });
         }
+      }
+
+      const toDelete = [...existingByKey.values()].filter((e) => !keepIds.has(e.id));
+      if (toDelete.length > 0) {
+        const batch = writeBatch(db);
+        for (const e of toDelete) batch.delete(doc(db, "entities", e.id));
+        await batch.commit();
       }
 
       const isMarried =

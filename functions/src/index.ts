@@ -37,3 +37,4 @@ export * from "./forecast/detectRecurring";
 export * from "./forecast/getTaxForecast";
 export * from "./admin/wipeBankData";
 export * from "./admin/cleanupTransferCategorization";
+export * from "./admin/cleanupEntityDuplicates";
