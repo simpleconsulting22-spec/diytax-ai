@@ -225,6 +225,9 @@ export default function ReviewPage() {
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
   const [bulkAccountName, setBulkAccountName] = useState("");
   const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense" | "transfer" | "refund">("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [entityFilter, setEntityFilter] = useState<string>("all");
   const [filterAccountInput, setFilterAccountInput] = useState("");
   const [applyingFilterAccount, setApplyingFilterAccount] = useState(false);
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
@@ -311,12 +314,31 @@ export default function ReviewPage() {
 
   const hasBlankAccounts = transactions.some((t) => !t.accountName?.trim());
 
-  const filteredTransactions =
-    accountFilter === "all"
-      ? transactions
-      : accountFilter === "__blank__"
-      ? transactions.filter((t) => !t.accountName?.trim())
-      : transactions.filter((t) => t.accountName === accountFilter);
+  const categoryOptions = Array.from(
+    new Set(transactions.map((t) => t.category).filter((c): c is string => !!c))
+  ).sort();
+
+  const hasUncategorized = transactions.some((t) => !t.category);
+
+  const filteredTransactions = transactions.filter((t) => {
+    if (accountFilter === "__blank__") {
+      if (t.accountName?.trim()) return false;
+    } else if (accountFilter !== "all") {
+      if (t.accountName !== accountFilter) return false;
+    }
+    if (typeFilter !== "all" && t.type !== typeFilter) return false;
+    if (categoryFilter === "__blank__") {
+      if (t.category) return false;
+    } else if (categoryFilter !== "all") {
+      if (t.category !== categoryFilter) return false;
+    }
+    if (entityFilter === "__personal__") {
+      if (t.entityId) return false;
+    } else if (entityFilter !== "all") {
+      if (t.entityId !== entityFilter) return false;
+    }
+    return true;
+  });
 
   // allSelected and toggleSelectAll must reflect the filtered view only.
   const filteredAllSelected = useMemo(
@@ -582,13 +604,51 @@ export default function ReviewPage() {
           </div>
         )}
 
-        {/* Account filter */}
-        {!loading && (accountOptions.length > 0 || hasBlankAccounts) && (
+        {/* Filters */}
+        {!loading && transactions.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
+            {(accountOptions.length > 0 || hasBlankAccounts) && (
+              <>
+                <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
+                <select
+                  value={accountFilter}
+                  onChange={(e) => setAccountFilter(e.target.value)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    backgroundColor: "#fff",
+                    fontSize: "13px",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontFamily: font,
+                    outline: "none",
+                  }}
+                >
+                  <option value="all">All Accounts</option>
+                  {hasBlankAccounts && (
+                    <option value="__blank__">— No Account —</option>
+                  )}
+                  {accountOptions.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                {accountFilter !== "all" && (
+                  <button
+                    onClick={() => setAccountFilter("all")}
+                    style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
+            )}
+
+            {/* Type filter */}
+            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Type:</span>
             <select
-              value={accountFilter}
-              onChange={(e) => setAccountFilter(e.target.value)}
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
               style={{
                 padding: "6px 10px",
                 borderRadius: "6px",
@@ -601,21 +661,91 @@ export default function ReviewPage() {
                 outline: "none",
               }}
             >
-              <option value="all">All Accounts</option>
-              {hasBlankAccounts && (
-                <option value="__blank__">— No Account —</option>
-              )}
-              {accountOptions.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
+              <option value="all">All Types</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+              <option value="transfer">Transfer</option>
+              <option value="refund">Refund</option>
             </select>
-            {accountFilter !== "all" && (
+            {typeFilter !== "all" && (
               <button
-                onClick={() => setAccountFilter("all")}
+                onClick={() => setTypeFilter("all")}
                 style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
               >
                 Clear
               </button>
+            )}
+
+            {/* Category filter */}
+            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Category:</span>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#fff",
+                fontSize: "13px",
+                color: "#374151",
+                cursor: "pointer",
+                fontFamily: font,
+                outline: "none",
+                maxWidth: "220px",
+              }}
+            >
+              <option value="all">All Categories</option>
+              {hasUncategorized && (
+                <option value="__blank__">— Uncategorized —</option>
+              )}
+              {categoryOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {categoryFilter !== "all" && (
+              <button
+                onClick={() => setCategoryFilter("all")}
+                style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+              >
+                Clear
+              </button>
+            )}
+
+            {/* Assign to filter */}
+            {entities.length > 0 && (
+              <>
+                <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Assign to:</span>
+                <select
+                  value={entityFilter}
+                  onChange={(e) => setEntityFilter(e.target.value)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    backgroundColor: "#fff",
+                    fontSize: "13px",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontFamily: font,
+                    outline: "none",
+                    maxWidth: "220px",
+                  }}
+                >
+                  <option value="all">All Entities</option>
+                  <option value="__personal__">Personal</option>
+                  {entities.map((en) => (
+                    <option key={en.id} value={en.id}>{en.name}</option>
+                  ))}
+                </select>
+                {entityFilter !== "all" && (
+                  <button
+                    onClick={() => setEntityFilter("all")}
+                    style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
             )}
 
             {/* Set account for all filtered */}
