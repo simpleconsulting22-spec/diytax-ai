@@ -67,10 +67,16 @@ export function totalAvailable(accounts: CoachAccount[]): number {
 /** Recurring items whose next-expected date is in the past — i.e. user hasn't
  *  recorded a payment for the most-recently-expected cycle. The system can't
  *  tell whether the user genuinely missed the payment or paid outside the app
- *  (cash/check), so the caller should phrase carefully. */
+ *  (cash/check), so the caller should phrase carefully.
+ *
+ *  Bounded by `maxDaysOverdue` (default 90) so stale recurring detections from
+ *  prior years don't surface as fresh debt. `missedCycles` is also clamped to
+ *  `maxMissedCycles` (default 3) so estimated `totalOwed` stays sane. */
 export function overdueBills(
   recurring: CoachRecurringItem[],
   today:     Date,
+  maxDaysOverdue   = 90,
+  maxMissedCycles  = 3,
 ): { items: OverdueBill[]; total: number } {
   const todayIso = iso(today);
   const out: OverdueBill[] = [];
@@ -82,10 +88,10 @@ export function overdueBills(
     const todayMs = Date.parse(`${todayIso}T00:00:00Z`);
     if (Number.isNaN(nextMs)) continue;
     const daysOverdue = Math.max(1, Math.floor((todayMs - nextMs) / 86_400_000));
+    if (daysOverdue > maxDaysOverdue) continue;
     const interval    = r.intervalDays > 0 ? r.intervalDays : 30;
-    // Include the missed nextExpected itself (+1) plus any further cycles
-    // that have elapsed since.
-    const missedCycles = Math.max(1, Math.floor(daysOverdue / interval) + 1);
+    const rawCycles    = Math.floor(daysOverdue / interval) + 1;
+    const missedCycles = Math.min(maxMissedCycles, Math.max(1, rawCycles));
     const amt          = Math.abs(r.amount);
     const owed         = amt * missedCycles;
     out.push({ item: r, daysOverdue, missedCycles, totalOwed: round2(owed) });
