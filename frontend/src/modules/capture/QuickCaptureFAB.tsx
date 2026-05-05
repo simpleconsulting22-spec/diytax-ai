@@ -14,22 +14,15 @@ import { getUserEntities, UserEntity } from "../../services/entityService";
 import { apiClient } from "../../services/apiClient";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { CATEGORY_GROUPS } from "../review/components/CategoryDropdown";
+import { getMapping } from "../../shared/taxMap";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 // ─── Tax schedule derivation ──────────────────────────────────────────────────
 
 function categoryToSchedule(cat: string): { taxSchedule: string; taxCategory: string } {
-  for (const group of CATEGORY_GROUPS) {
-    if (group.categories.includes(cat)) {
-      if (group.group === "Income") return { taxSchedule: "Schedule C", taxCategory: cat };
-      if (group.group.includes("Business")) return { taxSchedule: "Schedule C", taxCategory: cat };
-      if (group.group.includes("Sch. A")) return { taxSchedule: "Schedule A", taxCategory: cat };
-      if (group.group.includes("Sch. E")) return { taxSchedule: "Schedule E", taxCategory: cat };
-      return { taxSchedule: "Personal", taxCategory: cat };
-    }
-  }
-  return { taxSchedule: "Personal", taxCategory: cat };
+  const m = getMapping(cat);
+  return { taxSchedule: m?.taxSchedule ?? "Personal", taxCategory: cat };
 }
 
 // ─── Shared style helpers ─────────────────────────────────────────────────────

@@ -84,6 +84,12 @@ const KEYWORD_RULES: KeywordRule[] = [
     taxSchedule: "Form 1040",
   },
   {
+    keywords: ["payroll", "direct dep", "direct deposit", "salary", "paycheck", "adp ", "gusto", "paychex", "intuit payroll", "rippling"],
+    category: "Wages & Salaries",
+    taxCategory: "Wages & Salaries",
+    taxSchedule: "Form 1040",
+  },
+  {
     keywords: ["github", "aws", "amazon web services", "digitalocean", "heroku", "netlify", "vercel", "stripe", "twilio", "sendgrid"],
     category: "Software & Subscriptions",
     taxCategory: "Business Expense",
@@ -259,10 +265,11 @@ async function callAIBatch(
     `  - Business expenses → assign to business entity\n` +
     `  - Personal/unclear → assign to "Personal"\n\n` +
     `Tax categories:\n` +
+    `  W-2 wages (Form 1040): Wages & Salaries — paycheck/payroll/direct-deposit from employer\n` +
     `  Income: Business Income, Rental Income, Investment Income, Other Income\n` +
     `  Business (Sch. C): Advertising & Marketing, Auto & Vehicle, Business Meals, Business Travel,\n` +
     `    Computer & Software, Contract Labor, Home Office, Legal & Professional, Office Supplies,\n` +
-    `    Phone & Internet, Rent & Lease, Repairs & Maintenance, Wages & Salaries, Other Business Expense\n` +
+    `    Phone & Internet, Rent & Lease, Repairs & Maintenance, Other Business Expense\n` +
     `  Rental (Sch. E): Mortgage Interest (Rental), Property Management, Property Taxes,\n` +
     `    Rental Insurance, Rental Repairs & Maintenance, Rental Utilities\n` +
     `  Deductions (Sch. A): Charitable Contribution, Medical Expense, Mortgage Interest\n` +

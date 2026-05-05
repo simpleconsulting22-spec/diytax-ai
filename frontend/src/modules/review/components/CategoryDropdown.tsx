@@ -1,89 +1,10 @@
 import React from "react";
 
-// Exhaustive list of tax-relevant categories, grouped for readability.
-// The flat array is used in dropdowns; the grouped structure is exposed
-// for any component that wants to render sections.
-export const CATEGORY_GROUPS: Array<{ group: string; categories: string[] }> = [
-  {
-    group: "Income",
-    categories: [
-      "Business Income",
-      "Rental Income",
-      "Investment Income",
-      "Interest Income",
-      "Dividend Income",
-      "Other Income",
-    ],
-  },
-  {
-    group: "Business Expenses (Sch. C)",
-    categories: [
-      "Advertising & Marketing",
-      "Auto & Vehicle",
-      "Bank Fees & Charges",
-      "Business Insurance",
-      "Business Meals",
-      "Business Travel",
-      "Computer & Software",
-      "Contract Labor",
-      "Education & Training",
-      "Equipment & Machinery",
-      "Home Office",
-      "Legal & Professional",
-      "Licenses & Permits",
-      "Office Supplies",
-      "Phone & Internet",
-      "Postage & Shipping",
-      "Printing & Publishing",
-      "Rent & Lease",
-      "Repairs & Maintenance",
-      "Taxes & Licenses",
-      "Utilities",
-      "Wages & Salaries",
-      "Other Business Expense",
-    ],
-  },
-  {
-    group: "Deductions (Sch. A)",
-    categories: [
-      "Charitable Contribution",
-      "Medical Expense",
-      "Dental Expense",
-      "State & Local Taxes",
-      "Mortgage Interest",
-      "Investment Expense",
-      "Casualty Loss",
-    ],
-  },
-  {
-    group: "Rental (Sch. E)",
-    categories: [
-      "Mortgage Interest (Rental)",
-      "Property Management",
-      "Property Taxes",
-      "Rental Insurance",
-      "Rental Repairs & Maintenance",
-      "Rental Supplies",
-      "Rental Utilities",
-    ],
-  },
-  {
-    group: "Personal",
-    categories: [
-      "Groceries",
-      "Dining & Restaurants",
-      "Entertainment",
-      "Personal Care",
-      "Clothing & Apparel",
-      "Healthcare",
-      "Personal Transportation",
-      "Personal Subscriptions",
-      "Other Personal",
-    ],
-  },
-];
-
-export const TAX_CATEGORIES: string[] = CATEGORY_GROUPS.flatMap((g) => g.categories);
+// Categories live in the canonical tax map (single source of truth). This file
+// just renders the dropdown and re-exports the names other modules already
+// import from here, so existing imports keep working.
+export { CATEGORY_GROUPS, TAX_CATEGORIES } from "../../../shared/taxMap";
+import { CATEGORY_GROUPS } from "../../../shared/taxMap";
 
 interface CategoryDropdownProps {
   value: string | null;

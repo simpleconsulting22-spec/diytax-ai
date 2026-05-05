@@ -52,14 +52,14 @@ Vendor/Description: "${description}"
 ${amount !== undefined ? `Amount: $${amount}` : ""}
 
 Choose the single best category from this list:
-Business Income, Rental Income, Investment Income, Interest Income, Dividend Income, Other Income,
-Advertising & Marketing, Auto & Vehicle, Bank Fees & Charges, Business Insurance, Business Meals, Business Travel, Computer & Software, Contract Labor, Education & Training, Equipment & Machinery, Home Office, Legal & Professional, Licenses & Permits, Office Supplies, Phone & Internet, Postage & Shipping, Printing & Publishing, Rent & Lease, Repairs & Maintenance, Taxes & Licenses, Utilities, Wages & Salaries, Other Business Expense,
+Wages & Salaries (W-2 paycheck/payroll deposits — taxSchedule "Form 1040"), Business Income, Rental Income, Investment Income, Interest Income, Dividend Income, Other Income,
+Advertising & Marketing, Auto & Vehicle, Bank Fees & Charges, Business Insurance, Business Meals, Business Travel, Computer & Software, Contract Labor, Education & Training, Equipment & Machinery, Home Office, Legal & Professional, Licenses & Permits, Office Supplies, Phone & Internet, Postage & Shipping, Printing & Publishing, Rent & Lease, Repairs & Maintenance, Taxes & Licenses, Utilities, Other Business Expense,
 Charitable Contribution, Medical Expense, Dental Expense, State & Local Taxes, Mortgage Interest, Investment Expense, Casualty Loss,
 Mortgage Interest (Rental), Property Management, Property Taxes, Rental Insurance, Rental Repairs & Maintenance, Rental Supplies, Rental Utilities,
 Groceries, Dining & Restaurants, Entertainment, Personal Care, Clothing & Apparel, Healthcare, Personal Transportation, Personal Subscriptions, Other Personal
 
 Return ONLY valid JSON (no markdown, no code fences):
-{"category":"string","taxCategory":"string","taxSchedule":"Schedule C|Schedule A|Schedule E|Personal","confidence":0.0}`;
+{"category":"string","taxCategory":"string","taxSchedule":"Schedule C|Schedule A|Schedule E|Form 1040|Personal","confidence":0.0}`;
 
     try {
       const openai = new OpenAI({ apiKey });

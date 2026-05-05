@@ -1,6 +1,8 @@
 // Pure tax estimation functions — no React, no Firestore, fully testable.
 // All numbers are 2024 IRS figures.
 
+import { getTaxBucket } from "../../shared/taxMap";
+
 export type FilingStatus =
   | "single"
   | "married_jointly"
@@ -11,6 +13,8 @@ export interface TaxableTransaction {
   amount: number;
   type: "income" | "expense" | "refund" | "transfer";
   taxSchedule: string | null;
+  taxCategory?: string | null;
+  category?: string | null;
   status: string;
   taxYear?: number | null;
   date?: string;
@@ -31,6 +35,7 @@ export interface TaxEstimate {
   scheduleCIncome: number;
   scheduleCExpenses: number;
   w2Income: number;
+  w2FromTxns: number;
   seTax: number;
   seDeduction: number;
   agi: number;
@@ -138,6 +143,7 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
   let scheduleCExpenses = 0;
   let scheduleAFromTxns = 0;
   let totalTxnIncome = 0;
+  let w2FromTxns = 0; // Ordinary (non-SE, non-rental) income: W-2 wages, interest, dividends, etc.
 
   for (const txn of transactions) {
     // Skip transfers (filter on `type`, not legacy `status === "transfer"` —
@@ -147,20 +153,29 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
     if (txn.type === "transfer") continue;
     if (txn.status === "needs_review") continue;
     const abs = Math.abs(txn.amount);
+    const amt = txn.amount > 0 ? txn.amount : abs;
+    const bucket = getTaxBucket(txn);
 
     if (txn.type === "income") {
-      totalTxnIncome += txn.amount > 0 ? txn.amount : abs;
-    }
-    if (txn.taxSchedule === "Schedule C") {
-      if (txn.type === "income") scheduleCIncome += txn.amount > 0 ? txn.amount : abs;
-      else if (txn.type === "expense") scheduleCExpenses += abs;
-    }
-    if (txn.taxSchedule === "Schedule A" && txn.type === "expense") {
-      scheduleAFromTxns += abs;
+      totalTxnIncome += amt;
+      // Route income by canonical bucket. Anything that isn't self-employment
+      // or rental flows into AGI as ordinary income (W-2 wages, interest,
+      // dividends, "Other Income", etc.).
+      if (bucket === "se_income") {
+        scheduleCIncome += amt;
+      } else if (bucket !== "rental_income") {
+        w2FromTxns += amt;
+      }
+      // rental_income is dropped — Schedule E isn't folded into the meter yet.
+    } else if (txn.type === "expense") {
+      if (bucket === "se_expense") scheduleCExpenses += abs;
+      else if (bucket === "itemized_deduction") scheduleAFromTxns += abs;
+      // rental_expense and personal have no impact on the meter.
     }
   }
 
   const scheduleCNet = scheduleCIncome - scheduleCExpenses;
+  const totalW2 = w2Income + w2FromTxns;
   const grossIncome = totalTxnIncome + w2Income;
   const itemizedDeduction = round2(scheduleAFromTxns + scheduleAManualDeductions);
 
@@ -176,7 +191,7 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
   }
 
   // AGI — Schedule C loss offsets W-2 income, floored at 0
-  const agi = Math.max(0, round2(w2Income + scheduleCNet - seDeduction - iraContributions));
+  const agi = Math.max(0, round2(totalW2 + scheduleCNet - seDeduction - iraContributions));
 
   // Deduction used
   const standardDeduction = STANDARD_DEDUCTIONS_2024[filingStatus];
@@ -205,7 +220,8 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
     scheduleCNet: round2(scheduleCNet),
     scheduleCIncome: round2(scheduleCIncome),
     scheduleCExpenses: round2(scheduleCExpenses),
-    w2Income,
+    w2Income: round2(totalW2),
+    w2FromTxns: round2(w2FromTxns),
     seTax,
     seDeduction,
     agi,
