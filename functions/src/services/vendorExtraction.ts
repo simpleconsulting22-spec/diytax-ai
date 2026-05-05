@@ -38,18 +38,30 @@ const LEADING_NOISE: RegExp[] = [
   /^online\s+(banking\s+)?(payment|purchase|transfer)\s*[-:]?\s*/i,
   /^mobile\s+(deposit|payment)\s*[-:]?\s*/i,
   /^bill\s+pay(ment)?\s+-?\s*/i,
+  /^interest\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
+  /^dividend\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
+  /^(monthly|annual)\s+(fee|charge|service\s+charge|maintenance)\s*[-:]?\s*/i,
+  /^service\s+(fee|charge)\s*[-:]?\s*/i,
   /^\d{4,}\s+/,               // Leading long numeric codes
 ];
 
-// Generic payment-method tokens — never a real vendor identity. If extraction
-// yields one of these alone, the caller should treat it as "no vendor" so
-// downstream learning/cascade logic refuses to match across unrelated payees.
+// Generic tokens — never identify a specific payee. Includes payment methods
+// AND bank-statement accounting terms. If extraction yields ONLY these, treat
+// as "no vendor" so downstream learning refuses to match across unrelated rows.
 const GENERIC_PAYMENT_TOKENS: ReadonlySet<string> = new Set([
   "zelle", "venmo", "paypal", "cashapp", "cash", "ach",
   "wire", "transfer", "payment", "deposit", "withdrawal",
   "check", "debit", "credit", "atm", "online", "mobile",
   "billpay", "autopay", "recurring", "purchase", "pos",
+  "interest", "dividend", "fee", "charge", "earnings",
+  "service", "monthly", "annual", "paid", "earned",
+  "income", "refund", "rebate", "reversal", "adjustment",
+  "to", "from", "the", "for", "and", "of",
 ]);
+
+function isAllGeneric(key: string): boolean {
+  return key.split(/\s+/).every((w) => GENERIC_PAYMENT_TOKENS.has(w));
+}
 
 // ─── Trailing noise to strip ──────────────────────────────────────────────────
 
@@ -173,13 +185,24 @@ export function extractVendorName(
     return (description.split(/\s+/)[0] ?? "unknown").toLowerCase().slice(0, 30);
   }
 
-  // If the first word is very short (abbreviation), include a second word for clarity
-  const vendor =
-    words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
+  // Greedy expansion: start with the first word, but if it's purely generic
+  // (e.g. "interest", "monthly fee"), keep walking forward picking up more
+  // words until we hit a real identifier ("interest paid penfed") or run out.
+  // Cap at 5 words so we don't fingerprint entire sentences.
+  let vendor = words[0];
+  let i = 1;
+  // Short-abbreviation rule: if first word is ≤2 chars, always include the
+  // second word for clarity ("at&t" → already handled by alias map; this
+  // catches things like "us bank" → "us bank").
+  if (vendor.length <= 2 && words[1]) {
+    vendor = `${vendor} ${words[1]}`;
+    i = 2;
+  }
+  while (i < words.length && i < 5 && isAllGeneric(vendor)) {
+    vendor = `${vendor} ${words[i]}`;
+    i++;
+  }
+  if (isAllGeneric(vendor)) return "";
 
-  // If we ended up with just a generic payment-method token, refuse to use it
-  // as a vendor identity — the description didn't actually identify a payee.
-  if (GENERIC_PAYMENT_TOKENS.has(vendor)) return "";
-
-  return vendor.slice(0, 40); // cap length
+  return vendor.slice(0, 60); // cap length (raised from 40 to fit fingerprints)
 }

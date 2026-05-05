@@ -52,19 +52,26 @@ export interface ReviewTransaction {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Generic payment-method tokens. If the extracted vendor is just one of these,
-// the description doesn't identify a real merchant/payee — refuse to use it as
-// a cascade key (would otherwise match every Zelle/Venmo/ACH transaction in the
-// account regardless of who it was actually with).
+// Generic tokens that don't identify a specific merchant/payee. Includes both
+// payment-method words ("zelle", "ach") and bank-statement accounting terms
+// ("interest", "fee", "paid"). When the cascade key consists ONLY of these,
+// the description hasn't identified a payee — the cascade refuses to match.
 const GENERIC_PAYMENT_TOKENS = new Set([
+  // Payment methods
   "zelle", "venmo", "paypal", "cashapp", "cash", "ach",
   "wire", "transfer", "payment", "deposit", "withdrawal",
   "check", "debit", "credit", "atm", "online", "mobile",
   "billpay", "autopay", "recurring", "purchase", "pos",
+  // Bank-statement accounting terms
+  "interest", "dividend", "fee", "charge", "earnings",
+  "service", "monthly", "annual", "paid", "earned",
+  "income", "refund", "rebate", "reversal", "adjustment",
+  // Connectors
+  "to", "from", "the", "for", "and", "of",
 ]);
 
-// Strip payment-method prefixes so the real payee surfaces. Order matters —
-// the longer / more specific patterns must run first.
+// Strip payment-method / accounting prefixes so the real payee surfaces.
+// Order matters — longer / more specific patterns must run first.
 const PAYMENT_PREFIX_STRIP: RegExp[] = [
   /^zelle\s+(to|from|payment\s+(to|from)?|transfer\s+(to|from)?)\s*[-:]?\s*/i,
   /^zelle\s+\d+\s*/i,                     // "ZELLE 123456 JANE DOE"
@@ -82,8 +89,16 @@ const PAYMENT_PREFIX_STRIP: RegExp[] = [
   /^recurring\s+payment\s*[-:]?\s*/i,
   /^debit\s+card\s+purchase\s*[-:]?\s*/i,
   /^pos\s*#?\s*\d*\s*/i,
+  /^interest\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
+  /^dividend\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
+  /^(monthly|annual)\s+(fee|charge|service\s+charge|maintenance)\s*[-:]?\s*/i,
+  /^service\s+(fee|charge)\s*[-:]?\s*/i,
   /^\d{4,}\s+/,                            // leading long numeric codes
 ];
+
+function isAllGeneric(key: string): boolean {
+  return key.split(/\s+/).every((w) => GENERIC_PAYMENT_TOKENS.has(w));
+}
 
 function stripPaymentPrefixes(s: string): string {
   let out = s.trim();
@@ -102,23 +117,32 @@ function stripPaymentPrefixes(s: string): string {
   return out;
 }
 
-// Prefer the pre-extracted vendor field; fall back to first 1–2 meaningful
-// words *after* stripping payment-method noise. Returns "" when the result is
-// just a generic payment token (cascade then refuses to fire).
+// Cascade key. Two-tier strategy:
+//  1) Trust txn.vendor when it's a clean, non-generic merchant name.
+//  2) Otherwise build a longer fingerprint from the description — if leading
+//     words are all generic ("interest paid", "monthly fee"), keep walking
+//     forward picking up more words until we hit a real identifier
+//     ("interest paid penfed") or run out (return "" and skip the cascade).
 function extractVendor(txnOrDesc: ReviewTransaction | string): string {
   if (typeof txnOrDesc !== "string") {
     const pre = txnOrDesc.vendor?.trim().toLowerCase();
-    // Only trust the pre-extracted vendor if it isn't a generic token.
-    if (pre && !GENERIC_PAYMENT_TOKENS.has(pre)) return pre;
+    if (pre && !isAllGeneric(pre)) return pre;
     return extractVendor(txnOrDesc.normalizedDescription || txnOrDesc.description || "");
   }
   const stripped = stripPaymentPrefixes(txnOrDesc.toLowerCase());
   const words = stripped.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
   if (words.length === 0) return "";
-  // First non-numeric word; include the second if first is very short.
-  const vendor = words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
-  if (GENERIC_PAYMENT_TOKENS.has(vendor)) return "";
-  return vendor;
+
+  // Greedy expansion: keep adding words while the running key is purely
+  // generic. Cap at 5 words so we don't end up keying on whole sentences.
+  let key = words[0];
+  let i = 1;
+  while (i < words.length && i < 5 && isAllGeneric(key)) {
+    key = `${key} ${words[i]}`;
+    i++;
+  }
+  if (isAllGeneric(key)) return "";
+  return key;
 }
 
 // Upsert a categoryRule by vendor — avoids duplicate documents.
