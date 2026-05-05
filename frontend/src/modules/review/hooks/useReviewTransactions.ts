@@ -52,14 +52,73 @@ export interface ReviewTransaction {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Prefer the pre-extracted vendor field; fall back to first meaningful word.
+// Generic payment-method tokens. If the extracted vendor is just one of these,
+// the description doesn't identify a real merchant/payee — refuse to use it as
+// a cascade key (would otherwise match every Zelle/Venmo/ACH transaction in the
+// account regardless of who it was actually with).
+const GENERIC_PAYMENT_TOKENS = new Set([
+  "zelle", "venmo", "paypal", "cashapp", "cash", "ach",
+  "wire", "transfer", "payment", "deposit", "withdrawal",
+  "check", "debit", "credit", "atm", "online", "mobile",
+  "billpay", "autopay", "recurring", "purchase", "pos",
+]);
+
+// Strip payment-method prefixes so the real payee surfaces. Order matters —
+// the longer / more specific patterns must run first.
+const PAYMENT_PREFIX_STRIP: RegExp[] = [
+  /^zelle\s+(to|from|payment\s+(to|from)?|transfer\s+(to|from)?)\s*[-:]?\s*/i,
+  /^zelle\s+\d+\s*/i,                     // "ZELLE 123456 JANE DOE"
+  /^zelle\s*[-:]?\s*/i,                   // "ZELLE - JANE DOE"
+  /^venmo\s+(payment|cashout)?\s*[-:]?\s*/i,
+  /^cash\s*app\s*\*?\s*/i,
+  /^paypal\s*\*?\s*(transfer|payment)?\s*/i,
+  /^pp\s*\*\s*/i,
+  /^ach\s+(credit|debit|transfer|payment)?\s*[-:]?\s*/i,
+  /^wire\s+(transfer|in|out)?\s*[-:]?\s*/i,
+  /^online\s+(banking\s+)?(transfer|payment)\s*[-:]?\s*/i,
+  /^mobile\s+(deposit|payment)\s*[-:]?\s*/i,
+  /^autopay\s+/i,
+  /^bill\s*pay(ment)?\s*[-:]?\s*/i,
+  /^recurring\s+payment\s*[-:]?\s*/i,
+  /^debit\s+card\s+purchase\s*[-:]?\s*/i,
+  /^pos\s*#?\s*\d*\s*/i,
+  /^\d{4,}\s+/,                            // leading long numeric codes
+];
+
+function stripPaymentPrefixes(s: string): string {
+  let out = s.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pat of PAYMENT_PREFIX_STRIP) {
+      const next = out.replace(pat, "").trim();
+      if (next !== out) {
+        out = next;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// Prefer the pre-extracted vendor field; fall back to first 1–2 meaningful
+// words *after* stripping payment-method noise. Returns "" when the result is
+// just a generic payment token (cascade then refuses to fire).
 function extractVendor(txnOrDesc: ReviewTransaction | string): string {
   if (typeof txnOrDesc !== "string") {
-    if (txnOrDesc.vendor?.trim()) return txnOrDesc.vendor.trim().toLowerCase();
+    const pre = txnOrDesc.vendor?.trim().toLowerCase();
+    // Only trust the pre-extracted vendor if it isn't a generic token.
+    if (pre && !GENERIC_PAYMENT_TOKENS.has(pre)) return pre;
     return extractVendor(txnOrDesc.normalizedDescription || txnOrDesc.description || "");
   }
-  const words = txnOrDesc.trim().split(/\s+/);
-  return words.find((w) => w.length >= 3 && !/^\d/.test(w)) ?? words[0] ?? "";
+  const stripped = stripPaymentPrefixes(txnOrDesc.toLowerCase());
+  const words = stripped.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
+  if (words.length === 0) return "";
+  // First non-numeric word; include the second if first is very short.
+  const vendor = words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
+  if (GENERIC_PAYMENT_TOKENS.has(vendor)) return "";
+  return vendor;
 }
 
 // Upsert a categoryRule by vendor — avoids duplicate documents.

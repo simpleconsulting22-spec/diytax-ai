@@ -16,10 +16,11 @@ const LEADING_NOISE: RegExp[] = [
   /^sq\s*\*\s*/i,             // Square POS: "SQ* Vendor"
   /^tst\s*\*\s*/i,             // Toast POS: "TST* Vendor"
   /^pp\s*\*\s*/i,              // PayPal legacy
-  /^paypal\s*\*\s*/i,
+  /^paypal\s*\*?\s*(transfer|payment)?\s*/i,
   /^amzn\s+mktp(\s+us)?\s*/i, // Amazon Marketplace
   /^amazon\.com\/bill\s*/i,
-  /^ach\s+(credit|debit|)\s*/i,
+  /^ach\s+(credit|debit|transfer|payment)?\s*[-:]?\s*/i,
+  /^wire\s+(transfer|in|out)?\s*[-:]?\s*/i,
   /^pos\s*#?\s*\d*\s*/i,      // POS terminal
   /^debit\s+card\s+purchase\s*/i,
   /^debit\s+card\s*/i,
@@ -27,14 +28,28 @@ const LEADING_NOISE: RegExp[] = [
   /^purchase\s+(at\s+|-\s*)?/i,
   /^payment\s+to\s+/i,
   /^autopay\s+/i,
-  /^zelle\s+(to|from)\s+/i,
-  /^venmo\s+/i,
+  /^zelle\s+(to|from|payment\s+(to|from)?|transfer\s+(to|from)?)\s*[-:]?\s*/i,
+  /^zelle\s+\d+\s*/i,                     // "ZELLE 123456 JANE DOE"
+  /^zelle\s*[-:]?\s*/i,
+  /^venmo\s+(payment|cashout)?\s*[-:]?\s*/i,
+  /^cash\s*app\s*\*?\s*/i,
   /^checkcard\s+\d*\s*/i,
   /^recurring\s+payment\s*/i,
-  /^online\s+(payment|purchase|banking\s+transfer)\s*/i,
+  /^online\s+(banking\s+)?(payment|purchase|transfer)\s*[-:]?\s*/i,
+  /^mobile\s+(deposit|payment)\s*[-:]?\s*/i,
   /^bill\s+pay(ment)?\s+-?\s*/i,
   /^\d{4,}\s+/,               // Leading long numeric codes
 ];
+
+// Generic payment-method tokens — never a real vendor identity. If extraction
+// yields one of these alone, the caller should treat it as "no vendor" so
+// downstream learning/cascade logic refuses to match across unrelated payees.
+const GENERIC_PAYMENT_TOKENS: ReadonlySet<string> = new Set([
+  "zelle", "venmo", "paypal", "cashapp", "cash", "ach",
+  "wire", "transfer", "payment", "deposit", "withdrawal",
+  "check", "debit", "credit", "atm", "online", "mobile",
+  "billpay", "autopay", "recurring", "purchase", "pos",
+]);
 
 // ─── Trailing noise to strip ──────────────────────────────────────────────────
 
@@ -161,6 +176,10 @@ export function extractVendorName(
   // If the first word is very short (abbreviation), include a second word for clarity
   const vendor =
     words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
+
+  // If we ended up with just a generic payment-method token, refuse to use it
+  // as a vendor identity — the description didn't actually identify a payee.
+  if (GENERIC_PAYMENT_TOKENS.has(vendor)) return "";
 
   return vendor.slice(0, 40); // cap length
 }
