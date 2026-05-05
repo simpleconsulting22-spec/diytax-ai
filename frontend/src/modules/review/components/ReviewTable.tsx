@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { CheckCircle2 } from "lucide-react";
-import { ReviewTransaction } from "../hooks/useReviewTransactions";
+import { ReviewTransaction, truncateForPrompt } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
 
@@ -257,6 +257,7 @@ interface PendingCategoryPromptForUI {
   editedRowId: string;
   triggeredBy: "category" | "entity";
   vendor: string;
+  description: string;
   category: string | null;
   entityType: "business" | "rental" | "personal" | null;
   affectedRowIds: string[];
@@ -638,7 +639,7 @@ export default function ReviewTable({
                           Apply this to similar transactions?
                         </div>
                         <div style={{ color: "#92400e" }}>
-                          You updated &ldquo;<strong>{pendingCategoryPrompt.vendor}</strong>&rdquo;.
+                          You updated &ldquo;<strong>{truncateForPrompt(pendingCategoryPrompt.description)}</strong>&rdquo;.
                           Apply{" "}
                           {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
                             ? "this category and assignment"

@@ -100,6 +100,17 @@ function isAllGeneric(key: string): boolean {
   return key.split(/\s+/).every((w) => GENERIC_PAYMENT_TOKENS.has(w));
 }
 
+/**
+ * Shorten a transaction description for display in the apply-to-similar prompt.
+ * Bank descriptions can be long ("ZELLE TRANSFER FROM JOHN DOE REF 12345678 BANK OF AMERICA");
+ * this caps length while preserving the first part the user is most likely to recognise.
+ */
+export function truncateForPrompt(s: string, maxLen = 60): string {
+  const trimmed = s.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= maxLen) return trimmed;
+  return trimmed.slice(0, maxLen - 1).trimEnd() + "…";
+}
+
 function stripPaymentPrefixes(s: string): string {
   let out = s.trim();
   let changed = true;
@@ -204,7 +215,10 @@ export type PendingCategoryPrompt = {
   editedRowId:    string;
   /** which field the user edited — drives copy variation */
   triggeredBy:    "category" | "entity";
+  /** Internal cascade-matching key (extracted vendor / fingerprint). Not for UI. */
   vendor:         string;
+  /** Original transaction description — what the prompt should SHOW the user. */
+  description:    string;
   /** Bundle to propagate. Empty values mean "do not override matching rows". */
   category:       string | null;
   taxCategory:    string | null;
@@ -496,6 +510,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
               editedRowId:    id,
               triggeredBy:    "entity",
               vendor:         editedVendor,
+              description:    txn.description,
               category:       txn.category    ?? null,
               taxCategory:    txn.taxCategory ?? null,
               taxSchedule:    txn.taxSchedule ?? null,
@@ -571,6 +586,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
             editedRowId:    id,
             triggeredBy:    "category",
             vendor:         editedVendor,
+            description:    txn.description,
             category:       newCategory,
             taxCategory:    txn.taxCategory ?? null,
             taxSchedule:    txn.taxSchedule ?? null,

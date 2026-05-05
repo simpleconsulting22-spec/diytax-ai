@@ -4,7 +4,7 @@ import { X } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
-import { useReviewTransactions } from "./hooks/useReviewTransactions";
+import { useReviewTransactions, truncateForPrompt } from "./hooks/useReviewTransactions";
 import AppNav from "../../components/AppNav";
 import { normalizeCategoryName } from "../../utils/normalizeCategory";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -892,7 +892,7 @@ export default function ReviewPage() {
                 Apply this to similar transactions?
               </div>
               <div style={{ color: "#92400e" }}>
-                You updated &ldquo;<strong>{pendingCategoryPrompt.vendor}</strong>&rdquo;.
+                You updated &ldquo;<strong>{truncateForPrompt(pendingCategoryPrompt.description)}</strong>&rdquo;.
                 Apply{" "}
                 {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
                   ? "this category and assignment"
