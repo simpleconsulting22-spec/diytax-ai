@@ -185,24 +185,11 @@ export function extractVendorName(
     return (description.split(/\s+/)[0] ?? "unknown").toLowerCase().slice(0, 30);
   }
 
-  // Greedy expansion: start with the first word, but if it's purely generic
-  // (e.g. "interest", "monthly fee"), keep walking forward picking up more
-  // words until we hit a real identifier ("interest paid penfed") or run out.
-  // Cap at 5 words so we don't fingerprint entire sentences.
-  let vendor = words[0];
-  let i = 1;
-  // Short-abbreviation rule: if first word is ≤2 chars, always include the
-  // second word for clarity ("at&t" → already handled by alias map; this
-  // catches things like "us bank" → "us bank").
-  if (vendor.length <= 2 && words[1]) {
-    vendor = `${vendor} ${words[1]}`;
-    i = 2;
-  }
-  while (i < words.length && i < 5 && isAllGeneric(vendor)) {
-    vendor = `${vendor} ${words[i]}`;
-    i++;
-  }
-  if (isAllGeneric(vendor)) return "";
-
-  return vendor.slice(0, 60); // cap length (raised from 40 to fit fingerprints)
+  // Brand alias didn't match. Return the FULL stripped fingerprint as the
+  // vendor key — strict match, so "interest charge:cash advances" only
+  // matches other rows with that exact descriptor (not "interest charge:cash
+  // promo"). Trades cascade breadth for precision; safer for auto-learning.
+  const fingerprint = words.join(" ");
+  if (isAllGeneric(fingerprint)) return "";
+  return fingerprint.slice(0, 80); // cap length
 }

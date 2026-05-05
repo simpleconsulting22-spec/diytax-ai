@@ -100,6 +100,35 @@ function isAllGeneric(key: string): boolean {
   return key.split(/\s+/).every((w) => GENERIC_PAYMENT_TOKENS.has(w));
 }
 
+// Trailing noise to strip — dates, store numbers, long ref codes, state codes,
+// phone fragments. Keep these conservative so we don't accidentally strip the
+// real merchant name.
+const TRAILING_NOISE: RegExp[] = [
+  /\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?$/,                  // " 1/14" / " 1/14/25" / " 01/14/2025"
+  /\s+\d{4}-\d{2}-\d{2}$/,                              // " 2025-01-14"
+  /\s+#\s*\d+.*$/,                                       // " #4521 ..."
+  /\s+\d{6,}.*$/,                                        // long trailing reference numbers
+  /\s+[a-z]{2}$/i,                                       // trailing state abbreviation
+  /\s+\d{3}-\d{4}$/,                                     // phone fragment
+];
+
+function stripTrailingNoise(s: string): string {
+  let out = s;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pat of TRAILING_NOISE) {
+      const next = out.replace(pat, "").trimEnd();
+      if (next !== out) {
+        out = next;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Shorten a transaction description for display in the apply-to-similar prompt.
  * Bank descriptions can be long ("ZELLE TRANSFER FROM JOHN DOE REF 12345678 BANK OF AMERICA");
@@ -129,31 +158,28 @@ function stripPaymentPrefixes(s: string): string {
 }
 
 // Cascade key. Two-tier strategy:
-//  1) Trust txn.vendor when it's a clean, non-generic merchant name.
-//  2) Otherwise build a longer fingerprint from the description — if leading
-//     words are all generic ("interest paid", "monthly fee"), keep walking
-//     forward picking up more words until we hit a real identifier
-//     ("interest paid penfed") or run out (return "" and skip the cascade).
+//  1) Trust txn.vendor when it's a clean, non-generic merchant name (e.g.
+//     "starbucks") — backend brand-alias matching gives us short canonical
+//     keys for common merchants.
+//  2) Otherwise return the FULL normalized description as the fingerprint,
+//     with leading payment prefixes and trailing dates/ref-numbers/state
+//     codes stripped. Strict full-string match — "INTEREST CHARGE:CASH
+//     ADVANCES" only matches other rows with that exact description, not
+//     "INTEREST CHARGE:CASH PROMO" or "INTEREST EARNED". Trades off cascade
+//     breadth for precision: missed matches are recoverable, false matches
+//     overwrite real data.
 function extractVendor(txnOrDesc: ReviewTransaction | string): string {
   if (typeof txnOrDesc !== "string") {
     const pre = txnOrDesc.vendor?.trim().toLowerCase();
     if (pre && !isAllGeneric(pre)) return pre;
     return extractVendor(txnOrDesc.normalizedDescription || txnOrDesc.description || "");
   }
-  const stripped = stripPaymentPrefixes(txnOrDesc.toLowerCase());
-  const words = stripped.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
-  if (words.length === 0) return "";
-
-  // Greedy expansion: keep adding words while the running key is purely
-  // generic. Cap at 5 words so we don't end up keying on whole sentences.
-  let key = words[0];
-  let i = 1;
-  while (i < words.length && i < 5 && isAllGeneric(key)) {
-    key = `${key} ${words[i]}`;
-    i++;
-  }
-  if (isAllGeneric(key)) return "";
-  return key;
+  const lowered = txnOrDesc.toLowerCase();
+  const stripped = stripPaymentPrefixes(lowered);
+  const trimmed = stripTrailingNoise(stripped).trim().replace(/\s+/g, " ");
+  if (!trimmed) return "";
+  if (isAllGeneric(trimmed)) return "";
+  return trimmed;
 }
 
 // Upsert a categoryRule by vendor — avoids duplicate documents.
