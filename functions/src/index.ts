@@ -32,6 +32,7 @@ export * from "./notifications/quarterlyDeadline";
 export * from "./notifications/uncategorizedAlert";
 export * from "./notifications/deductionMilestone";
 export * from "./plaid/plaidWebhook";
+export * from "./plaid/scheduledSync";
 export * from "./parser/parseFinancialData";
 export * from "./forecast/detectRecurring";
 export * from "./forecast/getTaxForecast";

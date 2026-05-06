@@ -249,6 +249,16 @@ export async function fetchTransactionsForAccount(
 
   console.log(`[FETCH] uid=${uid} acct=${accountId} prefiltered=${preFilteredOut} ${JSON.stringify(report)}`);
 
+  // Stamp the account doc so the UI can show "last synced X ago" and we can
+  // tell at a glance which accounts are stale.
+  await db.collection("accounts").doc(accountId).update({
+    lastSyncedAt:           admin.firestore.FieldValue.serverTimestamp(),
+    lastSyncImportedCount:  report.imported,
+    lastSyncError:          admin.firestore.FieldValue.delete(),
+  }).catch((err) => {
+    console.warn(`[FETCH] failed to stamp lastSyncedAt for acct=${accountId}:`, err);
+  });
+
   return report.imported;
 }
 

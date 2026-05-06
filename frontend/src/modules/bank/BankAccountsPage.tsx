@@ -13,6 +13,24 @@ import AppNav from "../../components/AppNav";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
+// Short, friendly "5 min ago" / "2 hours ago" / "3 days ago" formatter.
+function formatRelativeTime(ts: Timestamp | null): string {
+  if (!ts) return "never";
+  const ms = Date.now() - ts.toDate().getTime();
+  const sec = Math.round(ms / 1000);
+  if (sec < 60)        return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60)        return `${min} min ago`;
+  const hr  = Math.round(min / 60);
+  if (hr  < 24)        return `${hr} hour${hr !== 1 ? "s" : ""} ago`;
+  const day = Math.round(hr / 24);
+  if (day < 30)        return `${day} day${day !== 1 ? "s" : ""} ago`;
+  const mo  = Math.round(day / 30);
+  if (mo  < 12)        return `${mo} month${mo !== 1 ? "s" : ""} ago`;
+  const yr  = Math.round(mo / 12);
+  return `${yr} year${yr !== 1 ? "s" : ""} ago`;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PlaidAccount {
@@ -22,6 +40,9 @@ interface PlaidAccount {
   mask:            string;
   plaidItemId:     string;
   createdAt:       Timestamp | null;
+  lastSyncedAt:    Timestamp | null;
+  lastSyncError:   string | null;
+  lastSyncErrorAt: Timestamp | null;
 }
 
 interface InstitutionGroup {
@@ -221,6 +242,9 @@ export default function BankAccountsPage() {
             mask:            data.mask as string ?? "",
             plaidItemId:     data.plaidItemId as string ?? d.id,
             createdAt:       data.createdAt ?? null,
+            lastSyncedAt:    (data.lastSyncedAt as Timestamp | undefined) ?? null,
+            lastSyncError:   (data.lastSyncError as string | undefined) ?? null,
+            lastSyncErrorAt: (data.lastSyncErrorAt as Timestamp | undefined) ?? null,
           });
         } else if (data.name) {
           imported.push({
@@ -1086,6 +1110,15 @@ export default function BankAccountsPage() {
                               {acct.createdAt && (
                                 <div style={{ fontSize: "12px", color: "#6b7280" }}>
                                   Connected {acct.createdAt.toDate().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                </div>
+                              )}
+                              {acct.lastSyncError ? (
+                                <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "2px" }} title={acct.lastSyncError}>
+                                  ⚠ Last sync failed {formatRelativeTime(acct.lastSyncErrorAt)}
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: "11px", color: acct.lastSyncedAt ? "#16A34A" : "#9ca3af", marginTop: "2px" }}>
+                                  Last synced {formatRelativeTime(acct.lastSyncedAt)}
                                 </div>
                               )}
                               {rs?.result && (
