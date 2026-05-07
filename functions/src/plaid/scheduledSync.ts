@@ -13,17 +13,18 @@ import { fetchTransactionsForAccount } from "./fetchTransactions";
  * pipeline's dedupe logic ensures already-imported transactions aren't
  * duplicated.
  *
- * Schedule: every 6 hours. 4× per day catches issues quickly and gives
- * frequent confirmation that the cron pipeline is alive. Plaid's incremental
- * sync API only returns deltas, so cost is negligible.
+ * Schedule: 3 AM and 3 PM America/Chicago. 2× per day balances data
+ * freshness against Plaid API costs (Plaid bills per Transactions Update
+ * call). Using America/Chicago timezone keeps the local times stable
+ * year-round through Daylight Saving Time transitions.
  *
  * Failures are recorded on the account doc as `lastSyncError` so the UI can
  * surface "this bank hasn't synced in N days" warnings.
  */
 export const scheduledPlaidSync = onSchedule(
   {
-    schedule: "every 6 hours",
-    timeZone: "UTC",
+    schedule: "0 3,15 * * *",
+    timeZone: "America/Chicago",
     timeoutSeconds: 540,
     memory: "1GiB",
     retryCount: 0, // we already log errors per-account; whole-job retry isn't useful
