@@ -3,25 +3,27 @@ import * as admin from "firebase-admin";
 import { fetchTransactionsForAccount } from "./fetchTransactions";
 
 /**
- * Daily safety-net Plaid sync.
+ * Safety-net Plaid sync — runs every 6 hours.
  *
  * Plaid pushes webhooks when new transactions are available, but sometimes
  * those webhooks fail silently (institution outage, item access revoked, our
  * webhook handler errors before it can re-throw, etc.). This cron walks every
- * Plaid-linked account once a day and pulls the last 14 days of transactions
- * to backfill anything the webhook missed. The unified ingestion pipeline's
- * dedupe logic ensures already-imported transactions aren't duplicated.
+ * Plaid-linked account on a schedule and pulls the last 14 days of
+ * transactions to backfill anything the webhook missed. The unified ingestion
+ * pipeline's dedupe logic ensures already-imported transactions aren't
+ * duplicated.
  *
- * Schedule: 09:00 UTC daily (≈ 04:00 EST / 01:00 PST — quiet hours, so a
- * burst of Plaid API calls doesn't compete with user-driven traffic).
+ * Schedule: every 6 hours. 4× per day catches issues quickly and gives
+ * frequent confirmation that the cron pipeline is alive. Plaid's incremental
+ * sync API only returns deltas, so cost is negligible.
  *
  * Failures are recorded on the account doc as `lastSyncError` so the UI can
  * surface "this bank hasn't synced in N days" warnings.
  */
 export const scheduledPlaidSync = onSchedule(
   {
-    schedule: "0 9 * * *",
-    timeZone: "Etc/UTC",
+    schedule: "every 6 hours",
+    timeZone: "UTC",
     timeoutSeconds: 540,
     memory: "1GiB",
     retryCount: 0, // we already log errors per-account; whole-job retry isn't useful
