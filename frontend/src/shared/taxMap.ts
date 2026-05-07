@@ -136,20 +136,21 @@ function getNaturalBucket(txn: {
 
 /**
  * Resolve a transaction's tax bucket given BOTH its category and the entity
- * the user assigned it to. Entity assignment is authoritative when set:
+ * the user assigned it to. Entity assignment narrows or affirms when set:
  *
- *  - Personal entity: nothing flows to Schedule C / Schedule E even if the
- *    category looks business-y. A "Business Meals" expense tagged Personal
- *    becomes a personal expense (no deduction); "Business Income" tagged
- *    Personal becomes ordinary income (no SE tax).
- *  - Business entity: itemized (Sch A) and rental (Sch E) expenses get
- *    flipped to Sch C deductions; "ordinary_income" tagged business stays
- *    ordinary (W-2 wages don't become SE just because they're tagged
- *    business). Personal categories stay personal — tagging "Groceries"
- *    Business doesn't make groceries deductible.
+ *  - Business entity: Sch A and Sch E expenses get promoted to Sch C
+ *    deductions (e.g. "Mortgage Interest" expense tagged Business → Sch C
+ *    interest deduction). "ordinary_income" stays ordinary (W-2 wages
+ *    don't become SE just because tagged Business). Personal categories
+ *    stay personal — tagging "Groceries" Business doesn't make it
+ *    deductible.
  *  - Rental entity: symmetric to Business but routes to Schedule E.
- *  - Null / undefined / "personal" with no contradiction: use the natural
- *    bucket. Preserves behavior for pre-entity transactions.
+ *  - Personal entity: NO routing changes — the natural category bucket is
+ *    trusted. If a Sch C category is tagged Personal it still counts as
+ *    Sch C (likely a misclassification the user should fix; surfaced via
+ *    detectClassificationMismatch rather than silently rerouted).
+ *  - Null / undefined: use the natural bucket. Preserves behavior for
+ *    pre-entity transactions.
  */
 export function getTaxBucket(txn: {
   category?: string | null;
@@ -160,14 +161,6 @@ export function getTaxBucket(txn: {
 }): TaxBucket {
   const natural = getNaturalBucket(txn);
   const entity = txn.entityType;
-
-  if (entity === "personal") {
-    // Demote: Sch C / Sch E expenses become personal (no deduction).
-    if (natural === "se_expense" || natural === "rental_expense") return "personal";
-    // Demote: SE / rental income becomes ordinary (no SE tax, no Sch E).
-    if (natural === "se_income"  || natural === "rental_income")  return "ordinary_income";
-    return natural;
-  }
 
   if (entity === "business") {
     // Promote Sch A and Sch E expenses to Sch C; leave SE income/expense and
@@ -185,8 +178,48 @@ export function getTaxBucket(txn: {
     return natural;
   }
 
-  // null / undefined entity — use the natural bucket as-is.
+  // personal / null / undefined — trust the natural category bucket.
+  // Mismatches between category and entity are surfaced separately for the
+  // user to correct, rather than silently re-routed here.
   return natural;
+}
+
+/**
+ * Detect when a transaction's category and entity assignment disagree in a
+ * way the user should review and fix. Conservative — only flags clear
+ * contradictions, not edge cases that might be intentional.
+ *
+ * Returns a short reason string for UI display, or null if the row looks fine.
+ */
+export function detectClassificationMismatch(txn: {
+  category?: string | null;
+  taxCategory?: string | null;
+  taxSchedule?: string | null;
+  type?: string;
+  entityType?: string | null;
+}): string | null {
+  const natural = getNaturalBucket(txn);
+  const entity  = txn.entityType;
+
+  // Most common misclass: Sch C / Sch E category, but tagged Personal.
+  if (entity === "personal") {
+    if (natural === "se_expense")     return "Business expense tagged Personal — assign to a business?";
+    if (natural === "se_income")      return "Business income tagged Personal — assign to a business?";
+    if (natural === "rental_expense") return "Rental expense tagged Personal — assign to a rental?";
+    if (natural === "rental_income")  return "Rental income tagged Personal — assign to a rental?";
+  }
+
+  // Cross-entity: rental category tagged to a business entity (or vice versa).
+  if (entity === "business") {
+    if (natural === "rental_expense") return "Rental expense tagged to a business entity — should this be a rental?";
+    if (natural === "rental_income")  return "Rental income tagged to a business entity — should this be a rental?";
+  }
+  if (entity === "rental") {
+    if (natural === "se_expense")     return "Business expense tagged to a rental entity — should this be a business?";
+    if (natural === "se_income")      return "Business income tagged to a rental entity — should this be a business?";
+  }
+
+  return null;
 }
 
 /** Dropdown groupings, in display order. Derived from the map. */

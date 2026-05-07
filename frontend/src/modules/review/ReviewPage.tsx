@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
+import { detectClassificationMismatch } from "../../shared/taxMap";
 import { useReviewTransactions, truncateForPrompt } from "./hooks/useReviewTransactions";
 import AppNav from "../../components/AppNav";
 import { normalizeCategoryName } from "../../utils/normalizeCategory";
@@ -228,6 +229,7 @@ export default function ReviewPage() {
   const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense" | "transfer" | "refund">("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [entityFilter, setEntityFilter] = useState<string>("all");
+  const [mismatchOnly, setMismatchOnly] = useState<boolean>(false);
   const [filterAccountInput, setFilterAccountInput] = useState("");
   const [applyingFilterAccount, setApplyingFilterAccount] = useState(false);
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
@@ -337,8 +339,14 @@ export default function ReviewPage() {
     } else if (entityFilter !== "all") {
       if (t.entityId !== entityFilter) return false;
     }
+    if (mismatchOnly && !detectClassificationMismatch(t)) return false;
     return true;
   });
+
+  const mismatchCount = useMemo(
+    () => transactions.filter((t) => detectClassificationMismatch(t) !== null).length,
+    [transactions]
+  );
 
   // allSelected and toggleSelectAll must reflect the filtered view only.
   const filteredAllSelected = useMemo(
@@ -745,6 +753,31 @@ export default function ReviewPage() {
                     Clear
                   </button>
                 )}
+              </>
+            )}
+
+            {/* Mismatch filter — shows only rows where category and entity disagree */}
+            {mismatchCount > 0 && (
+              <>
+                <div style={{ width: "1px", height: "20px", backgroundColor: "#e5e7eb" }} />
+                <button
+                  onClick={() => setMismatchOnly((v) => !v)}
+                  title="Rows where the category and entity assignment don't match. Often a misclassification — review and fix."
+                  style={{
+                    padding: "5px 12px",
+                    borderRadius: "999px",
+                    border: `1px solid ${mismatchOnly ? "#dc2626" : "#fde68a"}`,
+                    backgroundColor: mismatchOnly ? "#fef2f2" : "#fffbeb",
+                    color: mismatchOnly ? "#b91c1c" : "#92400e",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  ⚠ {mismatchOnly ? "Showing" : "Show"} mismatches ({mismatchCount})
+                </button>
               </>
             )}
 
