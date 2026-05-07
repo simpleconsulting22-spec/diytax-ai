@@ -155,6 +155,11 @@ export default function BankAccountsPage() {
   const [successMsg,   setSuccessMsg]   = useState<string | null>(null);
   const [error,        setError]        = useState<string | null>(null);
   const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
+  const [syncAllState, setSyncAllState] = useState<{
+    loading: boolean;
+    result: string | null;
+    error:  string | null;
+  }>({ loading: false, result: null, error: null });
 
   // pending link selections: plaidId → selected importedId
   const [linkSelections, setLinkSelections] = useState<Record<string, string>>({});
@@ -340,6 +345,34 @@ export default function BankAccountsPage() {
       setError(err instanceof Error ? err.message : "Failed to open account selection.");
       setConnecting(false);
       setUpdateModeAccountId(null);
+    }
+  }
+
+  async function handleSyncAll() {
+    setSyncAllState({ loading: true, result: null, error: null });
+    try {
+      const res = await apiClient.call<{
+        succeeded: number;
+        failed:    number;
+        skipped:   number;
+        totalImported: number;
+        errors:    Array<{ label: string; error: string }>;
+      }>("syncAllPlaidAccounts", {});
+
+      const parts: string[] = [];
+      parts.push(`${res.succeeded} synced`);
+      if (res.failed > 0)        parts.push(`${res.failed} failed`);
+      if (res.totalImported > 0) parts.push(`${res.totalImported} new transaction${res.totalImported !== 1 ? "s" : ""}`);
+      const summary = parts.join(" · ");
+
+      const errorDetail = res.errors.length > 0
+        ? res.errors.map((e) => `${e.label}: ${e.error}`).join("\n")
+        : null;
+
+      setSyncAllState({ loading: false, result: summary, error: errorDetail });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sync failed";
+      setSyncAllState({ loading: false, result: null, error: message });
     }
   }
 
@@ -945,19 +978,54 @@ export default function BankAccountsPage() {
               Connect your bank accounts and credit cards to automatically import and categorize transactions.
             </p>
           </div>
-          <button
-            onClick={handleConnectBank}
-            disabled={isWorking}
-            style={{
-              padding: "10px 18px", backgroundColor: isWorking ? "#86efac" : "#16A34A",
-              color: "#fff", border: "none", borderRadius: "10px",
-              fontSize: "14px", fontWeight: 700,
-              cursor: isWorking ? "default" : "pointer", fontFamily: font, whiteSpace: "nowrap",
-            }}
-          >
-            {connecting ? "Initializing…" : linkingBank ? "Linking…" : "+ Connect Account"}
-          </button>
+          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+            {plaidAccounts.length > 0 && (
+              <button
+                onClick={handleSyncAll}
+                disabled={syncAllState.loading || isWorking}
+                title="Pulls the last 14 days of transactions from every connected bank"
+                style={{
+                  padding: "10px 14px",
+                  backgroundColor: "#fff",
+                  color: "#16A34A",
+                  border: "1px solid #16A34A",
+                  borderRadius: "10px",
+                  fontSize: "14px", fontWeight: 700,
+                  cursor: syncAllState.loading || isWorking ? "default" : "pointer",
+                  fontFamily: font, whiteSpace: "nowrap",
+                  opacity: syncAllState.loading || isWorking ? 0.6 : 1,
+                }}
+              >
+                {syncAllState.loading ? "Syncing all…" : "Sync All"}
+              </button>
+            )}
+            <button
+              onClick={handleConnectBank}
+              disabled={isWorking}
+              style={{
+                padding: "10px 18px", backgroundColor: isWorking ? "#86efac" : "#16A34A",
+                color: "#fff", border: "none", borderRadius: "10px",
+                fontSize: "14px", fontWeight: 700,
+                cursor: isWorking ? "default" : "pointer", fontFamily: font, whiteSpace: "nowrap",
+              }}
+            >
+              {connecting ? "Initializing…" : linkingBank ? "Linking…" : "+ Connect Account"}
+            </button>
+          </div>
         </div>
+
+        {/* Sync All result banner */}
+        {syncAllState.result && (
+          <div style={{ padding: "12px 16px", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "10px", marginBottom: "16px", fontSize: "13px", color: "#15803d" }}>
+            ✓ Sync All: {syncAllState.result}
+          </div>
+        )}
+        {syncAllState.error && (
+          <details style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "10px", marginBottom: "16px", fontSize: "13px", color: "#dc2626" }}>
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>⚠ Some accounts failed to sync — click for details</summary>
+            <pre style={{ margin: "10px 0 0", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: font }}>{syncAllState.error}</pre>
+          </details>
+        )}
 
         {/* Banners */}
         {successMsg && (
