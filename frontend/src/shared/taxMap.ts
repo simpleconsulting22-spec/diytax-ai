@@ -114,11 +114,11 @@ export function getMapping(category: string | null | undefined): TaxMapping | un
 }
 
 /**
- * Resolve a transaction's tax bucket using the canonical map first, then
- * falling back to the legacy `taxSchedule` field for transactions that
- * pre-date the map (or use a custom category).
+ * The "natural" bucket for a category — what the IRS would call this kind of
+ * transaction in isolation, ignoring who the user assigned it to. Driven by
+ * the canonical TAX_MAP with a legacy fallback to the stored `taxSchedule`.
  */
-export function getTaxBucket(txn: {
+function getNaturalBucket(txn: {
   category?: string | null;
   taxCategory?: string | null;
   taxSchedule?: string | null;
@@ -132,6 +132,61 @@ export function getTaxBucket(txn: {
   if (txn.taxSchedule === "Schedule A") return "itemized_deduction";
   if (txn.type === "income") return "ordinary_income";
   return "personal";
+}
+
+/**
+ * Resolve a transaction's tax bucket given BOTH its category and the entity
+ * the user assigned it to. Entity assignment is authoritative when set:
+ *
+ *  - Personal entity: nothing flows to Schedule C / Schedule E even if the
+ *    category looks business-y. A "Business Meals" expense tagged Personal
+ *    becomes a personal expense (no deduction); "Business Income" tagged
+ *    Personal becomes ordinary income (no SE tax).
+ *  - Business entity: itemized (Sch A) and rental (Sch E) expenses get
+ *    flipped to Sch C deductions; "ordinary_income" tagged business stays
+ *    ordinary (W-2 wages don't become SE just because they're tagged
+ *    business). Personal categories stay personal — tagging "Groceries"
+ *    Business doesn't make groceries deductible.
+ *  - Rental entity: symmetric to Business but routes to Schedule E.
+ *  - Null / undefined / "personal" with no contradiction: use the natural
+ *    bucket. Preserves behavior for pre-entity transactions.
+ */
+export function getTaxBucket(txn: {
+  category?: string | null;
+  taxCategory?: string | null;
+  taxSchedule?: string | null;
+  type?: string;
+  entityType?: string | null;
+}): TaxBucket {
+  const natural = getNaturalBucket(txn);
+  const entity = txn.entityType;
+
+  if (entity === "personal") {
+    // Demote: Sch C / Sch E expenses become personal (no deduction).
+    if (natural === "se_expense" || natural === "rental_expense") return "personal";
+    // Demote: SE / rental income becomes ordinary (no SE tax, no Sch E).
+    if (natural === "se_income"  || natural === "rental_income")  return "ordinary_income";
+    return natural;
+  }
+
+  if (entity === "business") {
+    // Promote Sch A and Sch E expenses to Sch C; leave SE income/expense and
+    // ordinary_income alone. Personal categories stay personal — entity tag
+    // doesn't make a non-business category suddenly deductible.
+    if (natural === "itemized_deduction" || natural === "rental_expense") return "se_expense";
+    if (natural === "rental_income") return "se_income";
+    return natural;
+  }
+
+  if (entity === "rental") {
+    // Symmetric: promote Sch A and Sch C expenses to Sch E.
+    if (natural === "itemized_deduction" || natural === "se_expense") return "rental_expense";
+    if (natural === "se_income") return "rental_income";
+    return natural;
+  }
+
+  // null / undefined entity — use the natural bucket as-is.
+  return natural;
 }
 
 /** Dropdown groupings, in display order. Derived from the map. */

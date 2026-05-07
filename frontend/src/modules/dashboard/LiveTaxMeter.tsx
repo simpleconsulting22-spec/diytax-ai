@@ -63,7 +63,7 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
       }}
     >
       <strong style={{ display: "block", marginBottom: "10px", fontSize: "14px" }}>
-        How this estimate is calculated (2024 IRS rules):
+        How this estimate is calculated ({e.taxYear} IRS rules):
       </strong>
       <ol style={{ margin: 0, paddingLeft: "20px" }}>
         <li>
@@ -74,7 +74,7 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
         <li>
           <strong>Self-employment tax (15.3%):</strong> 92.35% of net profit ×
           15.3% = <strong>{fmtExact(e.seTax)}</strong>
-          {" "}(Social Security capped at $168,600)
+          {" "}(Social Security capped at {fmtExact(e.ssWageBase)})
         </li>
         <li>
           <strong>SE deduction:</strong> Half of SE tax deducted from income ={" "}
@@ -103,7 +103,7 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
           <strong>{fmtExact(e.taxableIncome)}</strong>
         </li>
         <li>
-          <strong>Federal income tax:</strong> 2024 brackets applied ={" "}
+          <strong>Federal income tax:</strong> {e.taxYear} brackets applied ={" "}
           <strong>{fmtExact(e.federalTax)}</strong>
         </li>
         <li>
@@ -120,7 +120,7 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
           lineHeight: "1.5",
         }}
       >
-        Estimate uses 2024 IRS rates. State taxes, credits, and carryforwards not
+        Estimate uses {e.taxYear} IRS rates. State taxes, credits, and carryforwards not
         included. Consult a tax professional for advice specific to your situation.
       </p>
     </div>
