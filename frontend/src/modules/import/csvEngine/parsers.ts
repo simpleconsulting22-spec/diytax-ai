@@ -9,7 +9,14 @@ import type { ParsedRow, ResolvedHeaders, RowError, RowSource } from "./types";
 // Order: refund/credit keywords first (more specific), then expense, then
 // generic income. Falls through to expense default if nothing matches.
 const EXPENSE_KEYWORDS = /\b(payment|purchase|withdrawal|withdrawl|debit|pos|atm|fee|charge|autopay|pmt|pymt|bill\s*pay)\b/i;
-const INCOME_KEYWORDS  = /\b(deposit|interest\s+earned|interest|refund|credit|payroll|direct\s+deposit|salary|dividend|reimbursement|reversal)\b/i;
+const INCOME_KEYWORDS  = /\b(deposit|interest\s+earned|interest|refund|credit|payroll|direct\s+deposit|salary|dividend|reimbursement|reversal|visa\s+direct|mastercard\s+send)\b/i;
+
+// HIGH-CONFIDENCE inflow markers that override an explicit "DEBIT" type
+// label from the bank's CSV. Some banks (Chase notably) label debit-card
+// refunds and push-payment receipts as DEBIT because the transaction touched
+// the debit card, even though money flowed IN. These markers are
+// unambiguous push-payment / reversal signals — never appear on real outflows.
+const STRONG_INFLOW_OVERRIDE = /\b(visa\s+direct|mastercard\s+send|refund|reversal|reimbursement)\b/i;
 
 interface ParseInput {
   rawRow:    Record<string, string>;
@@ -114,8 +121,12 @@ export function parseTypeMode(input: ParseInput): ParseOutcome {
     };
   }
   const abs = Math.abs(found);
-  const signed = isCredit ? abs : -abs;
-  return { row: buildRow(pre.common, signed, "bank", input.rawRow) };
+  // If the bank says DEBIT but description carries an unambiguous inflow
+  // signal (VISA DIRECT push payment, refund, reversal, reimbursement), flip
+  // to credit. The bank's label is wrong on those rows — they're inbound.
+  const overrideToCredit = isDebit && STRONG_INFLOW_OVERRIDE.test(pre.common.description);
+  const signed = (isCredit || overrideToCredit) ? abs : -abs;
+  return { row: buildRow(pre.common, signed, "bank", input.rawRow, overrideToCredit) };
 }
 
 /** SPLIT: separate Debit + Credit columns, both positive. */
