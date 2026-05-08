@@ -1046,7 +1046,10 @@ export default function ReviewPage() {
       </div>
 
       {/* ── Bulk action toolbar ────────────────────────────────────────────────── */}
-      {hasSelection && !isCategorizedView && (
+      {/* Visible on BOTH the Needs Review and Categorized tabs — users need
+          access to bulk actions (especially Re-categorize) for fixing batches
+          that were already moved to Categorized with the wrong values. */}
+      {hasSelection && (
         <div style={{
           position: "fixed",
           bottom: 0,
@@ -1194,24 +1197,26 @@ export default function ReviewPage() {
 
           <div style={{ flex: 1 }} />
 
-          {/* Mark as reviewed */}
-          <button
-            onClick={handleBulkConfirm}
-            style={{
-              padding: "8px 20px",
-              backgroundColor: "#16A34A",
-              color: "#fff",
-              border: "none",
-              borderRadius: "8px",
-              fontSize: "13px",
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: font,
-              whiteSpace: "nowrap",
-            }}
-          >
-            ✓ Mark {selectedIds.size} as Reviewed
-          </button>
+          {/* Mark as reviewed — only meaningful on the Needs Review tab */}
+          {!isCategorizedView && (
+            <button
+              onClick={handleBulkConfirm}
+              style={{
+                padding: "8px 20px",
+                backgroundColor: "#16A34A",
+                color: "#fff",
+                border: "none",
+                borderRadius: "8px",
+                fontSize: "13px",
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ✓ Mark {selectedIds.size} as Reviewed
+            </button>
+          )}
 
           {/* Clear selection */}
           <button
