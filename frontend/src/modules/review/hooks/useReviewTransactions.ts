@@ -802,12 +802,27 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
   async function handleBulkCategoryAssign(ids: string[], category: string) {
     if (!user || !effectiveOwnerUid || ids.length === 0) return;
-    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...ids]) }));
+    // Transfers don't get categories — they're moves between accounts, not
+    // tax-impacting transactions. Filter them out so a wrong category can't
+    // be bulk-applied across mixed selections.
+    const transferIds = new Set(
+      state.transactions.filter((t) => t.type === "transfer").map((t) => t.id)
+    );
+    const writableIds = ids.filter((id) => !transferIds.has(id));
+    const skippedTransfers = ids.length - writableIds.length;
+    if (writableIds.length === 0) {
+      if (skippedTransfers > 0) {
+        console.warn(`[bulkCategory] skipped ${skippedTransfers} transfer(s) — transfers don't take categories`);
+      }
+      return;
+    }
+
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, ...writableIds]) }));
     try {
-      // Batch-write category to all selected transactions
-      for (let i = 0; i < ids.length; i += 499) {
+      // Batch-write category to non-transfer transactions only
+      for (let i = 0; i < writableIds.length; i += 499) {
         const batch = writeBatch(db);
-        for (const id of ids.slice(i, i + 499)) {
+        for (const id of writableIds.slice(i, i + 499)) {
           batch.update(doc(db, "transactions", id), {
             category,
             categorizationSource: "user_rule",
@@ -820,8 +835,12 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         await batch.commit();
       }
 
-      // Upsert a categoryRule for each unique vendor (no duplicates)
-      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
+      // Upsert a categoryRule for each unique vendor (no duplicates).
+      // Only include non-transfer rows — a vendor rule learned from a
+      // transfer would mis-classify future non-transfer rows for that vendor.
+      const selectedTxns = state.transactions.filter(
+        (t) => writableIds.includes(t.id) && t.type !== "transfer"
+      );
       const seen = new Set<string>();
       for (const txn of selectedTxns) {
         const vendorName = extractVendor(txn);
@@ -840,17 +859,20 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
       setState((prev) => ({
         ...prev,
-        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        updating: new Set([...prev.updating].filter((i) => !writableIds.includes(i))),
         transactions: prev.transactions.map((t) =>
-          ids.includes(t.id)
+          writableIds.includes(t.id)
             ? { ...t, category, source: "user_rule" as const }
             : t
         ),
       }));
+      if (skippedTransfers > 0) {
+        console.info(`[bulkCategory] applied to ${writableIds.length}; skipped ${skippedTransfers} transfer(s)`);
+      }
     } catch {
       setState((prev) => ({
         ...prev,
-        updating: new Set([...prev.updating].filter((i) => !ids.includes(i))),
+        updating: new Set([...prev.updating].filter((i) => !writableIds.includes(i))),
       }));
     }
   }
@@ -963,7 +985,40 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         ? state.transactions.map((t) => t.id)
         : ids;
     const targetIds = rawIds.filter((id) => !transferIds.has(id));
-    if (targetIds.length === 0) return { categorized: 0, skipped: 0 };
+    const transferIdsInSelection = rawIds.filter((id) => transferIds.has(id));
+
+    // In FORCE mode, transfer rows in the selection get their stale category
+    // cleared (instead of being silently skipped). This rescues batches like
+    // "all 296 rows wrongly tagged Laundry" where the transfers among them
+    // would otherwise keep the bad category.
+    if (options.force && transferIdsInSelection.length > 0) {
+      try {
+        for (let i = 0; i < transferIdsInSelection.length; i += 499) {
+          const batch = writeBatch(db);
+          for (const id of transferIdsInSelection.slice(i, i + 499)) {
+            batch.update(doc(db, "transactions", id), {
+              category:       null,
+              taxCategory:    null,
+              taxSchedule:    null,
+              isUserModified: false,
+              updatedBy:      user.uid,
+              updatedByRole:  role,
+              updatedAt:      serverTimestamp(),
+            });
+          }
+          await batch.commit();
+        }
+        console.info(`[forceRecategorize] cleared category on ${transferIdsInSelection.length} transfer row(s)`);
+      } catch (err) {
+        console.error("[forceRecategorize] failed to clear category on transfers:", err);
+      }
+    }
+
+    if (targetIds.length === 0) {
+      // Reload so the cleared transfers reflect immediately
+      if (options.force && transferIdsInSelection.length > 0) await loadTransactions();
+      return { categorized: 0, skipped: 0 };
+    }
 
     const CHUNK = 40;
     const total = targetIds.length;
