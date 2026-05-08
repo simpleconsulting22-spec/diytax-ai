@@ -228,7 +228,34 @@ export async function categorizeSpecificTransactions(
     toProcess.push({ idx: i, docId: snap.id, txn });
   }
 
-  // Batch categorize all at once (keyword → user rule → AI in groups of 10)
+  // FORCE mode: delete user vendor rules associated with the affected vendors
+  // BEFORE re-categorizing. Otherwise the bad rules (learned during the wrong
+  // bulk-apply) will just re-fire and produce the same wrong category. The
+  // categorizationService also gets a bypassUserRules flag as a second layer
+  // of defense in case any rules slip through.
+  if (options.force) {
+    const vendorsToWipe = new Set<string>();
+    for (const { txn } of toProcess) {
+      const v = (txn.vendor ?? "").trim();
+      if (v) vendorsToWipe.add(v);
+    }
+    if (vendorsToWipe.size > 0) {
+      const ruleSnap = await db
+        .collection("categoryRules")
+        .where("uid", "==", userId)
+        .get();
+      const toDelete = ruleSnap.docs.filter((d) => vendorsToWipe.has((d.data().vendorName as string) ?? ""));
+      for (let i = 0; i < toDelete.length; i += 400) {
+        const batch = db.batch();
+        toDelete.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
+      console.log(`[forceRecategorize] deleted ${toDelete.length} vendor rule(s) across ${vendorsToWipe.size} vendor(s) for uid=${userId}`);
+    }
+  }
+
+  // Batch categorize all at once (keyword → user rule → AI in groups of 10).
+  // In force mode, skip the user-rule layer entirely — keyword + AI only.
   const inputs = toProcess.map(({ idx, txn }) => ({
     idx,
     txn: {
@@ -240,7 +267,12 @@ export async function categorizeSpecificTransactions(
     } as TransactionInput,
   }));
 
-  const results = await categorizeTransactionsBatch(inputs, userRules, entities);
+  const results = await categorizeTransactionsBatch(
+    inputs,
+    options.force ? [] : userRules,
+    entities,
+    { bypassUserRules: !!options.force },
+  );
 
   // Write results back. Allow through even if category is empty (entity-only fill).
   const writes = toProcess.map(({ idx, docId, txn }) => {

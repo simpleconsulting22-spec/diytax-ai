@@ -331,25 +331,34 @@ async function callAIBatch(
  * Categorize an array of transactions using pre-loaded rules and entities.
  * Runs keyword rules + user rules synchronously, then batches remaining
  * transactions to AI in groups of AI_BATCH_SIZE (one OpenAI call per group).
+ *
+ * `options.bypassUserRules` — skip the user-vendor-rule matcher. Used when
+ * force-recategorizing a batch where the existing user rules are known to be
+ * wrong (e.g. all rows wrongly tagged "Laundry" learned a poisoned rule for
+ * every vendor). Built-in keyword rules and AI still apply.
  */
 export async function categorizeTransactionsBatch(
   transactions: Array<{ idx: number; txn: TransactionInput }>,
   userRules: UserRule[],
-  entities: EntityForAI[]
+  entities: EntityForAI[],
+  options: { bypassUserRules?: boolean } = {}
 ): Promise<Map<number, CategorizationResult>> {
   const results = new Map<number, CategorizationResult>();
   const needsAI: Array<{ idx: number; txn: TransactionInput }> = [];
 
   // Phase 1: user rules first (explicit user choices beat built-in keywords),
-  // then keyword rules for everything not yet matched.
+  // then keyword rules for everything not yet matched. The user-rule layer
+  // is skipped when caller asks (force re-categorize against poisoned rules).
   for (const { idx, txn } of transactions) {
     const normalizedDesc = (txn.normalizedDescription ?? txn.description).toLowerCase();
     const vendor = txn.vendor ?? "";
 
-    const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
-    if (userRuleResult && userRuleResult.category) {
-      results.set(idx, userRuleResult);
-      continue;
+    if (!options.bypassUserRules) {
+      const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
+      if (userRuleResult && userRuleResult.category) {
+        results.set(idx, userRuleResult);
+        continue;
+      }
     }
 
     const keywordResult = applyKeywordRules(normalizedDesc);
