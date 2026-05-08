@@ -185,9 +185,26 @@ export function getTaxBucket(txn: {
 }
 
 /**
+ * Categories that are unambiguously business by name. A user who picked one
+ * of these AND tagged the row Personal almost certainly made a mistake —
+ * worth flagging. Other Schedule C categories (Bank Fees, Rent & Lease,
+ * Utilities, Phone & Internet, Auto, etc.) are dual-use and commonly tagged
+ * Personal for legitimate reasons; we don't flag those.
+ */
+const UNAMBIGUOUSLY_BUSINESS: ReadonlySet<string> = new Set([
+  "Advertising & Marketing",
+  "Business Insurance",
+  "Business Meals",
+  "Business Travel",
+  "Contract Labor",
+  "Home Office",
+  "Other Business Expense",
+]);
+
+/**
  * Detect when a transaction's category and entity assignment disagree in a
  * way the user should review and fix. Conservative — only flags clear
- * contradictions, not edge cases that might be intentional.
+ * contradictions, not categories that have legitimate personal uses.
  *
  * Returns a short reason string for UI display, or null if the row looks fine.
  */
@@ -198,25 +215,37 @@ export function detectClassificationMismatch(txn: {
   type?: string;
   entityType?: string | null;
 }): string | null {
+  const cat     = txn.category ?? txn.taxCategory ?? "";
   const natural = getNaturalBucket(txn);
   const entity  = txn.entityType;
 
-  // Most common misclass: Sch C / Sch E category, but tagged Personal.
+  // Personal-tagged with a CLEARLY business-only category name.
   if (entity === "personal") {
-    if (natural === "se_expense")     return "Business expense tagged Personal — assign to a business?";
-    if (natural === "se_income")      return "Business income tagged Personal — assign to a business?";
-    if (natural === "rental_expense") return "Rental expense tagged Personal — assign to a rental?";
-    if (natural === "rental_income")  return "Rental income tagged Personal — assign to a rental?";
+    if (natural === "se_expense" && UNAMBIGUOUSLY_BUSINESS.has(cat)) {
+      return `"${cat}" is a business-only category — assign to a business entity, or pick a different category for personal use.`;
+    }
+    // Income categories are unambiguous regardless.
+    if (natural === "se_income") {
+      return `"${cat}" is business income — assign to a business entity, or pick "Other Income" if it's personal.`;
+    }
+    if (natural === "rental_income") {
+      return `"${cat}" is rental income — assign to a rental entity.`;
+    }
+    if (natural === "rental_expense") {
+      return `"${cat}" is a rental expense — assign to a rental entity, or pick a non-rental category if it's personal.`;
+    }
   }
 
-  // Cross-entity: rental category tagged to a business entity (or vice versa).
+  // Cross-entity: rental category tagged to business or vice-versa.
   if (entity === "business") {
-    if (natural === "rental_expense") return "Rental expense tagged to a business entity — should this be a rental?";
-    if (natural === "rental_income")  return "Rental income tagged to a business entity — should this be a rental?";
+    if (natural === "rental_expense") return `"${cat}" is a rental category — should this be tagged to a rental, not a business?`;
+    if (natural === "rental_income")  return `"${cat}" is rental income — should this be tagged to a rental, not a business?`;
   }
   if (entity === "rental") {
-    if (natural === "se_expense")     return "Business expense tagged to a rental entity — should this be a business?";
-    if (natural === "se_income")      return "Business income tagged to a rental entity — should this be a business?";
+    if (natural === "se_income")      return `"${cat}" is business income — should this be tagged to a business, not a rental?`;
+    // Note: business expenses tagged to a rental entity are valid (Sch E
+    // expenses cover lots of categories) — getTaxBucket already promotes
+    // them. Don't flag.
   }
 
   return null;

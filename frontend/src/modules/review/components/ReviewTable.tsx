@@ -3,6 +3,7 @@ import { CheckCircle2 } from "lucide-react";
 import { ReviewTransaction, truncateForPrompt } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
+import { detectClassificationMismatch } from "../../../shared/taxMap";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -501,6 +502,29 @@ export default function ReviewTable({
                       {txn.vendor}
                     </div>
                   )}
+                  {(() => {
+                    const reason = detectClassificationMismatch(txn);
+                    if (!reason) return null;
+                    return (
+                      <div
+                        title={reason}
+                        style={{
+                          marginTop: "4px",
+                          padding: "3px 7px",
+                          backgroundColor: "#fef3c7",
+                          border: "1px solid #fde68a",
+                          borderRadius: "5px",
+                          fontSize: "11px",
+                          color: "#92400e",
+                          fontStyle: "italic",
+                          whiteSpace: "normal",
+                          lineHeight: "1.35",
+                        }}
+                      >
+                        ⚠ {reason}
+                      </div>
+                    );
+                  })()}
                 </td>
 
                 {/* Amount */}
