@@ -308,6 +308,30 @@ export default function ReviewPage() {
     }
   }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
 
+  const handleForceRecategorize = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const n = selectedIds.size;
+    if (!window.confirm(
+      `Re-categorize ${n} selected transaction${n !== 1 ? "s" : ""}? ` +
+      `This will overwrite the current category and entity assignment with AI-suggested values. ` +
+      `Use this to fix a batch where the wrong category was applied (e.g. all rows tagged "Laundry").`
+    )) return;
+    const ids = [...selectedIds];
+    setAutoProgress({ processed: 0, total: ids.length });
+    const result = await handleAutoCategorizeBatch(
+      ids,
+      (processed, total) => setAutoProgress({ processed, total }),
+      { force: true },
+    );
+    setAutoProgress(null);
+    clearSelection();
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else {
+      showToast(`Re-categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}.`);
+    }
+  }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
+
   const hasSelection = selectedIds.size > 0;
 
   const accountOptions = Array.from(
@@ -1099,6 +1123,7 @@ export default function ReviewPage() {
           <button
             onClick={handleAutoSelected}
             disabled={!!autoProgress}
+            title="Run AI on rows that haven't been manually classified yet."
             style={{
               padding: "8px 16px", backgroundColor: "#0f172a",
               color: "#94a3b8", border: "1px solid #334155",
@@ -1107,6 +1132,19 @@ export default function ReviewPage() {
             }}
           >
             {autoProgress ? `${autoProgress.processed}/${autoProgress.total}…` : "✦ AI Categorize"}
+          </button>
+          <button
+            onClick={handleForceRecategorize}
+            disabled={!!autoProgress}
+            title="OVERWRITE the existing category/entity for the selected rows by re-running AI from scratch. Use to fix a batch where the wrong category was bulk-applied."
+            style={{
+              padding: "8px 14px", backgroundColor: "#0f172a",
+              color: "#fbbf24", border: "1px solid #d97706",
+              borderRadius: "8px", fontSize: "13px", fontWeight: 600,
+              cursor: autoProgress ? "not-allowed" : "pointer", fontFamily: font, whiteSpace: "nowrap",
+            }}
+          >
+            ↻ Re-categorize (force)
           </button>
 
           {/* Set Account */}

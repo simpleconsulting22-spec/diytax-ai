@@ -181,7 +181,8 @@ export async function categorizeSpecificTransactions(
   userId: string,
   transactionIds: string[],
   callerUid: string,
-  callerRole: string
+  callerRole: string,
+  options: { force?: boolean } = {}
 ): Promise<BatchResult> {
   const db = admin.firestore();
   const counters: BatchResult = { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
@@ -217,8 +218,13 @@ export async function categorizeSpecificTransactions(
     const txn = snap.data() as TxnDoc;
     // Security: verify ownership (shared users operate on owner's transactions)
     if (txn.uid !== userId) { counters.skipped++; continue; }
-    // Skip only if user has explicitly set BOTH category and entity
-    if (txn.isUserModified === true && txn.entityId) { counters.skipped++; continue; }
+    // Normally skip user-modified rows so AI doesn't undo manual classifications.
+    // The `force` flag bypasses that guard — used when the user explicitly asks
+    // to re-categorize a known-wrong batch (e.g. wrong category bulk-applied
+    // across hundreds of rows). Caller is responsible for honoring user intent.
+    if (!options.force && txn.isUserModified === true && txn.entityId) {
+      counters.skipped++; continue;
+    }
     toProcess.push({ idx: i, docId: snap.id, txn });
   }
 
@@ -266,11 +272,11 @@ export const categorizeSelected = onCall(
   { cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
     const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
-    const { transactionIds } = request.data as { transactionIds?: string[] };
+    const { transactionIds, force } = request.data as { transactionIds?: string[]; force?: boolean };
     if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
       return { total: 0, ruleMatched: 0, aiMatched: 0, skipped: 0 };
     }
     const safeIds = transactionIds.slice(0, 200);
-    return categorizeSpecificTransactions(effectiveOwnerUid, safeIds, callerUid, role);
+    return categorizeSpecificTransactions(effectiveOwnerUid, safeIds, callerUid, role, { force: !!force });
   }
 );

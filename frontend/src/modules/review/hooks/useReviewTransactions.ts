@@ -948,7 +948,8 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
   async function handleAutoCategorizeBatch(
     ids: string[] | "all",
-    onProgress?: (processed: number, total: number) => void
+    onProgress?: (processed: number, total: number) => void,
+    options: { force?: boolean } = {}
   ): Promise<{ categorized: number; skipped: number; error?: string }> {
     if (!user) return { categorized: 0, skipped: 0 };
     // Skip transfer-typed rows (incl. credit-card-payment / loan-payment
@@ -974,7 +975,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       for (let i = 0; i < targetIds.length; i += CHUNK) {
         const chunk = targetIds.slice(i, i + CHUNK);
         const result = await apiClient.call<{ total: number; ruleMatched: number; aiMatched: number; skipped: number }>(
-          "categorizeSelected", { transactionIds: chunk }
+          "categorizeSelected", { transactionIds: chunk, force: options.force ?? false }
         );
         totalCategorized += (result.ruleMatched ?? 0) + (result.aiMatched ?? 0);
         totalSkipped += result.skipped ?? 0;
