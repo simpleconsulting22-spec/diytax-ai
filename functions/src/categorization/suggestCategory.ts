@@ -3,6 +3,13 @@ import * as admin from "firebase-admin";
 import OpenAI from "openai";
 import { resolveEffectiveOwner } from "../middleware/auth";
 import { extractVendorName } from "../services/vendorExtraction";
+import {
+  buildAIPromptCategoryList,
+  fallbackCategoryForType,
+  getMappingFuzzy,
+  isValidCategory,
+  scheduleForCategory,
+} from "../shared/taxMap";
 
 export const suggestCategory = onCall(
   { cors: true, invoker: "public" },
@@ -51,12 +58,10 @@ export const suggestCategory = onCall(
 Vendor/Description: "${description}"
 ${amount !== undefined ? `Amount: $${amount}` : ""}
 
-Choose the single best category from this list:
-Wages & Salaries (W-2 paycheck/payroll deposits — taxSchedule "Form 1040"), Business Income, Rental Income, Investment Income, Interest Income, Dividend Income, Other Income,
-Advertising & Marketing, Auto & Vehicle, Bank Fees & Charges, Business Insurance, Business Meals, Business Travel, Computer & Software, Contract Labor, Education & Training, Equipment & Machinery, Home Office, Legal & Professional, Licenses & Permits, Office Supplies, Phone & Internet, Postage & Shipping, Printing & Publishing, Rent & Lease, Repairs & Maintenance, Taxes & Licenses, Utilities, Other Business Expense,
-Charitable Contribution, Medical Expense, Dental Expense, State & Local Taxes, Mortgage Interest, Investment Expense, Casualty Loss,
-Mortgage Interest (Rental), Property Management, Property Taxes, Rental Insurance, Rental Repairs & Maintenance, Rental Supplies, Rental Utilities,
-Groceries, Dining & Restaurants, Entertainment, Personal Care, Clothing & Apparel, Healthcare, Personal Transportation, Personal Subscriptions, Other Personal
+Choose the single best category from the list below. Use EXACT spelling
+including ampersands. Do not invent variations.
+
+${buildAIPromptCategoryList()}
 
 Return ONLY valid JSON (no markdown, no code fences):
 {"category":"string","taxCategory":"string","taxSchedule":"Schedule C|Schedule A|Schedule E|Form 1040|Personal","confidence":0.0}`;
@@ -79,11 +84,33 @@ Return ONLY valid JSON (no markdown, no code fences):
         confidence?: number;
       };
 
+      // Validate against TAX_MAP — same three-case logic as the batch path.
+      let category: string;
+      let taxSchedule: string;
+      let confidence = parsed.confidence ?? 0.75;
+      const txnType = amount !== undefined && amount > 0 ? "income" : "expense";
+
+      if (parsed.category && isValidCategory(parsed.category)) {
+        const sched = scheduleForCategory(parsed.category)!;
+        category = parsed.category;
+        taxSchedule = sched.taxSchedule;
+      } else if (parsed.category && getMappingFuzzy(parsed.category)) {
+        const m = getMappingFuzzy(parsed.category)!;
+        category = m.category;
+        taxSchedule = m.taxSchedule;
+        confidence = Math.min(confidence, 0.7);
+      } else {
+        const fb = fallbackCategoryForType(txnType);
+        category = fb.category;
+        taxSchedule = fb.taxSchedule;
+        confidence = 0.5;
+      }
+
       return {
-        category: parsed.category ?? "",
-        taxCategory: parsed.taxCategory ?? parsed.category ?? "",
-        taxSchedule: parsed.taxSchedule ?? "",
-        confidence: parsed.confidence ?? 0.75,
+        category,
+        taxCategory: parsed.taxCategory ?? category,
+        taxSchedule,
+        confidence,
         source: "ai",
       };
     } catch (err) {

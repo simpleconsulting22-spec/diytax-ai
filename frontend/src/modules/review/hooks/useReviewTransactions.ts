@@ -20,6 +20,7 @@ import { apiClient } from "../../../services/apiClient";
 import { getUserEntities, UserEntity } from "../../../services/entityService";
 import { getCustomCategories, addCustomCategory, AddCategoryResult } from "../../../services/customCategoriesService";
 import { findOrCreateAccountByName } from "../../../services/accountService";
+import { extractVendor as canonicalExtractVendor } from "../../../shared/vendorExtraction";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,83 +53,6 @@ export interface ReviewTransaction {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Generic tokens that don't identify a specific merchant/payee. Includes both
-// payment-method words ("zelle", "ach") and bank-statement accounting terms
-// ("interest", "fee", "paid"). When the cascade key consists ONLY of these,
-// the description hasn't identified a payee — the cascade refuses to match.
-const GENERIC_PAYMENT_TOKENS = new Set([
-  // Payment methods
-  "zelle", "venmo", "paypal", "cashapp", "cash", "ach",
-  "wire", "transfer", "payment", "deposit", "withdrawal",
-  "check", "debit", "credit", "atm", "online", "mobile",
-  "billpay", "autopay", "recurring", "purchase", "pos",
-  // Bank-statement accounting terms
-  "interest", "dividend", "fee", "charge", "earnings",
-  "service", "monthly", "annual", "paid", "earned",
-  "income", "refund", "rebate", "reversal", "adjustment",
-  // Connectors
-  "to", "from", "the", "for", "and", "of",
-]);
-
-// Strip payment-method / accounting prefixes so the real payee surfaces.
-// Order matters — longer / more specific patterns must run first.
-const PAYMENT_PREFIX_STRIP: RegExp[] = [
-  /^zelle\s+(to|from|payment\s+(to|from)?|transfer\s+(to|from)?)\s*[-:]?\s*/i,
-  /^zelle\s+\d+\s*/i,                     // "ZELLE 123456 JANE DOE"
-  /^zelle\s*[-:]?\s*/i,                   // "ZELLE - JANE DOE"
-  /^venmo\s+(payment|cashout)?\s*[-:]?\s*/i,
-  /^cash\s*app\s*\*?\s*/i,
-  /^paypal\s*\*?\s*(transfer|payment)?\s*/i,
-  /^pp\s*\*\s*/i,
-  /^ach\s+(credit|debit|transfer|payment)?\s*[-:]?\s*/i,
-  /^wire\s+(transfer|in|out)?\s*[-:]?\s*/i,
-  /^online\s+(banking\s+)?(transfer|payment)\s*[-:]?\s*/i,
-  /^mobile\s+(deposit|payment)\s*[-:]?\s*/i,
-  /^autopay\s+/i,
-  /^bill\s*pay(ment)?\s*[-:]?\s*/i,
-  /^recurring\s+payment\s*[-:]?\s*/i,
-  /^debit\s+card\s+purchase\s*[-:]?\s*/i,
-  /^pos\s*#?\s*\d*\s*/i,
-  /^interest\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
-  /^dividend\s+(paid|credit|earned|income)?\s*[-:]?\s*/i,
-  /^(monthly|annual)\s+(fee|charge|service\s+charge|maintenance)\s*[-:]?\s*/i,
-  /^service\s+(fee|charge)\s*[-:]?\s*/i,
-  /^\d{4,}\s+/,                            // leading long numeric codes
-];
-
-function isAllGeneric(key: string): boolean {
-  return key.split(/\s+/).every((w) => GENERIC_PAYMENT_TOKENS.has(w));
-}
-
-// Trailing noise to strip — dates, store numbers, long ref codes, state codes,
-// phone fragments. Keep these conservative so we don't accidentally strip the
-// real merchant name.
-const TRAILING_NOISE: RegExp[] = [
-  /\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?$/,                  // " 1/14" / " 1/14/25" / " 01/14/2025"
-  /\s+\d{4}-\d{2}-\d{2}$/,                              // " 2025-01-14"
-  /\s+#\s*\d+.*$/,                                       // " #4521 ..."
-  /\s+\d{6,}.*$/,                                        // long trailing reference numbers
-  /\s+[a-z]{2}$/i,                                       // trailing state abbreviation
-  /\s+\d{3}-\d{4}$/,                                     // phone fragment
-];
-
-function stripTrailingNoise(s: string): string {
-  let out = s;
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const pat of TRAILING_NOISE) {
-      const next = out.replace(pat, "").trimEnd();
-      if (next !== out) {
-        out = next;
-        changed = true;
-        break;
-      }
-    }
-  }
-  return out;
-}
-
 /**
  * Shorten a transaction description for display in the apply-to-similar prompt.
  * Bank descriptions can be long ("ZELLE TRANSFER FROM JOHN DOE REF 12345678 BANK OF AMERICA");
@@ -140,46 +64,18 @@ export function truncateForPrompt(s: string, maxLen = 60): string {
   return trimmed.slice(0, maxLen - 1).trimEnd() + "…";
 }
 
-function stripPaymentPrefixes(s: string): string {
-  let out = s.trim();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const pat of PAYMENT_PREFIX_STRIP) {
-      const next = out.replace(pat, "").trim();
-      if (next !== out) {
-        out = next;
-        changed = true;
-        break;
-      }
-    }
-  }
-  return out;
-}
-
-// Cascade key. Two-tier strategy:
-//  1) Trust txn.vendor when it's a clean, non-generic merchant name (e.g.
-//     "starbucks") — backend brand-alias matching gives us short canonical
-//     keys for common merchants.
-//  2) Otherwise return the FULL normalized description as the fingerprint,
-//     with leading payment prefixes and trailing dates/ref-numbers/state
-//     codes stripped. Strict full-string match — "INTEREST CHARGE:CASH
-//     ADVANCES" only matches other rows with that exact description, not
-//     "INTEREST CHARGE:CASH PROMO" or "INTEREST EARNED". Trades off cascade
-//     breadth for precision: missed matches are recoverable, false matches
-//     overwrite real data.
+/**
+ * Local thin wrapper around the canonical vendor extractor at
+ * frontend/src/shared/vendorExtraction.ts. Kept so the existing call sites
+ * inside this hook can pass either a string or a transaction object.
+ */
 function extractVendor(txnOrDesc: ReviewTransaction | string): string {
-  if (typeof txnOrDesc !== "string") {
-    const pre = txnOrDesc.vendor?.trim().toLowerCase();
-    if (pre && !isAllGeneric(pre)) return pre;
-    return extractVendor(txnOrDesc.normalizedDescription || txnOrDesc.description || "");
-  }
-  const lowered = txnOrDesc.toLowerCase();
-  const stripped = stripPaymentPrefixes(lowered);
-  const trimmed = stripTrailingNoise(stripped).trim().replace(/\s+/g, " ");
-  if (!trimmed) return "";
-  if (isAllGeneric(trimmed)) return "";
-  return trimmed;
+  if (typeof txnOrDesc === "string") return canonicalExtractVendor(txnOrDesc);
+  return canonicalExtractVendor({
+    description:           txnOrDesc.description,
+    normalizedDescription: txnOrDesc.normalizedDescription,
+    vendor:                txnOrDesc.vendor,
+  });
 }
 
 // Upsert a categoryRule by vendor — avoids duplicate documents.

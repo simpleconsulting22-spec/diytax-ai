@@ -1,5 +1,13 @@
 import * as admin from "firebase-admin";
 import OpenAI from "openai";
+import {
+  buildAIPromptCategoryList,
+  fallbackCategoryForType,
+  getMappingFuzzy,
+  isValidCategory,
+  scheduleForCategory,
+} from "../shared/taxMap";
+import { extractVendor as canonicalExtractVendor } from "../shared/vendorExtraction";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -263,17 +271,10 @@ async function callAIBatch(
     `  - Credit card payments, loan payments, internal transfers → type "transfer"\n` +
     `  - Rental expenses → assign to rental entity\n` +
     `  - Business expenses → assign to business entity\n` +
-    `  - Personal/unclear → assign to "Personal"\n\n` +
-    `Tax categories:\n` +
-    `  W-2 wages (Form 1040): Wages & Salaries — paycheck/payroll/direct-deposit from employer\n` +
-    `  Income: Business Income, Rental Income, Investment Income, Other Income\n` +
-    `  Business (Sch. C): Advertising & Marketing, Auto & Vehicle, Business Meals, Business Travel,\n` +
-    `    Computer & Software, Contract Labor, Home Office, Legal & Professional, Office Supplies,\n` +
-    `    Phone & Internet, Rent & Lease, Repairs & Maintenance, Other Business Expense\n` +
-    `  Rental (Sch. E): Mortgage Interest (Rental), Property Management, Property Taxes,\n` +
-    `    Rental Insurance, Rental Repairs & Maintenance, Rental Utilities\n` +
-    `  Deductions (Sch. A): Charitable Contribution, Medical Expense, Mortgage Interest\n` +
-    `  Personal: Groceries, Dining & Restaurants, Entertainment, Healthcare, Other Personal\n\n` +
+    `  - Personal/unclear → assign to "Personal"\n` +
+    `  - "category" MUST be EXACTLY one of the categories listed below — do not invent variations\n\n` +
+    `Categories (use EXACT spelling, including ampersands):\n` +
+    `${buildAIPromptCategoryList()}\n\n` +
     `Transactions to classify:\n${txnLines.join("\n")}\n\n` +
     `Return ONLY a valid JSON array, one object per transaction, no markdown:\n` +
     `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer|refund>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
@@ -295,17 +296,46 @@ async function callAIBatch(
 
     for (const item of parsed) {
       const rawConf = typeof item.confidence === "number" ? item.confidence : 0.75;
-      const confidence = Math.min(0.9, Math.max(0.6, rawConf));
+      let confidence = Math.min(0.9, Math.max(0.6, rawConf));
       const aiType = (["income", "expense", "transfer", "refund"].includes(item.type ?? ""))
         ? (item.type as "income" | "expense" | "transfer" | "refund")
         : undefined;
       const aiAssignment =
         item.assignment && validEntityNames.has(item.assignment) ? item.assignment : null;
 
+      // Validate the AI's category against the canonical TAX_MAP. Three cases:
+      //  1) Exact match → trust the AI; pull canonical taxSchedule/taxBucket
+      //     from TAX_MAP rather than the AI's separately-emitted fields.
+      //  2) Fuzzy match (case/whitespace differs) → accept the canonical form
+      //     but knock down confidence so the row routes to needs_review.
+      //  3) No match → drop the AI's category entirely, fall back to the
+      //     "Other ..." bucket appropriate for this txn type, low confidence
+      //     so the user sees it in needs_review.
+      let resolvedCategory: string;
+      let resolvedTaxSchedule: string;
+      const txnType = transactions.find((t) => t.idx === item.index)?.txn.type ?? "expense";
+      if (item.category && isValidCategory(item.category)) {
+        const sched = scheduleForCategory(item.category)!;
+        resolvedCategory     = item.category;
+        resolvedTaxSchedule  = sched.taxSchedule;
+      } else if (item.category && getMappingFuzzy(item.category)) {
+        const m = getMappingFuzzy(item.category)!;
+        resolvedCategory     = m.category; // canonical form
+        resolvedTaxSchedule  = m.taxSchedule;
+        confidence = Math.min(confidence, 0.7); // route to needs_review
+        console.warn(`[AI] fuzzy-matched "${item.category}" → "${m.category}" — clamping confidence to 0.7`);
+      } else {
+        const fb = fallbackCategoryForType(txnType);
+        resolvedCategory     = fb.category;
+        resolvedTaxSchedule  = fb.taxSchedule;
+        confidence = 0.5; // forces needs_review
+        console.warn(`[AI] unknown category "${item.category}" — falling back to "${fb.category}"`);
+      }
+
       results.set(item.index, {
-        category: item.category ?? "",
-        taxCategory: item.taxCategory ?? "",
-        taxSchedule: item.taxSchedule ?? "",
+        category: resolvedCategory,
+        taxCategory: item.taxCategory ?? resolvedCategory,
+        taxSchedule: resolvedTaxSchedule,
         confidence,
         source: "ai",
         entityId: null,
@@ -315,7 +345,7 @@ async function callAIBatch(
         aiType,
         categorizationExplanation: item.explanation
           ? `AI: ${item.explanation}`
-          : `AI classified as ${item.category ?? "unknown"} (${Math.round(confidence * 100)}%)`,
+          : `AI classified as ${resolvedCategory} (${Math.round(confidence * 100)}%)`,
       });
     }
   } catch (err) {
@@ -346,10 +376,75 @@ export async function categorizeTransactionsBatch(
   const results = new Map<number, CategorizationResult>();
   const needsAI: Array<{ idx: number; txn: TransactionInput }> = [];
 
+  // Phase 0 — Pre-classification guards.
+  //
+  // (a) Transfers and refunds: hard-routed before any rule/AI can fire.
+  //     Transfers have no tax-category. Refunds shouldn't poison categoryRules.
+  // (b) Generic-rail rows: when the canonical vendor extractor returns ""
+  //     because the description is purely a generic payment-method token
+  //     (ZELLE, ACH, WIRE, CHECK with no payee), refuse to auto-categorize
+  //     and route to needs_review. AI guessing on these creates noise.
+  for (const { idx, txn } of transactions) {
+    if (txn.type === "transfer") {
+      results.set(idx, {
+        category: "",
+        taxCategory: "",
+        taxSchedule: "",
+        confidence: 1.0,
+        source: "rule",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        aiType: "transfer",
+        categorizationExplanation: "Transfer — no tax category by design",
+      });
+      continue;
+    }
+    if (txn.type === "refund") {
+      // Confidence < 0.8 forces needs_review — user should decide if the
+      // refund offsets a specific expense / entity / category.
+      results.set(idx, {
+        category: "",
+        taxCategory: "",
+        taxSchedule: "",
+        confidence: 0.5,
+        source: "rule",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        aiType: "refund",
+        categorizationExplanation: "Refund — review and categorize against the original expense",
+      });
+      continue;
+    }
+    const fingerprint = canonicalExtractVendor({
+      description:           txn.description,
+      normalizedDescription: txn.normalizedDescription,
+      vendor:                txn.vendor,
+    });
+    if (!fingerprint) {
+      const fb = fallbackCategoryForType(txn.type);
+      results.set(idx, {
+        category: fb.category,
+        taxCategory: fb.category,
+        taxSchedule: fb.taxSchedule,
+        confidence: 0.5, // forces needs_review
+        source: "none",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        categorizationExplanation: "Generic payment rail (Zelle/ACH/wire/etc.) — needs counterparty memo to classify",
+      });
+      continue;
+    }
+    needsAI.push({ idx, txn });
+  }
+
   // Phase 1: user rules first (explicit user choices beat built-in keywords),
   // then keyword rules for everything not yet matched. The user-rule layer
   // is skipped when caller asks (force re-categorize against poisoned rules).
-  for (const { idx, txn } of transactions) {
+  const stillUnmatched: Array<{ idx: number; txn: TransactionInput }> = [];
+  for (const { idx, txn } of needsAI) {
     const normalizedDesc = (txn.normalizedDescription ?? txn.description).toLowerCase();
     const vendor = txn.vendor ?? "";
 
@@ -367,12 +462,12 @@ export async function categorizeTransactionsBatch(
       continue;
     }
 
-    needsAI.push({ idx, txn });
+    stillUnmatched.push({ idx, txn });
   }
 
   // Phase 2: batch AI for remaining transactions
-  for (let i = 0; i < needsAI.length; i += AI_BATCH_SIZE) {
-    const chunk = needsAI.slice(i, i + AI_BATCH_SIZE);
+  for (let i = 0; i < stillUnmatched.length; i += AI_BATCH_SIZE) {
+    const chunk = stillUnmatched.slice(i, i + AI_BATCH_SIZE);
     const aiResults = await callAIBatch(chunk, entities, userRules);
     for (const [idx, result] of aiResults) {
       results.set(idx, result);
