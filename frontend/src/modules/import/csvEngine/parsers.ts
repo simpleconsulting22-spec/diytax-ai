@@ -120,10 +120,26 @@ export function parseTypeMode(input: ParseInput): ParseOutcome {
       error: { rowIndex: input.rowIndex, field: "amount", message: "Amount cell is empty or unparseable", rawRow: input.rawRow },
     };
   }
+  // When the amount column has an explicit sign that disagrees with the type
+  // column, the amount wins. Some banks (Chase) put a DEBIT/CREDIT label
+  // that merely describes which card was used (or is otherwise descriptive)
+  // and is unrelated to the direction of money flow — a refund posted to a
+  // debit card still gets labeled DEBIT even though the dollars came IN.
+  // Positive amount + DEBIT label → income; negative amount + CREDIT label →
+  // expense. The amount column's sign is authoritative whenever it's
+  // explicit.
+  if (found > 0 && isDebit) {
+    return { row: buildRow(pre.common, found, "bank", input.rawRow, true) };
+  }
+  if (found < 0 && isCredit) {
+    return { row: buildRow(pre.common, found, "bank", input.rawRow, true) };
+  }
+
   const abs = Math.abs(found);
-  // If the bank says DEBIT but description carries an unambiguous inflow
-  // signal (VISA DIRECT push payment, refund, reversal, reimbursement), flip
-  // to credit. The bank's label is wrong on those rows — they're inbound.
+  // Secondary safety net for unsigned amounts: if the bank says DEBIT but
+  // the description has an unambiguous inflow marker (VISA DIRECT push
+  // payment, refund, reversal, reimbursement), flip to credit. Only fires
+  // when amount is unsigned/zero so it doesn't override the rule above.
   const overrideToCredit = isDebit && STRONG_INFLOW_OVERRIDE.test(pre.common.description);
   const signed = (isCredit || overrideToCredit) ? abs : -abs;
   return { row: buildRow(pre.common, signed, "bank", input.rawRow, overrideToCredit) };
