@@ -31,7 +31,7 @@ function getPlaidClient(): PlaidApi {
 // of stored docs, then updates docs whose `type` would change under the new
 // classifier.
 export const backfillTransactionTypes = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540 },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
     const uid = await requireAuth(request);
     const db = admin.firestore();

@@ -44,7 +44,7 @@ function getPlaidClient(): PlaidApi | null {
 }
 
 export const adminWipeBankData = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request): Promise<WipeResult> => {
   const email = (request.auth?.token?.email as string | undefined)?.toLowerCase();
   if (!email || email !== ALLOWED_EMAIL) {

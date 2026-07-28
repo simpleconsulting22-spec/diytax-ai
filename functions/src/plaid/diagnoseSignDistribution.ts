@@ -33,7 +33,7 @@ interface AccountReport {
  * the "PenFed sends all negative" claim with current data.
  */
 export const diagnoseSignDistribution = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "512MiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "512MiB" },
   async (request): Promise<{ accounts: AccountReport[] }> => {
     const uid = await requireAuth(request);
     const db  = admin.firestore();

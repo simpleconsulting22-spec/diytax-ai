@@ -1,6 +1,18 @@
+# ── Environment files ────────────────────────────────────────────────────────
+# Never commit real credentials. Example files are the documented exception.
+# Note: these rules do NOT untrack a file that is already tracked — use
+# `git rm --cached <file>` for that.
 .env
-.firebase/
+.env.*
 functions/.env
+functions/.env.*
+frontend/.env.local
+frontend/.env.*.local
+!.env.example
+!**/.env.example
+
+# ── Build output ─────────────────────────────────────────────────────────────
+.firebase/
 frontend/dist/
 functions/lib/
 node_modules/

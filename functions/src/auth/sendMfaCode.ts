@@ -1,27 +1,39 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import sgMail from "@sendgrid/mail";
 import { requireAuth } from "../middleware/auth";
+import {
+  sendEmail,
+  maskEmail,
+  describeEmailFailure,
+} from "../services/emailService";
+import { reserveMfaAttempt, MfaThrottleError } from "./mfaThrottle";
 
 function generateCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-function maskEmail(email: string): string {
-  const [local, domain] = email.split("@");
-  if (!domain) return "****";
-  const masked = local.length <= 2 ? "**" : `${local[0]}***`;
-  return `${masked}@${domain}`;
-}
-
 /**
- * Generates a 6-digit OTP and emails it to the user's registered address via SendGrid.
+ * Generates a 6-digit OTP and emails it to the user's registered address.
  *
- * Required environment variable (functions/.env):
- *   SENDGRID_API_KEY
+ * Delivery is handled by the shared email service (see services/emailService).
+ *
+ * Issuance is rate limited server-side (see ./mfaThrottle): 60s between codes,
+ * 5 per 15 minutes, 20 per 24 hours, all scoped to the authenticated uid and
+ * enforced transactionally. The attempt is reserved before SES is contacted and
+ * is not released if delivery fails.
+ *
+ * Required secrets (Firebase Secret Manager):
+ *   AWS_SES_ACCESS_KEY_ID
+ *   AWS_SES_SECRET_ACCESS_KEY
+ * Required non-secret config (functions/.env):
+ *   AWS_SES_REGION
  */
 export const sendMfaCode = onCall(
-  { cors: true, invoker: "public", secrets: ["SENDGRID_API_KEY"] },
+  {
+    cors: true,
+    invoker: "public",
+    secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"],
+  },
   async (request) => {
     const uid = await requireAuth(request);
 
@@ -34,23 +46,32 @@ export const sendMfaCode = onCall(
     const code = generateCode();
     const expiry = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    const db = admin.firestore();
-    await db.collection("userSecurity").doc(uid).set(
-      { mfaCode: code, mfaCodeExpiry: expiry, mfaVerified: false },
-      { merge: true }
-    );
-
-    const sgApiKey = process.env.SENDGRID_API_KEY;
-    if (!sgApiKey) {
-      console.error("Missing SENDGRID_API_KEY");
-      throw new HttpsError("internal", "Email service is not configured.");
+    // Reserves the attempt and writes the new code atomically. Throws before
+    // any provider contact if a limit is exceeded.
+    try {
+      await reserveMfaAttempt(uid, { mfaCode: code, mfaCodeExpiry: expiry });
+    } catch (error: unknown) {
+      if (error instanceof MfaThrottleError) {
+        // `reason` is recorded server-side only — the client is told nothing
+        // about which limit tripped, the counters, or the timestamps.
+        console.warn("[sendMfaCode] throttled", {
+          operation: "sendMfaCode",
+          reason: error.reason,
+          uid,
+        });
+        throw new HttpsError(
+          "resource-exhausted",
+          "Too many verification requests. Please wait a few minutes and try again."
+        );
+      }
+      throw error;
     }
 
-    sgMail.setApiKey(sgApiKey);
     try {
-      await sgMail.send({
+      // Resolves only once the provider accepted the message, so `sent: true`
+      // below is never reported for a message that was rejected.
+      await sendEmail({
         to: email,
-        from: "noreply@diytaxai.com",
         subject: "Your DIYTax AI verification code",
         html: `
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;padding:32px">
@@ -61,12 +82,22 @@ export const sendMfaCode = onCall(
           </div>
         `,
       });
-      console.log(`MFA code sent to ${maskEmail(email)}`);
-      return { sent: true, maskedEmail: maskEmail(email) };
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      console.error("SendGrid MFA error:", msg);
-      throw new HttpsError("internal", "Failed to send verification email.");
+      // Structured, log-safe diagnostics: operation, safe category, AWS
+      // exception name and request id. No code, body, address or credential.
+      console.error("[sendMfaCode] delivery failed", {
+        ...describeEmailFailure("sendMfaCode", error),
+        uid,
+      });
+      // Every failure mode looks identical to the client, so nothing about the
+      // account, the sending domain or SES state can be probed from outside.
+      throw new HttpsError(
+        "unavailable",
+        "Verification email could not be sent right now. Please try again shortly."
+      );
     }
+
+    console.log(`MFA code sent to ${maskEmail(email)}`);
+    return { sent: true, maskedEmail: maskEmail(email) };
   }
 );

@@ -7,7 +7,7 @@ import { fetchTransactionsForAccount } from "./fetchTransactions";
 // For production, verify this JWT using plaidClient.webhookVerificationKeyGet().
 // See: https://plaid.com/docs/api/webhooks/webhook-verification/
 
-export const plaidWebhook = onRequest({ cors: false }, async (req, res) => {
+export const plaidWebhook = onRequest({ secrets: ["PLAID_SECRET"], cors: false }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
     return;

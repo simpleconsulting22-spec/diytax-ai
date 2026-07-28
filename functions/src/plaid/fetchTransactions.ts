@@ -263,7 +263,7 @@ export async function fetchTransactionsForAccount(
 }
 
 export const fetchTransactions = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
   const uid = await requireAuth(request);
 
