@@ -23,12 +23,20 @@ setting or the root MX records, stop — that is the wrong step.
    one. Use an account you control long-term.
 2. Choose **one** SES region and use it for everything that follows — identity
    verification, IAM, credentials, metrics, and the `AWS_SES_REGION` value.
-   `us-east-1` (N. Virginia) is the default assumed by this repo's
-   `functions/.env`. If you pick a different region, change that value to match.
+   **`us-east-2` (Ohio)** is what this repo assumes in `functions/.env`. If you
+   pick a different region, change that value to match.
 
    An identity verified in one region does **not** exist in another. A region
    mismatch between your verified domain and `AWS_SES_REGION` is the most common
-   cause of `MessageRejected` after an otherwise correct setup.
+   cause of `MessageRejected` after an otherwise correct setup — the console
+   shows a healthy verified domain while every send is rejected.
+
+   Ohio was chosen over `us-east-1` (N. Virginia) for a slightly better outage
+   record and marginal proximity to the Cloud Functions in Google's `us-central1`
+   (Iowa). Note the two clouds' region names are unrelated and need not match.
+   SES pricing, deliverability, and sandbox/production access are identical
+   across US regions, so this is a weak preference — but once the domain is
+   verified, changing it means re-verifying, so it is fixed from here.
 
 3. Pricing: use SES **à-la-carte / on-demand** pricing, currently about
    **$0.10 per 1,000 outbound messages** plus data charges. Do **not** subscribe
@@ -219,7 +227,7 @@ The region is **not** a secret and follows this repo's existing `.env`
 convention. It is already set in `functions/.env`:
 
 ```
-AWS_SES_REGION=us-east-1
+AWS_SES_REGION=us-east-2
 ```
 
 Change it if you chose a different region in §1. Both `sendMfaCode` and
