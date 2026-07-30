@@ -23,20 +23,21 @@ setting or the root MX records, stop — that is the wrong step.
    one. Use an account you control long-term.
 2. Choose **one** SES region and use it for everything that follows — identity
    verification, IAM, credentials, metrics, and the `AWS_SES_REGION` value.
-   **`us-east-2` (Ohio)** is what this repo assumes in `functions/.env`. If you
-   pick a different region, change that value to match.
+   **`us-east-1` (N. Virginia)** is where `diytaxai.com` is verified, and is what
+   `functions/.env` assumes. Everything else — IAM policy ARN, access keys,
+   production access, metrics — must use the same region.
 
    An identity verified in one region does **not** exist in another. A region
    mismatch between your verified domain and `AWS_SES_REGION` is the most common
    cause of `MessageRejected` after an otherwise correct setup — the console
    shows a healthy verified domain while every send is rejected.
 
-   Ohio was chosen over `us-east-1` (N. Virginia) for a slightly better outage
-   record and marginal proximity to the Cloud Functions in Google's `us-central1`
-   (Iowa). Note the two clouds' region names are unrelated and need not match.
-   SES pricing, deliverability, and sandbox/production access are identical
-   across US regions, so this is a weak preference — but once the domain is
-   verified, changing it means re-verifying, so it is fixed from here.
+   Region choice is otherwise a weak preference: SES pricing, deliverability,
+   and sandbox/production access are identical across US regions. Note that AWS
+   region names are unrelated to Google's — the Cloud Functions run in
+   `us-central1` (Iowa), which neither constrains nor needs to match this.
+   Changing region after verification means generating and publishing three new
+   DKIM records, so treat it as fixed.
 
 3. Pricing: use SES **à-la-carte / on-demand** pricing, currently about
    **$0.10 per 1,000 outbound messages** plus data charges. Do **not** subscribe
@@ -227,7 +228,7 @@ The region is **not** a secret and follows this repo's existing `.env`
 convention. It is already set in `functions/.env`:
 
 ```
-AWS_SES_REGION=us-east-2
+AWS_SES_REGION=us-east-1
 ```
 
 Change it if you chose a different region in §1. Both `sendMfaCode` and
