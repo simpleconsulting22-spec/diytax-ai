@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { requireAuth } from "../middleware/auth";
 
 export const extractReceiptData = onCall(
-  { secrets: ["OPENAI_API_KEY"], cors: true, invoker: "public", timeoutSeconds: 60 },
+  { cors: true, invoker: "public", timeoutSeconds: 60 },
   async (request) => {
     const uid = await requireAuth(request);
     const { storagePath } = request.data as { storagePath?: string };

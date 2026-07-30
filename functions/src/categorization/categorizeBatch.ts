@@ -293,7 +293,7 @@ export async function categorizeSpecificTransactions(
 // ─── Cloud Functions ──────────────────────────────────────────────────────────
 
 export const categorizeBatch = onCall(
-  { secrets: ["OPENAI_API_KEY"], cors: true, invoker: "public", timeoutSeconds: 540 },
+  { cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
     const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
     return categorizeUserTransactions(effectiveOwnerUid, callerUid, role);
@@ -301,7 +301,7 @@ export const categorizeBatch = onCall(
 );
 
 export const categorizeSelected = onCall(
-  { secrets: ["OPENAI_API_KEY"], cors: true, invoker: "public", timeoutSeconds: 540 },
+  { cors: true, invoker: "public", timeoutSeconds: 540 },
   async (request) => {
     const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
     const { transactionIds, force } = request.data as { transactionIds?: string[]; force?: boolean };

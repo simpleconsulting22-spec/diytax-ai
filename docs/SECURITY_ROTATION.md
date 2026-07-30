@@ -30,7 +30,7 @@ Present in committed history (`git log -- functions/.env`):
 
 | Variable | Type | Rotate? |
 |---|---|---|
-| `OPENAI_API_KEY` | Secret key | **Yes — first** |
+| `OPENAI_API_KEY` | Secret key | **Revoke only — nothing consumes it** |
 | `PLAID_SECRET` | Secret | **Yes — second** |
 | `PLAID_CLIENT_ID` | Identifier | Rotates with the Plaid secret |
 | `TWILIO_AUTH_TOKEN` | Secret | **Yes — third** |
@@ -78,8 +78,8 @@ credential is deployed and verified — that is what makes it zero-downtime.
 
 > ### Order matters: never deploy between removal and binding
 >
-> `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `PLAID_SECRET` are now declared as
-> per-function secrets. They must be deleted from your local `functions/.env`,
+> `ANTHROPIC_API_KEY` and `PLAID_SECRET` are now declared as per-function
+> secrets. They must be deleted from your local `functions/.env`,
 > because leaving them re-injects the plaintext into the Cloud Run environment
 > on the next deploy, where `gcloud run services describe` can read it —
 > defeating the migration.
@@ -107,20 +107,38 @@ Do these in order. After each one, update configuration, redeploy, and verify
 before starting the next — so that if something breaks you know which change
 caused it.
 
-### 1. OpenAI
+### 1. OpenAI — revoke only, do not replace
 
-- [ ] <https://platform.openai.com/api-keys> → create a new secret key
-- [ ] Update `OPENAI_API_KEY` in your local `functions/.env`
-- [ ] Redeploy (see *Redeploying* below)
-- [ ] Verify the app still categorizes transactions and parses receipts
-- [ ] **Revoke the old key** in the OpenAI dashboard
-- [ ] Confirm the old key is dead:
+A real OpenAI key (`sk-` prefix, 164 chars) was committed and sits in git
+history. It was removed from `functions/.env` at some point after 2026-04-08,
+which is why AI categorization has been silently inactive since — the code logs
+`"OPENAI_API_KEY not set, skipping AI categorization"` and falls back to rules.
+
+**There is nothing to rotate to.** No function declares `OPENAI_API_KEY` as a
+secret any more, so a replacement key would not be consumed. Just kill the old
+one.
+
+- [ ] <https://platform.openai.com/api-keys> → find the exposed key
+- [ ] If it is already gone (deleted, or lost with an expired trial), you are
+      done — no further action
+- [ ] Otherwise **delete it**
+- [ ] Confirm it is dead:
       `curl -s -o /dev/null -w "%{http_code}" https://api.openai.com/v1/models -H "Authorization: Bearer OLD_KEY"`
       → expect **401**
+- [ ] Optionally remove the four `process.env.OPENAI_API_KEY` reads once
+      categorization moves to Claude
 
-Consumers: `categorization/categorizeTransaction.ts`,
-`categorization/suggestCategory.ts`, `receipts/extractReceiptData.ts`,
-`services/categorizationService.ts`
+Do **not** create an OpenAI account or project to do this. If you never had one,
+there is no key to revoke and this step is already complete.
+
+Still-present consumers (they read the variable and skip when it is unset):
+`categorization/categorizeTransaction.ts`, `categorization/suggestCategory.ts`,
+`receipts/extractReceiptData.ts`, `services/categorizationService.ts`
+
+> **Restoring AI categorization:** the plan is to point these four call sites at
+> **Claude Haiku 4.5** using the existing `ANTHROPIC_API_KEY` — no new account,
+> `@anthropic-ai/sdk` already installed, roughly $0.30–$3/month at this volume.
+> Tracked separately from the security work.
 
 ### 2. Plaid
 
@@ -176,13 +194,6 @@ there is nothing to migrate. Just delete the key.
 Each secret is bound only to the functions that consume it, so deploys are
 narrow. Copy these verbatim.
 
-**`OPENAI_API_KEY`** — 5 functions
-
-```bash
-firebase deploy --project diytax-ai --only \
-functions:categorizeTransaction,functions:suggestCategory,functions:categorizeBatch,functions:categorizeSelected,functions:extractReceiptData
-```
-
 **`ANTHROPIC_API_KEY`** — 1 function
 
 ```bash
@@ -230,7 +241,7 @@ for f in categorizeTransaction parseFinancialData fetchTransactions sendMfaCode;
 done
 ```
 
-Any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `PLAID_SECRET` appearing with a
+Either of `ANTHROPIC_API_KEY` or `PLAID_SECRET` appearing with a
 literal `'value'` rather than a `valueFrom.secretKeyRef` means the migration did
 not take for that function.
 
@@ -247,8 +258,8 @@ firebase functions:secrets:set AWS_SES_ACCESS_KEY_ID
 firebase functions:secrets:set AWS_SES_SECRET_ACCESS_KEY
 ```
 
-Migrating `OPENAI_API_KEY`, `PLAID_SECRET`, `TWILIO_AUTH_TOKEN`, and
-`ANTHROPIC_API_KEY` to the same mechanism is the durable fix. Each function
+Migrating `PLAID_SECRET`, `TWILIO_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` to the
+same mechanism is the durable fix. Each function
 that reads one would declare it in its `secrets: [...]` array, exactly as
 `sendMfaCode` and `sendInvite` now do. This is a follow-up task, not a
 prerequisite for rotation.

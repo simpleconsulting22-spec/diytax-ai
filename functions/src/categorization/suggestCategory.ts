@@ -12,7 +12,7 @@ import {
 } from "../shared/taxMap";
 
 export const suggestCategory = onCall(
-  { secrets: ["OPENAI_API_KEY"], cors: true, invoker: "public" },
+  { cors: true, invoker: "public" },
   async (request) => {
     const { effectiveOwnerUid } = await resolveEffectiveOwner(request);
     const { description, amount } = request.data as {
