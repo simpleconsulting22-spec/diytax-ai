@@ -171,24 +171,36 @@ key. Create a dedicated identity that can do nothing except send through SES.
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "SendFromDiytaxaiIdentityOnly",
+      "Sid": "SendThroughDiytaxaiSes",
       "Effect": "Allow",
       "Action": ["ses:SendEmail"],
-      "Resource": "arn:aws:ses:REGION:ACCOUNT_ID:identity/diytaxai.com",
-      "Condition": {
-        "StringEquals": {
-          "ses:FromAddress": "noreply@diytaxai.com"
-        }
-      }
+      "Resource": "arn:aws:ses:REGION:ACCOUNT_ID:identity/*"
     }
   ]
 }
 ```
 
-   This is as narrow as SES permits: one action, scoped to the one verified
-   identity, further constrained to the one From address. It grants no ability
-   to read metrics, alter identities, manage the suppression list, or send from
-   any other address. `ses:SendEmail` is the action used by both the SES v1
+> **Do not narrow `Resource` to `identity/diytaxai.com`.** It looks tighter and
+> it fails. In sandbox mode every recipient must itself be a verified SES
+> identity, and IAM evaluates `ses:SendEmail` against **the recipient's**
+> identity as well as the sender's. A policy naming only the sending domain is
+> denied with:
+>
+> ```
+> User `arn:aws:iam::ACCOUNT_ID:user/diytax-ai-ses' is not authorized to perform
+> `ses:SendEmail' on resource `arn:aws:ses:REGION:ACCOUNT_ID:identity/<recipient>'
+> ```
+>
+> The `identity/*` wildcard covers both. It also survives the move to production
+> access, where recipients stop being verified identities. A
+> `Condition` on `ses:FromAddress` is likewise best omitted — it adds a second
+> way to get an opaque `AccessDeniedException` for no meaningful gain.
+
+   This is as narrow as SES usefully permits: one action, SES only, one account,
+   one region. It grants no ability to read metrics, alter identities, manage
+   the suppression list, or create credentials. The only widening is to
+   identities *within your own account* — which are just `diytaxai.com` and any
+   addresses you verified yourself. `ses:SendEmail` is the action used by both the SES v1
    `SendEmail` and the SES v2 `SendEmail` API that this application calls.
 
 3. Name it `diytax-ai-ses-send` and create it.
