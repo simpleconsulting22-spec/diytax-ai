@@ -1,13 +1,7 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { sendPush, writeHistory } from "./fcmHelpers";
-
-// Quarterly estimated tax payment deadlines (year → [MM-DD])
-const QUARTERLY_DATES: Record<number, string[]> = {
-  2025: ["2025-04-15", "2025-06-16", "2025-09-15", "2026-01-15"],
-  2026: ["2026-04-15", "2026-06-15", "2026-09-15", "2027-01-15"],
-  2027: ["2027-04-15", "2027-06-16", "2027-09-15", "2028-01-15"],
-};
+import { quarterlyDueDates } from "../shared/taxConstants";
 
 const ALERT_DAYS = [30, 14, 3];
 
@@ -23,7 +17,12 @@ export const quarterlyDeadline = onSchedule(
     const db  = admin.firestore();
     const now = new Date();
 
-    const allDeadlines = Object.values(QUARTERLY_DATES).flat();
+    // Computed rather than hard-coded, so the weekend/holiday shift is always
+    // right and the list never needs hand-extending into a new year.
+    const year = now.getUTCFullYear();
+    const allDeadlines = [year - 1, year, year + 1]
+      .flatMap((y) => quarterlyDueDates(y))
+      .map((q) => q.dueDate);
     const upcoming = allDeadlines
       .map((d) => ({ date: d, days: getDaysUntil(d, now) }))
       .filter(({ days }) => ALERT_DAYS.includes(days));

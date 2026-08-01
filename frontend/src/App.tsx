@@ -13,8 +13,6 @@ import LoginPage from "./pages/LoginPage";
 import OnboardingPage from "./modules/onboarding/OnboardingPage";
 import DashboardPage from "./modules/dashboard/DashboardPage";
 import TransactionsPage from "./pages/TransactionsPage";
-import TaxFlowPage from "./pages/TaxFlowPage";
-import SummaryPage from "./pages/SummaryPage";
 import ImportCSVPage from "./modules/import/ImportCSVPage";
 import ReviewPage from "./modules/review/ReviewPage";
 import TaxSummaryPage from "./modules/tax/TaxSummaryPage";
@@ -106,13 +104,12 @@ function AppRoutes() {
         path="/tax-flow"
         element={<Navigate to="/tax-summary" replace />}
       />
+      {/* Legacy summary route. /tax-summary is the canonical, Schedule C/E
+          aware surface; the old page computed different totals from the same
+          data, so the two could disagree. Redirect rather than keep both. */}
       <Route
         path="/summary"
-        element={
-          <AuthGuard>
-            <SummaryPage />
-          </AuthGuard>
-        }
+        element={<Navigate to="/tax-summary" replace />}
       />
       <Route
         path="/import-csv"

@@ -32,11 +32,10 @@ export type ExpenseType =
 
 export type DataSourcePreference = "csv" | "bank" | "manual";
 
-export type FilingStatus =
-  | "single"
-  | "married_jointly"
-  | "married_separately"
-  | "head_of_household";
+// One definition of filing status, shared with the tax calculators — a third
+// local copy is how "married filing separately" ended up on the wrong brackets.
+import type { FilingStatus } from "../../../shared/taxConstants";
+export type { FilingStatus };
 
 export type EntityOwner = "primary" | "spouse" | "both";
 

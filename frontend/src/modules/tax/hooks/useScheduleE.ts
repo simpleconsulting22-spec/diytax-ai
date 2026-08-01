@@ -80,11 +80,21 @@ function formatLineNumber(key: string): string {
 interface RawTxn {
   entityId?: string | null;
   entityName?: string;
-  type: "income" | "expense" | "refund";
+  type: "income" | "expense" | "refund" | "transfer";
   amount: number;
   category: string | null;
+  status?: string | null;
   taxYear?: number | null;
   date?: string;
+}
+
+/**
+ * Transfers are not rental income or expense, and an unreviewed row is an
+ * unconfirmed guess. Both were reaching Schedule E totals here while the
+ * dashboard meter excluded them — the same figure differed by surface.
+ */
+function countsTowardSchedule(txn: { type?: string; status?: string | null }): boolean {
+  return txn.type !== "transfer" && txn.status !== "needs_review";
 }
 
 function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
@@ -94,6 +104,8 @@ function aggregate(txns: RawTxn[]): PropertyScheduleE[] {
   >();
 
   for (const txn of txns) {
+    if (!countsTowardSchedule(txn)) continue;
+
     const key = txn.entityId ?? "__unassigned__";
     const name =
       key === "__unassigned__" ? "Unassigned" : (txn.entityName ?? key);

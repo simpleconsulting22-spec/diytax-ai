@@ -80,11 +80,24 @@ function formatLineNumber(key: string): string {
 interface RawTxn {
   entityId?: string | null;
   entityName?: string;
-  type: "income" | "expense" | "refund";
+  type: "income" | "expense" | "refund" | "transfer";
   amount: number;
   category: string | null;
+  status?: string | null;
   taxYear?: number | null;
   date?: string;
+}
+
+/**
+ * Rows that must not reach a Schedule C total:
+ *   - transfers — moving your own money is not business income or expense
+ *   - needs_review — an unconfirmed guess should not appear on a tax form
+ *
+ * The dashboard tax meter already excluded both; this page did not, so the two
+ * surfaces reported different Schedule C figures for the same year.
+ */
+function countsTowardSchedule(txn: { type?: string; status?: string | null }): boolean {
+  return txn.type !== "transfer" && txn.status !== "needs_review";
 }
 
 function aggregate(txns: RawTxn[]): EntityScheduleC[] {
@@ -94,6 +107,8 @@ function aggregate(txns: RawTxn[]): EntityScheduleC[] {
   >();
 
   for (const txn of txns) {
+    if (!countsTowardSchedule(txn)) continue;
+
     const key = txn.entityId ?? "__unassigned__";
     const name =
       key === "__unassigned__" ? "Unassigned" : (txn.entityName ?? key);

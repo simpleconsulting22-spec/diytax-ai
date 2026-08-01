@@ -124,6 +124,7 @@ const FILING_STATUS_OPTIONS: { value: FilingStatus; label: string; sublabel?: st
   { value: "married_jointly", label: "Married Filing Jointly", sublabel: "You and your spouse file together. Most married couples pick this." },
   { value: "married_separately", label: "Married Filing Separately", sublabel: "You and your spouse each file your own return" },
   { value: "head_of_household", label: "Head of Household", sublabel: "Unmarried, but you support a dependent (kid, parent, etc.)" },
+  { value: "qualifying_surviving_spouse", label: "Qualifying Surviving Spouse", sublabel: "Your spouse died in the last two years and you support a dependent child" },
 ];
 
 export default function OnboardingPage() {

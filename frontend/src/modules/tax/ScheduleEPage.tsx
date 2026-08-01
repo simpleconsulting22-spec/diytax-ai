@@ -12,7 +12,7 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-function exportCSV(properties: PropertyScheduleE[]) {
+function exportCSV(properties: PropertyScheduleE[], taxYear: number) {
   const rows: string[][] = [["Property", "Line", "Description", "Amount"]];
 
   for (const prop of properties) {
@@ -31,7 +31,7 @@ function exportCSV(properties: PropertyScheduleE[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "schedule-e-2025.csv";
+  a.download = `schedule-e-${taxYear}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -250,7 +250,7 @@ export default function ScheduleEPage() {
           <div style={{ display: "flex", gap: "10px" }}>
             {!loading && properties.length > 0 && (
               <button
-                onClick={() => exportCSV(properties)}
+                onClick={() => exportCSV(properties, selectedYear)}
                 style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
               >
                 Export CSV

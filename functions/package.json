@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:integration": "npm run build && firebase emulators:exec --only auth,firestore,functions --project demo-diytax \"vitest run --config vitest.integration.config.ts\"",
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
