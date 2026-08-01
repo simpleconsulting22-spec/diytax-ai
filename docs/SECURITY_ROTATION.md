@@ -157,20 +157,24 @@ Consumers: all of `functions/src/plaid/*`, plus `admin/wipeBankData.ts`
 > Plaid rotation is the riskiest step: a bad secret breaks bank syncing for all
 > users. Do it when you can watch it, not at the end of a session.
 
-### 3. Twilio
+### 3. Twilio — revoke only, nothing to update
+
+No source file reads the Twilio variables and the `twilio` package is never
+imported — the SMS path was never built. The three `TWILIO_*` lines have been
+removed from `functions/.env`, so after that deploy the auth token is no longer
+present in any function's Cloud Run environment.
+
+**There is nothing to update or redeploy.** The token is still live and still in
+git history, so revoke it — it grants full account access, including sending SMS
+at your expense.
 
 - [ ] <https://console.twilio.com> → Account → API keys & tokens
-- [ ] Create a **secondary** auth token, promote it to primary, then delete the
-      old one — Twilio's supported zero-downtime path
-- [ ] Update `TWILIO_AUTH_TOKEN` locally
-- [ ] Redeploy
-- [ ] Confirm the old token is dead:
+- [ ] Delete the exposed auth token. (Twilio's usual zero-downtime dance —
+      create a secondary, promote, delete the old — is unnecessary here, since
+      nothing consumes it.)
+- [ ] Confirm it is dead:
       `curl -s -o /dev/null -w "%{http_code}" https://api.twilio.com/2010-04-01/Accounts/ACCOUNT_SID.json -u ACCOUNT_SID:OLD_TOKEN`
       → expect **401**
-
-No source file currently reads the Twilio variables — the SMS path was never
-built. Rotate anyway: the token is live and grants full account access,
-including sending SMS at your expense.
 
 ### 4. Remaining credentials
 
