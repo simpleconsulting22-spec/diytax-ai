@@ -1,21 +1,33 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import sgMail from "@sendgrid/mail";
 import { requireAuth } from "../middleware/auth";
+import { sendEmail, maskEmail, describeEmailFailure } from "../services/emailService";
 
 /**
  * sendInvite — Owner invites a spouse or accountant by email.
  *
- * Creates an invite doc in /invites and sends an email via the Firebase
- * Email Extension (mail collection). Requires the Trigger Email from
- * Firestore extension to be installed and configured.
+ * Creates an invite doc in /invites and sends the invitation via the shared
+ * email service (see services/emailService).
+ *
+ * The invite doc is preserved even when delivery fails, so the owner can share
+ * the accept link manually. Callers must check `emailSent` rather than assuming
+ * a resolved promise means the email went out.
+ *
+ * Required secrets (Firebase Secret Manager):
+ *   AWS_SES_ACCESS_KEY_ID
+ *   AWS_SES_SECRET_ACCESS_KEY
+ * Required non-secret config (functions/.env):
+ *   AWS_SES_REGION
  */
 export const sendInvite = onCall(
-  { cors: true, invoker: "public", secrets: ["SENDGRID_API_KEY"] },
+  {
+    cors: true,
+    invoker: "public",
+    secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"],
+  },
   async (request) => {
     const ownerUid = await requireAuth(request);
     const { email, role } = request.data as { email?: string; role?: string };
-    console.log("[sendInvite] called", { email, role, ownerUid });
 
     if (!email || typeof email !== "string") {
       throw new HttpsError("invalid-argument", "A valid email is required.");
@@ -25,6 +37,8 @@ export const sendInvite = onCall(
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    console.log("[sendInvite] called", { email: maskEmail(normalizedEmail), role, ownerUid });
+
     const db = admin.firestore();
 
     // Check for an existing pending invite for this email+owner.
@@ -63,20 +77,14 @@ export const sendInvite = onCall(
       console.log("[sendInvite] invite doc created:", inviteId);
     }
 
-    // Send invite email via SendGrid.
+    const appUrl = "https://diytaxai.com";
+    let emailSent = false;
+
     try {
-      const sgApiKey = process.env.SENDGRID_API_KEY;
-      const fromEmail = "noreply@diytaxai.com";
-      const appUrl = "https://diytaxai.com";
-      if (!sgApiKey) {
-        console.warn("[sendInvite] SENDGRID_API_KEY not set — skipping email send.");
-      } else {
-        sgMail.setApiKey(sgApiKey);
-        await sgMail.send({
-          to: normalizedEmail,
-          from: fromEmail,
-          subject: `${ownerName} invited you to DIYTax AI`,
-          html: `
+      await sendEmail({
+        to: normalizedEmail,
+        subject: `${ownerName} invited you to DIYTax AI`,
+        html: `
             <p>Hi,</p>
             <p><strong>${ownerName}</strong> has invited you to access their DIYTax AI account as a <strong>${role}</strong>.</p>
             <p>
@@ -88,14 +96,21 @@ export const sendInvite = onCall(
             <p>If you don't have an account yet, you'll be prompted to create one first.</p>
             <p style="color:#6b7280;font-size:12px">This link expires in 7 days.</p>
           `,
-        });
-        console.log("[sendInvite] email sent to", normalizedEmail);
-      }
-    } catch (err) {
-      // Non-fatal: invite doc exists; owner can share the link manually.
-      console.warn("[sendInvite] email send failed:", err);
+      });
+      emailSent = true;
+      console.log("[sendInvite] email sent to", maskEmail(normalizedEmail));
+    } catch (err: unknown) {
+      // Non-fatal by design: the invite doc stands and the owner can share the
+      // link manually. Surfaced to the caller via `emailSent: false` so the UI
+      // stops reporting an unqualified success.
+      console.error("[sendInvite] delivery failed", {
+        ...describeEmailFailure("sendInvite", err),
+        inviteId,
+        ownerUid,
+      });
     }
 
-    return { inviteId, alreadyPending };
+    // Provider errors stay server-side; the client sees only this shape.
+    return { inviteId, alreadyPending, emailSent };
   }
 );

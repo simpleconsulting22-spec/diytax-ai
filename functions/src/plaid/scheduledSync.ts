@@ -23,6 +23,7 @@ import { fetchTransactionsForAccount } from "./fetchTransactions";
  */
 export const scheduledPlaidSync = onSchedule(
   {
+    secrets: ["PLAID_SECRET"],
     schedule: "0 3,15 * * *",
     timeZone: "America/Chicago",
     timeoutSeconds: 540,

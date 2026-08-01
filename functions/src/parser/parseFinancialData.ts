@@ -141,7 +141,7 @@ function extractJson(raw: string): string {
 }
 
 export const parseFinancialData = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 60 },
+  { secrets: ["ANTHROPIC_API_KEY"], cors: true, invoker: "public", timeoutSeconds: 60 },
   async (request) => {
     await requireAuth(request);
 

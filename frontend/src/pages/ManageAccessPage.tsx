@@ -20,6 +20,7 @@ export default function ManageAccessPage() {
   const [inviteRole, setInviteRole] = useState<"spouse" | "accountant">("spouse");
   const [sending, setSending]     = useState(false);
   const [success, setSuccess]     = useState("");
+  const [warning, setWarning]     = useState("");
   const [error, setError]         = useState("");
 
   // Owners only
@@ -39,9 +40,23 @@ export default function ManageAccessPage() {
     setSending(true);
     setError("");
     setSuccess("");
+    setWarning("");
+    const invitee = email.trim();
     try {
-      await apiClient.call("sendInvite", { email: email.trim(), role: inviteRole });
-      setSuccess(`Invite sent to ${email.trim()}. They'll receive an email with a link to accept.`);
+      const res = await apiClient.call<{ inviteId: string; emailSent: boolean }>(
+        "sendInvite",
+        { email: invitee, role: inviteRole }
+      );
+      if (res.emailSent) {
+        setSuccess(`Invite sent to ${invitee}. They'll receive an email with a link to accept.`);
+      } else {
+        // The invite exists — only delivery failed. Give the owner the link so
+        // they can pass it on themselves.
+        setWarning(
+          `Invite created for ${invitee}, but we couldn't send the email. ` +
+          `Share this link with them directly: ${window.location.origin}/accept-invite/${res.inviteId}`
+        );
+      }
       setEmail("");
       await refreshUserDoc();
     } catch (err: unknown) {
@@ -204,6 +219,11 @@ export default function ManageAccessPage() {
           {success && (
             <div style={{ marginTop: "16px", padding: "12px 14px", backgroundColor: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "8px", fontSize: "13px", color: "#15803d" }}>
               {success}
+            </div>
+          )}
+          {warning && (
+            <div style={{ marginTop: "16px", padding: "12px 14px", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", fontSize: "13px", color: "#b45309", wordBreak: "break-word" }}>
+              {warning}
             </div>
           )}
           {error && (

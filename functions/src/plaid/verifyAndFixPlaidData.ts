@@ -58,7 +58,7 @@ interface VerifyReport {
  * Returns a single report you can hand back to the user.
  */
 export const verifyAndFixPlaidData = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request): Promise<VerifyReport> => {
     const uid = await requireAuth(request);
     const db  = admin.firestore();

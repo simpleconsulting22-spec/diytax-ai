@@ -38,7 +38,7 @@ interface DeleteResult {
  * Idempotent: if the account doesn't exist, returns zero counts.
  */
 export const deletePlaidAccount = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "512MiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "512MiB" },
   async (request): Promise<DeleteResult> => {
     const uid = await requireAuth(request);
     const data = request.data as { accountId?: string };

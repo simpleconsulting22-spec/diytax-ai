@@ -42,7 +42,7 @@ interface RepairReport {
  * Fully idempotent: running it twice produces the same result as running it once.
  */
 export const repairPlaidData = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
     const uid = await requireAuth(request);
     const db = admin.firestore();
@@ -213,7 +213,7 @@ export const repairPlaidData = onCall(
  * Used as a safety net when auto-detection couldn't reach a confident verdict.
  */
 export const setAccountSignConvention = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 300 },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 300 },
   async (request) => {
     const uid = await requireAuth(request);
     const data = request.data as { accountId?: string; inverted?: boolean };

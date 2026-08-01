@@ -12,7 +12,7 @@ import { fetchTransactionsForAccount } from "./fetchTransactions";
  * the UI can show "5 of 11 accounts synced — 6 failed (click for details)".
  */
 export const syncAllPlaidAccounts = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
     const uid = await requireAuth(request);
     const db = admin.firestore();
