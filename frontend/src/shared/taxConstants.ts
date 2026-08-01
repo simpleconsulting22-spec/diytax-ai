@@ -364,15 +364,35 @@ export function selfEmploymentTax(
   netProfit: number,
   taxYear: number,
   otherSSWages = 0
-): { seTax: number; deductiblePortion: number } {
-  if (netProfit <= 0) return { seTax: 0, deductiblePortion: 0 };
+): {
+  seTax: number;
+  deductiblePortion: number;
+  /** Schedule SE line 4a: 92.35% of net profit. The base both rates apply to. */
+  netEarnings: number;
+  /** OASDI room left after W-2 social security wages. Medicare has no cap. */
+  ssHeadroom: number;
+  ssTax: number;
+  medicareTax: number;
+} {
+  if (netProfit <= 0) {
+    return { seTax: 0, deductiblePortion: 0, netEarnings: 0, ssHeadroom: 0, ssTax: 0, medicareTax: 0 };
+  }
   const wageBase = pickYear(taxYear, SS_WAGE_BASE_BY_YEAR);
   const netEarnings = netProfit * SE_NET_EARNINGS_FACTOR;
+  // W-2 wages consume the OASDI base and NOTHING else — they never change the
+  // 92.35% net-earnings figure, and never touch the uncapped Medicare portion.
   const ssHeadroom = Math.max(0, wageBase - Math.max(0, otherSSWages));
   const ssTax = Math.min(netEarnings, ssHeadroom) * SE_SOCIAL_SECURITY_RATE;
   const medicareTax = netEarnings * SE_MEDICARE_RATE;
   const seTax = ssTax + medicareTax;
-  return { seTax, deductiblePortion: seTax * SE_DEDUCTIBLE_SHARE };
+  return {
+    seTax,
+    deductiblePortion: seTax * SE_DEDUCTIBLE_SHARE,
+    netEarnings,
+    ssHeadroom,
+    ssTax,
+    medicareTax,
+  };
 }
 
 // ─── Federal estimate — the single lane-aware pipeline ────────────────────────
@@ -421,8 +441,14 @@ export interface FederalEstimateInput {
 export interface FederalEstimate {
   taxYear: number;
   ssWageBase: number;
-  /** Exactly what SE tax was charged on — surfaced so it can be audited. */
+  /** Schedule C net profit — exactly what SE tax was charged on. */
   seTaxBase: number;
+  /** Schedule SE line 4a: seTaxBase × 92.35%. The figure both rates apply to. */
+  seNetEarnings: number;
+  /** OASDI room left after W-2 wages. Only this is affected by W-2 income. */
+  seSocialSecurityHeadroom: number;
+  seSocialSecurityTax: number;
+  seMedicareTax: number;
   seTax: number;
   seDeduction: number;
   grossIncome: number;
@@ -448,8 +474,8 @@ export function computeFederalEstimate(input: FederalEstimateInput): FederalEsti
 
   // SE tax: Schedule C net profit only. W-2 wages consume the OASDI base first.
   const seTaxBase = Math.max(0, input.scheduleCNet);
-  const { seTax, deductiblePortion: seDeduction } =
-    selfEmploymentTax(seTaxBase, taxYear, input.w2Wages);
+  const se = selfEmploymentTax(seTaxBase, taxYear, input.w2Wages);
+  const { seTax, deductiblePortion: seDeduction } = se;
 
   const grossIncome = round2(
     input.w2Wages +
@@ -505,6 +531,10 @@ export function computeFederalEstimate(input: FederalEstimateInput): FederalEsti
     taxYear,
     ssWageBase,
     seTaxBase: round2(seTaxBase),
+    seNetEarnings: round2(se.netEarnings),
+    seSocialSecurityHeadroom: round2(se.ssHeadroom),
+    seSocialSecurityTax: round2(se.ssTax),
+    seMedicareTax: round2(se.medicareTax),
     seTax: round2(seTax),
     seDeduction: round2(seDeduction),
     grossIncome,

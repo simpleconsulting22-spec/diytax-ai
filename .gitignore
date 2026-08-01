@@ -18,3 +18,9 @@ functions/lib/
 node_modules/
 firebase-debug.log
 .claude/
+
+# Firebase emulator debug output
+functions/*-debug.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

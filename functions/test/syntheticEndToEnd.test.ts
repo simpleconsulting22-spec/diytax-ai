@@ -188,6 +188,18 @@ describe("access control", () => {
   it("rejects an unauthenticated call", async () => {
     await expect((generateTaxSummary as any)({ data: { taxYear: YEAR } })).rejects.toThrow(/logged in/i);
   });
+
+  it("rejects an auth object carrying no usable uid", async () => {
+    // A malformed bearer token can produce `request.auth` with an empty uid.
+    // Without an explicit check that reached Firestore as an empty document
+    // path and surfaced as an opaque 500 rather than a clean 401. Found by the
+    // emulator integration test with a junk token.
+    for (const badAuth of [{ uid: "" }, { uid: undefined }, {}]) {
+      await expect(
+        (generateTaxSummary as any)({ auth: badAuth, data: { taxYear: YEAR } })
+      ).rejects.toThrow(/logged in/i);
+    }
+  });
 });
 
 // ── Summary reconciliation ────────────────────────────────────────────────────

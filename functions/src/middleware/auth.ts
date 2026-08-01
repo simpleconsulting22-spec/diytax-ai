@@ -1,11 +1,25 @@
 import { CallableRequest, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 
-export async function requireAuth(request: CallableRequest): Promise<string> {
-  if (!request.auth) {
+/**
+ * The uid on a callable request, or an `unauthenticated` error.
+ *
+ * The uid is validated as a non-empty string, not just checked for a truthy
+ * `request.auth`. A malformed or unverifiable bearer token can produce an auth
+ * object with no usable uid; without this check that fell through to Firestore
+ * as an empty document path and surfaced as an opaque 500 instead of a clean
+ * 401. Confirmed against the Auth emulator with a junk token.
+ */
+function requireUid(request: CallableRequest): string {
+  const uid = request.auth?.uid;
+  if (typeof uid !== "string" || uid.length === 0) {
     throw new HttpsError("unauthenticated", "Must be logged in.");
   }
-  return request.auth.uid;
+  return uid;
+}
+
+export async function requireAuth(request: CallableRequest): Promise<string> {
+  return requireUid(request);
 }
 
 export interface EffectiveOwnerResult {
@@ -28,11 +42,7 @@ export interface EffectiveOwnerResult {
 export async function resolveEffectiveOwner(
   request: CallableRequest
 ): Promise<EffectiveOwnerResult> {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Must be logged in.");
-  }
-
-  const callerUid = request.auth.uid;
+  const callerUid = requireUid(request);
   const db = admin.firestore();
 
   try {

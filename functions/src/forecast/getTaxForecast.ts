@@ -1,5 +1,10 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+// Modular import rather than `admin.firestore.FieldValue`. Under the Functions
+// emulator the firebase-admin namespace is substituted, and the `import * as`
+// copy loses the statics hanging off `admin.firestore`, so the namespace form
+// throws there. This entry point resolves correctly in both environments.
+import { FieldValue } from "firebase-admin/firestore";
 import { resolveEffectiveOwner } from "../middleware/auth";
 import { summarizeTransactions, SummarizableTransaction } from "../tax/summarizeTransactions";
 import {
@@ -147,6 +152,12 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
     // ── Tax breakdown ─────────────────────────────────────────────────────
     /** Audit trail: exactly what the 15.3% was applied to. */
     seTaxBase: estimate.seTaxBase,
+    /** Schedule SE line 4a — seTaxBase × 92.35%, what both rates apply to. */
+    seNetEarnings: estimate.seNetEarnings,
+    /** OASDI room left after W-2 wages. The only thing W-2 income changes. */
+    seSocialSecurityHeadroom: estimate.seSocialSecurityHeadroom,
+    seSocialSecurityTax: estimate.seSocialSecurityTax,
+    seMedicareTax: estimate.seMedicareTax,
     projectedSETax: Math.round(estimate.seTax),
     projectedSEDeduction: Math.round(estimate.seDeduction),
     projectedAGI: Math.round(estimate.agi),
@@ -176,7 +187,7 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
     /** This is an estimate, not a filing-ready liability. */
     isEstimate: true as const,
     exclusions: ESTIMATE_EXCLUSIONS,
-    computedAt: admin.firestore.FieldValue.serverTimestamp(),
+    computedAt: FieldValue.serverTimestamp(),
   };
 
   await db.collection("forecasts").doc(`${effectiveOwnerUid}_${taxYear}`).set(forecast);

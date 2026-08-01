@@ -19,6 +19,8 @@ export interface QuickTaxEstimate {
   effectiveRate:     number;
   /** Exactly what SE tax was charged on — Schedule C net profit only. */
   seTaxBase:         number;
+  /** Schedule SE line 4a: 92.35% of seTaxBase. */
+  seNetEarnings:     number;
   qbiStatus:         QbiStatus;
   /** Status actually used, after normalizing whatever the profile stored. */
   filingStatus:      FilingStatus;
@@ -76,6 +78,7 @@ export function quickTaxEstimate(input: QuickTaxEstimateInput): QuickTaxEstimate
     totalTax: estimate.totalTax,
     effectiveRate: estimate.effectiveRate,
     seTaxBase: estimate.seTaxBase,
+    seNetEarnings: estimate.seNetEarnings,
     qbiStatus: estimate.qbiStatus,
     filingStatus: status,
     taxYear: year,
