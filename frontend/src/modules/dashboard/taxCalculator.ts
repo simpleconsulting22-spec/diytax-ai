@@ -5,17 +5,13 @@
 // year-indexed tables. They used to be duplicated here, which let the meter and
 // the backend show different numbers for the same user.
 
-import { getTaxBucket } from "../../shared/taxMap";
+import { getTaxBucket, isW2WageCategory } from "../../shared/taxMap";
 import {
-  BRACKETS_BY_YEAR,
-  QBI_THRESHOLD_BY_YEAR,
-  SS_WAGE_BASE_BY_YEAR,
-  STANDARD_DEDUCTION_BY_YEAR,
-  applyBrackets,
+  ESTIMATE_EXCLUSIONS,
+  computeFederalEstimate,
   effectiveTaxYear,
-  pickYear,
-  selfEmploymentTax,
   type FilingStatus as SharedFilingStatus,
+  type QbiStatus,
 } from "../../shared/taxConstants";
 
 export type FilingStatus = SharedFilingStatus;
@@ -50,12 +46,20 @@ export interface TaxEstimate {
   scheduleCNet: number;
   scheduleCIncome: number;
   scheduleCExpenses: number;
+  /** Schedule E net rental income/loss. Never subject to SE tax. */
+  scheduleENet: number;
   w2Income: number;
   w2FromTxns: number;
+  /** Interest, dividends and other ordinary income — not W-2, not SE. */
+  otherOrdinaryIncome: number;
   seTax: number;
+  /** Exactly what SE tax was charged on — Schedule C net profit only. */
+  seTaxBase: number;
   seDeduction: number;
   agi: number;
   qbiDeduction: number;
+  /** Whether QBI was actually computed, or skipped as uncomputable. */
+  qbiStatus: QbiStatus;
   standardDeduction: number;
   itemizedDeduction: number;
   deductionUsed: number;
@@ -69,6 +73,8 @@ export interface TaxEstimate {
   taxYear: number;
   /** Social Security wage base for the year (used in the SE tax explainer). */
   ssWageBase: number;
+  /** What this estimate does not account for — display alongside the number. */
+  exclusions: string[];
   breakdown: {
     federal: number;
     selfEmployment: number;
@@ -76,19 +82,25 @@ export interface TaxEstimate {
   };
 }
 
+
+/**
+ * Split the transaction list into tax lanes, then hand the maths to the shared
+ * estimator. Lanes are kept apart on purpose: self-employment tax applies only
+ * to Schedule C net profit (IRC § 1402(a)), never to wages, interest,
+ * dividends or rental income, and Schedule A/E deductions never reduce
+ * Schedule C profit.
+ */
 export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
   const { transactions, scheduleAManualDeductions, filingStatus, w2Income, iraContributions, taxYear } = input;
-  const ssWageBase     = pickYear(taxYear, SS_WAGE_BASE_BY_YEAR);
-  const standardDeduction = pickYear(taxYear, STANDARD_DEDUCTION_BY_YEAR)[filingStatus];
-  const qbiThreshold   = pickYear(taxYear, QBI_THRESHOLD_BY_YEAR)[filingStatus];
-  const brackets       = pickYear(taxYear, BRACKETS_BY_YEAR)[filingStatus];
 
-  // Aggregate from transactions (skip needs_review and transfers)
   let scheduleCIncome = 0;
   let scheduleCExpenses = 0;
+  let scheduleEIncome = 0;
+  let scheduleEExpenses = 0;
   let scheduleAFromTxns = 0;
   let totalTxnIncome = 0;
-  let w2FromTxns = 0; // Ordinary (non-SE, non-rental) income: W-2 wages, interest, dividends, etc.
+  let w2FromTxns = 0;              // W-2 wages only — consumes the OASDI base
+  let otherOrdinaryFromTxns = 0;   // interest, dividends, other — does not
 
   for (const txn of transactions) {
     // Skip transfers (filter on `type`, not legacy `status === "transfer"` —
@@ -103,85 +115,79 @@ export function calculateTaxEstimate(input: TaxEstimateInput): TaxEstimate {
 
     if (txn.type === "income") {
       totalTxnIncome += amt;
-      // Route income by canonical bucket. Anything that isn't self-employment
-      // or rental flows into AGI as ordinary income (W-2 wages, interest,
-      // dividends, "Other Income", etc.).
       if (bucket === "se_income") {
         scheduleCIncome += amt;
-      } else if (bucket !== "rental_income") {
+      } else if (bucket === "rental_income") {
+        scheduleEIncome += amt;
+      } else if (isW2WageCategory(txn.category ?? txn.taxCategory)) {
         w2FromTxns += amt;
+      } else {
+        otherOrdinaryFromTxns += amt;
       }
-      // rental_income is dropped — Schedule E isn't folded into the meter yet.
     } else if (txn.type === "expense") {
       if (bucket === "se_expense") scheduleCExpenses += abs;
+      else if (bucket === "rental_expense") scheduleEExpenses += abs;
       else if (bucket === "itemized_deduction") scheduleAFromTxns += abs;
-      // rental_expense and personal have no impact on the meter.
+      // personal has no impact — it must never reduce Schedule C profit.
+    } else if (txn.type === "refund") {
+      // A refund nets against the expense lane it came from.
+      if (bucket === "se_expense") scheduleCExpenses -= abs;
+      else if (bucket === "rental_expense") scheduleEExpenses -= abs;
+      else if (bucket === "itemized_deduction") scheduleAFromTxns -= abs;
     }
   }
 
-  const scheduleCNet = scheduleCIncome - scheduleCExpenses;
-  const totalW2 = w2Income + w2FromTxns;
-  const grossIncome = totalTxnIncome + w2Income;
+  const scheduleCNet = round2(scheduleCIncome - scheduleCExpenses);
+  const scheduleENet = round2(scheduleEIncome - scheduleEExpenses);
+  // `w2Income` is the figure entered during onboarding. Use it only when the
+  // transactions contain no wage rows, so the two sources can't be summed.
+  const w2Wages = w2FromTxns > 0 ? w2FromTxns : w2Income;
   const itemizedDeduction = round2(scheduleAFromTxns + scheduleAManualDeductions);
 
-  // SE Tax — only on profit. W-2 wages consume the Social Security wage base
-  // first, so SE earnings above the remaining headroom owe Medicare only.
-  const se = selfEmploymentTax(scheduleCNet, taxYear, totalW2);
-  const seTax = round2(se.seTax);
-  const seDeduction = round2(se.deductiblePortion);
-
-  // AGI — Schedule C loss offsets W-2 income, floored at 0
-  const agi = Math.max(0, round2(totalW2 + scheduleCNet - seDeduction - iraContributions));
-
-  // Deduction used (year-aware standard, itemized stays as-is)
-  const deductionUsed = Math.max(standardDeduction, itemizedDeduction);
-  const usingItemized = itemizedDeduction > standardDeduction;
-
-  // QBI deduction (Sec. 199A) — 20% of positive Schedule C net, if AGI under threshold
-  let qbiDeduction = 0;
-  if (scheduleCNet > 0 && agi <= qbiThreshold) {
-    const tentativeTaxable = Math.max(0, agi - deductionUsed);
-    qbiDeduction = round2(Math.min(scheduleCNet * 0.2, tentativeTaxable * 0.2));
-  }
-
-  // Taxable income
-  const taxableIncome = Math.max(0, round2(agi - qbiDeduction - deductionUsed));
-
-  // Federal income tax (year-aware brackets resolved at the top)
-  const { tax: federalTax, marginalRate } = applyBrackets(taxableIncome, brackets);
-
-  const totalTax = round2(federalTax + seTax);
-  const effectiveRate = grossIncome > 0 ? round1((totalTax / grossIncome) * 100) : 0;
+  const e = computeFederalEstimate({
+    scheduleCNet,
+    scheduleENet,
+    w2Wages,
+    otherOrdinaryIncome: otherOrdinaryFromTxns,
+    itemizedDeductions: itemizedDeduction,
+    iraContributions,
+    filingStatus,
+    taxYear,
+  });
 
   return {
-    grossIncome: round2(grossIncome),
-    scheduleCNet: round2(scheduleCNet),
+    grossIncome: round2(totalTxnIncome + (w2FromTxns > 0 ? 0 : w2Income)),
+    scheduleCNet,
     scheduleCIncome: round2(scheduleCIncome),
     scheduleCExpenses: round2(scheduleCExpenses),
-    w2Income: round2(totalW2),
+    scheduleENet,
+    w2Income: round2(w2Wages),
     w2FromTxns: round2(w2FromTxns),
-    seTax,
-    seDeduction,
-    agi,
-    qbiDeduction,
-    standardDeduction,
-    itemizedDeduction,
-    deductionUsed,
-    usingItemized,
-    taxableIncome,
-    federalTax: round2(federalTax),
-    totalTax,
-    effectiveRate,
-    marginalRate: Math.round(marginalRate * 100),
-    taxYear: effectiveTaxYear(taxYear),
-    ssWageBase,
+    otherOrdinaryIncome: round2(otherOrdinaryFromTxns),
+    seTax: e.seTax,
+    seTaxBase: e.seTaxBase,
+    seDeduction: e.seDeduction,
+    agi: e.agi,
+    qbiDeduction: e.qbiDeduction,
+    qbiStatus: e.qbiStatus,
+    standardDeduction: e.standardDeduction,
+    itemizedDeduction: e.itemizedDeduction,
+    deductionUsed: e.deductionUsed,
+    usingItemized: e.usingItemized,
+    taxableIncome: e.taxableIncome,
+    federalTax: e.federalTax,
+    totalTax: e.totalTax,
+    effectiveRate: e.effectiveRate,
+    marginalRate: Math.round(e.marginalRate * 100),
+    taxYear: e.taxYear,
+    ssWageBase: e.ssWageBase,
+    exclusions: ESTIMATE_EXCLUSIONS,
     breakdown: {
-      federal: round2(federalTax),
-      selfEmployment: seTax,
+      federal: e.federalTax,
+      selfEmployment: e.seTax,
       state: 0,
     },
   };
 }
 
 function round2(n: number) { return Math.round(n * 100) / 100; }
-function round1(n: number) { return Math.round(n * 10) / 10; }

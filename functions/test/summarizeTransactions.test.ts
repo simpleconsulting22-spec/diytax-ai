@@ -29,7 +29,15 @@ describe("income detection (D3)", () => {
 
     expect(s.totalIncome).toBe(102_000);
     expect(s.totalExpenses).toBe(0);
-    expect(s.netProfit).toBe(102_000);
+
+    // `netProfit` means SCHEDULE C net profit — only the Business Income row.
+    // It must NOT pool wages, interest, dividends or rent, because this is the
+    // figure self-employment tax is charged on.
+    expect(s.netProfit).toBe(50_000);
+    expect(s.scheduleCNet).toBe(50_000);
+    expect(s.w2Wages).toBe(30_000);
+    expect(s.otherOrdinaryIncome).toBe(4_000); // interest + dividends + investment + other
+    expect(s.scheduleENet).toBe(18_000);
   });
 
   it("treats every category the tax map groups as Income as income", () => {

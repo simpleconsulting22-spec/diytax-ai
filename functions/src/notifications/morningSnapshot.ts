@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { sendPush, writeHistory } from "./fcmHelpers";
 import { quickTaxEstimate } from "../utils/taxEstimate";
 import { quarterlyDueDates } from "../shared/taxConstants";
+import { summarizeTransactions, SummarizableTransaction } from "../tax/summarizeTransactions";
 
 /**
  * Next estimated-tax deadline, computed from the statutory dates with the
@@ -56,27 +57,32 @@ export const morningSnapshot = onSchedule(
           .where("taxYear", "==", year)
           .get();
 
-        const uncategorized = txnsSnap.docs.filter(
-          (d) => d.data().status === "needs_review"
-        ).length;
+        // Lane-aware aggregation. This used to be "all income minus all
+        // expenses", passed in as Schedule C net profit — which charged 15.3%
+        // self-employment tax on W-2 wages, interest, dividends and rental
+        // income, and double-counted W-2 against profile.w2Income on top.
+        const summary = summarizeTransactions(
+          txnsSnap.docs.map((d) => d.data() as SummarizableTransaction)
+        );
+        const uncategorized = summary.excluded.needsReview;
 
-        // Refunds (type=expense, isRefund=true) reduce the expense total —
-        // they're never counted as income.
-        const income = txnsSnap.docs.reduce((s, d) => {
-          const t = d.data();
-          return t.type === "income" ? s + (t.amount ?? 0) : s;
-        }, 0);
-        const expenses = txnsSnap.docs.reduce((s, d) => {
-          const t = d.data();
-          if (t.type !== "expense") return s;
-          const amt = t.amount ?? 0;
-          return s + (t.isRefund ? -amt : amt);
-        }, 0);
-        const netProfit = income - expenses;
+        // A W-2 figure entered during onboarding is only used when the
+        // transactions themselves contain no wage rows, so the two sources
+        // can't be added together.
+        const profileW2 = (profile.w2Income as number) ?? 0;
+        const w2Wages = summary.w2Wages > 0 ? summary.w2Wages : profileW2;
 
-        const w2Income    = (profile.w2Income as number) ?? 0;
         const filingStatus = (profile.filingStatus as string) ?? "single";
-        const estimate    = quickTaxEstimate(netProfit, w2Income, filingStatus, Number(year));
+        const estimate = quickTaxEstimate({
+          scheduleCNet: summary.scheduleCNet,
+          scheduleENet: summary.scheduleENet,
+          w2Wages,
+          otherOrdinaryIncome: summary.otherOrdinaryIncome,
+          itemizedDeductions: summary.scheduleADeductions,
+          filingStatus,
+          taxYear: Number(year),
+        });
+        const netProfit = summary.scheduleCNet;
 
         const fmt = (n: number) =>
           new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);

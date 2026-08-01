@@ -37,6 +37,11 @@ interface TaxForecast {
   /** Null once every deadline for the year has passed. */
   nextQuarterlyDue: string | null;
   nextQuarterLabel: string | null;
+  /** Exactly what the 15.3% was charged on — Schedule C net profit only. */
+  seTaxBase: number;
+  qbiStatus: "calculated" | "not_calculated_above_threshold" | "none";
+  /** What this estimate does not account for. */
+  exclusions: string[];
   progressPercent: number;
   transactionCount: number;
 }
@@ -280,8 +285,36 @@ export default function TaxEstimatePage() {
               })}
             </div>
 
+            {/* Honesty block — what was taxed, and what is missing. */}
+            <div style={{ backgroundColor: "#fff", borderRadius: "16px", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", padding: "18px 24px", marginBottom: "16px" }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827", marginBottom: "8px" }}>
+                This is an estimate, not a filing-ready tax liability
+              </div>
+              <p style={{ fontSize: "12px", color: "#4b5563", lineHeight: 1.6, margin: "0 0 8px" }}>
+                Self-employment tax was charged on{" "}
+                <strong>{fmt(forecast.seTaxBase)}</strong> of Schedule C net profit
+                only. Wages, interest, dividends and rental income are included as
+                taxable income but are <strong>not</strong> self-employment earnings.
+              </p>
+              {forecast.qbiStatus === "not_calculated_above_threshold" && (
+                <p style={{ fontSize: "12px", color: "#b45309", lineHeight: 1.6, margin: "0 0 8px" }}>
+                  <strong>QBI deduction not calculated.</strong> Your income is above
+                  the Section 199A threshold, where the deduction depends on W-2 wages
+                  your business paid and the cost of qualified property — data this app
+                  doesn't collect. No QBI benefit is included, so your actual tax is
+                  likely lower than shown.
+                </p>
+              )}
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "4px" }}>Not included:</div>
+              <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "11px", color: "#9ca3af", lineHeight: 1.6 }}>
+                {(forecast.exclusions ?? []).map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            </div>
+
             <p style={{ fontSize: "11px", color: "#9ca3af", textAlign: "center", marginTop: "8px" }}>
-              Based on {forecast.transactionCount.toLocaleString()} transactions · Schedule C self-employment only · Does not include state taxes, W-2 income, or credits
+              Based on {forecast.transactionCount.toLocaleString()} transactions · Reconcile against your 1099s and bank statements before filing
             </p>
           </>
         ) : null}

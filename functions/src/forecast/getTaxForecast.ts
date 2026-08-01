@@ -1,27 +1,34 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { resolveEffectiveOwner } from "../middleware/auth";
-import { getTaxBucket, isIncomeBucket } from "../shared/taxMap";
+import { summarizeTransactions, SummarizableTransaction } from "../tax/summarizeTransactions";
 import {
+  ESTIMATE_EXCLUSIONS,
   FILING_STATUS_LABELS,
+  computeFederalEstimate,
   effectiveTaxYear,
-  federalIncomeTax,
   normalizeFilingStatus,
   nextQuarterlyDueDate,
-  pickYear,
   quarterlyDueDates,
-  selfEmploymentTax,
-  STANDARD_DEDUCTION_BY_YEAR,
 } from "../shared/taxConstants";
 
 /**
  * Forward-looking tax forecast for one year.
  *
- * Previously this file knew only "single" and "married_filing_jointly": head of
- * household, married filing separately and qualifying surviving spouse had no
- * bracket or deduction entry, so the lookup yielded undefined and the maths
- * produced NaN with no rejection path. Anything unrecognized is now rejected
- * outright — a wrong tax number shown confidently is worse than an error.
+ * Two classes of defect have been fixed here:
+ *
+ *  1. Filing status — this knew only "single" and "married_filing_jointly".
+ *     Other statuses had no bracket or deduction entry, so the lookup yielded
+ *     undefined and the maths produced NaN. Unrecognized input is now rejected.
+ *
+ *  2. Tax lanes — income was pooled into one bucket and expenses into another,
+ *     then `income - expenses` was fed to selfEmploymentTax(). That charged
+ *     15.3% SE tax on W-2 wages, interest, dividends and rental income, none
+ *     of which are self-employment earnings (IRC § 1402(a), and § 1402(a)(1)
+ *     excludes rental real estate). It also let Schedule A and Schedule E
+ *     deductions reduce Schedule C profit. Aggregation now runs through
+ *     summarizeTransactions() and the tax maths through computeFederalEstimate(),
+ *     the same two functions every other surface uses.
  */
 export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (request) => {
   // Shared users (spouse / accountant) forecast against the OWNER's data.
@@ -46,51 +53,15 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
     );
   }
 
-  // Load all transactions for this tax year
   const snap = await db
     .collection("transactions")
     .where("uid", "==", effectiveOwnerUid)
     .where("taxYear", "==", taxYear)
     .get();
 
-  let ytdIncome = 0;
-  let ytdDeductible = 0;
-  let ytdPersonal = 0;
-  let excludedTransfers = 0;
-  let excludedNeedsReview = 0;
-
-  snap.docs.forEach((d) => {
-    const t = d.data();
-
-    // Transfers move the user's own money; they are neither income nor expense.
-    if (t.type === "transfer") {
-      excludedTransfers++;
-      return;
-    }
-    // Unreviewed rows are guesses — don't bake them into a payment figure.
-    if (t.status === "needs_review") {
-      excludedNeedsReview++;
-      return;
-    }
-
-    const amt = Math.abs((t.amount as number) ?? 0); // amounts may be stored signed
-    const bucket = getTaxBucket({
-      category: t.category,
-      taxCategory: t.taxCategory,
-      taxSchedule: t.taxSchedule,
-      type: t.type,
-      entityType: t.entityType,
-    });
-
-    if (isIncomeBucket(bucket)) {
-      ytdIncome += amt;
-    } else if (bucket === "personal") {
-      ytdPersonal += amt;
-    } else {
-      // Refunds reduce the expense they reverse rather than adding to it.
-      ytdDeductible += t.type === "refund" ? -amt : amt;
-    }
-  });
+  const ytd = summarizeTransactions(
+    snap.docs.map((d) => d.data() as SummarizableTransaction)
+  );
 
   // Year-progress fraction. A completed year is fully elapsed (no
   // extrapolation); a future year has nothing to extrapolate from, so its
@@ -106,23 +77,27 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
     : elapsedMs <= 0 ? 1
     : Math.max(elapsedMs / totalMs, 1 / 365);
 
-  // Full-year projections
-  const projIncome = Math.round(ytdIncome / progress);
-  const projDeductible = Math.round(ytdDeductible / progress);
-  const projNetProfit = Math.max(0, projIncome - projDeductible);
+  // Project each lane independently — they must not be pooled and re-split.
+  const project = (n: number) => Math.round(n / progress);
 
-  // Tax maths — year-indexed tables, shared with the dashboard calculator.
-  const { seTax, deductiblePortion } = selfEmploymentTax(projNetProfit, tableYear);
-  const seTaxRounded = Math.round(seTax);
-  const seDeduction = Math.round(deductiblePortion);
-  const agi = Math.max(0, projNetProfit - seDeduction);
-  const stdDed = pickYear(tableYear, STANDARD_DEDUCTION_BY_YEAR)[filingStatus];
-  const taxableIncome = Math.max(0, agi - stdDed);
-  const { tax: incomeTaxRaw, marginalRate } = federalIncomeTax(taxableIncome, filingStatus, tableYear);
-  const incomeTax = Math.round(incomeTaxRaw);
-  const totalTax = seTaxRounded + incomeTax;
-  const effectiveRate =
-    projNetProfit > 0 ? Math.round((totalTax / projNetProfit) * 1000) / 10 : 0;
+  const projScheduleCIncome = project(ytd.scheduleCIncome);
+  const projScheduleCExpenses = project(ytd.scheduleCExpenses);
+  const projScheduleCNet = projScheduleCIncome - projScheduleCExpenses;
+  const projScheduleENet = project(ytd.scheduleEIncome) - project(ytd.scheduleEExpenses);
+  const projW2Wages = project(ytd.w2Wages);
+  const projOtherOrdinary = project(ytd.otherOrdinaryIncome);
+  const projItemized = project(ytd.scheduleADeductions);
+
+  const estimate = computeFederalEstimate({
+    scheduleCNet: projScheduleCNet,
+    scheduleENet: projScheduleENet,
+    w2Wages: projW2Wages,
+    otherOrdinaryIncome: projOtherOrdinary,
+    itemizedDeductions: projItemized,
+    iraContributions: 0,
+    filingStatus,
+    taxYear: tableYear,
+  });
 
   // Quarterly deadlines — computed with the weekend/holiday shift rather than
   // hard-coded, so every year is right and not just the one that was typed in.
@@ -132,7 +107,7 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
 
   const passedCount = quarters.filter((q) => q.dueDate < today).length;
   const remaining = 4 - passedCount;
-  const perQuarter = Math.round(totalTax / 4);
+  const perQuarter = Math.round(estimate.totalTax / 4);
 
   const forecast = {
     uid: effectiveOwnerUid,
@@ -142,45 +117,68 @@ export const getTaxForecast = onCall({ cors: true, invoker: "public" }, async (r
     tableYear,
     filingStatus,
     filingStatusLabel: FILING_STATUS_LABELS[filingStatus],
-    // YTD actuals
-    ytdIncome: round2(ytdIncome),
-    ytdDeductible: round2(ytdDeductible),
-    ytdPersonal: round2(ytdPersonal),
-    ytdNetProfit: round2(ytdIncome - ytdDeductible),
-    // Projections
-    projectedAnnualIncome: projIncome,
-    projectedAnnualDeductible: projDeductible,
-    projectedNetProfit: projNetProfit,
-    // Tax breakdown
-    projectedSETax: seTaxRounded,
-    projectedSEDeduction: seDeduction,
-    projectedAGI: agi,
-    projectedTaxableIncome: taxableIncome,
-    standardDeduction: stdDed,
-    projectedIncomeTax: incomeTax,
-    projectedTotalTax: totalTax,
-    effectiveTaxRate: effectiveRate,
-    marginalRate: Math.round(marginalRate * 100),
-    // Quarterly — nextQuarterlyDue is null once every deadline has passed.
+
+    // ── YTD actuals, by tax lane ──────────────────────────────────────────
+    ytdScheduleCIncome: ytd.scheduleCIncome,
+    ytdScheduleCExpenses: ytd.scheduleCExpenses,
+    ytdScheduleCNet: ytd.scheduleCNet,
+    ytdScheduleENet: ytd.scheduleENet,
+    ytdW2Wages: ytd.w2Wages,
+    ytdOtherOrdinaryIncome: ytd.otherOrdinaryIncome,
+    ytdItemizedDeductions: ytd.scheduleADeductions,
+    ytdPersonal: ytd.personalSpending,
+    /** Every dollar in, across all lanes. NOT the SE tax base. */
+    ytdIncome: ytd.totalIncome,
+    /** Every deductible dollar out, across all lanes. */
+    ytdDeductible: ytd.totalExpenses,
+    /** Schedule C net — this, and only this, is what SE tax is charged on. */
+    ytdNetProfit: ytd.scheduleCNet,
+
+    // ── Projections ───────────────────────────────────────────────────────
+    projectedAnnualIncome: project(ytd.totalIncome),
+    projectedAnnualDeductible: project(ytd.totalExpenses),
+    projectedScheduleCNet: projScheduleCNet,
+    projectedScheduleENet: projScheduleENet,
+    projectedW2Wages: projW2Wages,
+    projectedOtherOrdinaryIncome: projOtherOrdinary,
+    /** Schedule C net profit. Kept under the old key for API compatibility. */
+    projectedNetProfit: Math.max(0, projScheduleCNet),
+
+    // ── Tax breakdown ─────────────────────────────────────────────────────
+    /** Audit trail: exactly what the 15.3% was applied to. */
+    seTaxBase: estimate.seTaxBase,
+    projectedSETax: Math.round(estimate.seTax),
+    projectedSEDeduction: Math.round(estimate.seDeduction),
+    projectedAGI: Math.round(estimate.agi),
+    projectedTaxableIncome: Math.round(estimate.taxableIncome),
+    standardDeduction: estimate.standardDeduction,
+    itemizedDeduction: estimate.itemizedDeduction,
+    usingItemized: estimate.usingItemized,
+    qbiDeduction: estimate.qbiDeduction,
+    qbiStatus: estimate.qbiStatus,
+    projectedIncomeTax: Math.round(estimate.federalTax),
+    projectedTotalTax: Math.round(estimate.totalTax),
+    effectiveTaxRate: estimate.effectiveRate,
+    marginalRate: Math.round(estimate.marginalRate * 100),
+
+    // ── Quarterly — null once every deadline has passed ───────────────────
     quarterlyPayment: perQuarter,
     remainingQuarters: remaining,
     quarterlyDueDates: quarters,
     nextQuarterlyDue: nextQ ? nextQ.dueDate : null,
     nextQuarterLabel: nextQ ? nextQ.label : null,
-    // Meta
+
+    // ── Meta and honesty ──────────────────────────────────────────────────
     progressPercent: Math.round(progress * 100),
     transactionCount: snap.size,
-    excluded: {
-      transfers: excludedTransfers,
-      needsReview: excludedNeedsReview,
-    },
+    excluded: ytd.excluded,
+    forceImportedCount: ytd.forceImported,
+    /** This is an estimate, not a filing-ready liability. */
+    isEstimate: true as const,
+    exclusions: ESTIMATE_EXCLUSIONS,
     computedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
   await db.collection("forecasts").doc(`${effectiveOwnerUid}_${taxYear}`).set(forecast);
   return forecast;
 });
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}

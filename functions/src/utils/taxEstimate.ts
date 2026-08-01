@@ -1,18 +1,15 @@
 // Lightweight federal tax estimate for Cloud Functions (no React deps).
 //
-// All IRS/SSA figures come from shared/taxConstants.ts, which is year-indexed
-// and mirrored with the frontend. This file previously carried its own 2024-only
-// copy of the brackets and deductions, so selecting 2025 in the UI changed
-// nothing here and the dashboard and Cloud Functions could disagree.
+// All IRS/SSA figures and the tax maths come from shared/taxConstants.ts, which
+// is year-indexed and mirrored with the frontend. This file previously carried
+// its own 2024-only tables, so selecting 2025 in the UI changed nothing here.
 
 import {
   FilingStatus,
-  federalIncomeTax,
-  normalizeFilingStatus,
-  pickYear,
-  selfEmploymentTax,
-  STANDARD_DEDUCTION_BY_YEAR,
+  QbiStatus,
+  computeFederalEstimate,
   effectiveTaxYear,
+  normalizeFilingStatus,
 } from "../shared/taxConstants";
 
 export interface QuickTaxEstimate {
@@ -20,48 +17,66 @@ export interface QuickTaxEstimate {
   federalTax:        number;
   totalTax:          number;
   effectiveRate:     number;
+  /** Exactly what SE tax was charged on — Schedule C net profit only. */
+  seTaxBase:         number;
+  qbiStatus:         QbiStatus;
   /** Status actually used, after normalizing whatever the profile stored. */
   filingStatus:      FilingStatus;
   /** Year whose IRS tables were used (input year, or the latest known year). */
   taxYear:           number;
 }
 
+export interface QuickTaxEstimateInput {
+  /** Schedule C net profit or loss. THE ONLY input to self-employment tax. */
+  scheduleCNet: number;
+  /** Schedule E net rental income or loss. Never subject to SE tax. */
+  scheduleENet?: number;
+  /** W-2 wages — ordinary income that also consumes the OASDI wage base. */
+  w2Wages?: number;
+  /** Interest, dividends, retirement, Social Security, other ordinary income. */
+  otherOrdinaryIncome?: number;
+  itemizedDeductions?: number;
+  /**
+   * Accepts either vocabulary the app has used (`married_jointly` from
+   * onboarding, `married_filing_jointly` from the forecast pages). An
+   * unrecognized value falls back to `single` — this is the notification path,
+   * where a missing profile field must not throw and break the morning push
+   * for every other user. Callable endpoints validate strictly and reject.
+   */
+  filingStatus: string;
+  taxYear?: number;
+}
+
 /**
- * Estimate federal income + SE tax.
+ * Estimate federal income + SE tax from already-separated tax lanes.
  *
- * `filingStatus` accepts either vocabulary the app has used (`married_jointly`
- * from onboarding, `married_filing_jointly` from the forecast pages). An
- * unrecognized value falls back to `single` — this is the notification path,
- * where a missing profile field must not throw; callable endpoints validate
- * strictly instead and reject.
+ * Callers MUST pass Schedule C net profit in `scheduleCNet` and everything else
+ * in its own field. Passing "all income minus all expenses" as scheduleCNet is
+ * the bug this signature exists to prevent: it charges 15.3% self-employment
+ * tax on wages, interest, dividends and rental income.
  */
-export function quickTaxEstimate(
-  netProfit: number,
-  w2Income: number,
-  filingStatus: string,
-  taxYear: number = new Date().getFullYear()
-): QuickTaxEstimate {
-  const status = normalizeFilingStatus(filingStatus) ?? "single";
-  const year = effectiveTaxYear(taxYear);
+export function quickTaxEstimate(input: QuickTaxEstimateInput): QuickTaxEstimate {
+  const status = normalizeFilingStatus(input.filingStatus) ?? "single";
+  const year = effectiveTaxYear(input.taxYear ?? new Date().getFullYear());
 
-  // W-2 wages consume the Social Security wage base before SE earnings do.
-  const { seTax, deductiblePortion } = selfEmploymentTax(netProfit, year, w2Income);
-
-  const agi = netProfit + w2Income - deductiblePortion;
-  const stdDed = pickYear(year, STANDARD_DEDUCTION_BY_YEAR)[status];
-  const taxableIncome = Math.max(0, agi - stdDed);
-
-  const { tax: federalTax } = federalIncomeTax(taxableIncome, status, year);
-
-  const totalTax = seTax + federalTax;
-  const grossIncome = netProfit + w2Income;
-  const effectiveRate = grossIncome > 0 ? (totalTax / grossIncome) * 100 : 0;
+  const estimate = computeFederalEstimate({
+    scheduleCNet: input.scheduleCNet,
+    scheduleENet: input.scheduleENet ?? 0,
+    w2Wages: input.w2Wages ?? 0,
+    otherOrdinaryIncome: input.otherOrdinaryIncome ?? 0,
+    itemizedDeductions: input.itemizedDeductions ?? 0,
+    iraContributions: 0,
+    filingStatus: status,
+    taxYear: year,
+  });
 
   return {
-    selfEmploymentTax: seTax,
-    federalTax,
-    totalTax,
-    effectiveRate,
+    selfEmploymentTax: estimate.seTax,
+    federalTax: estimate.federalTax,
+    totalTax: estimate.totalTax,
+    effectiveRate: estimate.effectiveRate,
+    seTaxBase: estimate.seTaxBase,
+    qbiStatus: estimate.qbiStatus,
     filingStatus: status,
     taxYear: year,
   };

@@ -99,6 +99,14 @@ export const TAX_MAP: TaxMapping[] = [
   { category: "Personal Transportation",  group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "No tax impact." },
   { category: "Personal Subscriptions",   group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "No tax impact." },
   { category: "Other Personal",           group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "No tax impact." },
+
+  // Explicitly non-deductible business money movements. These look like
+  // business expenses in a bank feed but must never reduce Schedule C profit,
+  // so they get real categories rather than being guessed into a deduction.
+  { category: "Owner Draw / Distribution", group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "Money taken out of the business — not a deductible expense." },
+  { category: "Loan Principal Payment",    group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "Only loan INTEREST is deductible; principal repayment is not." },
+  { category: "Reimbursed Expense",        group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "You were paid back for this, so it is not deductible." },
+  { category: "Income Tax Payment",        group: "Personal", taxSchedule: "Personal", taxBucket: "personal", hint: "Federal/state income tax and estimated payments are not business deductions." },
 ];
 
 // ─── Derived: lookup helpers and dropdown groups ──────────────────────────────
@@ -182,6 +190,23 @@ export function getTaxBucket(txn: {
   // Mismatches between category and entity are surfaced separately for the
   // user to correct, rather than silently re-routed here.
   return natural;
+}
+
+/** True for buckets that represent money coming IN. */
+export function isIncomeBucket(bucket: TaxBucket): boolean {
+  return bucket === "ordinary_income" || bucket === "se_income" || bucket === "rental_income";
+}
+
+/**
+ * Categories that are actual W-2 wages. These matter separately from other
+ * ordinary income because W-2 social security wages consume the OASDI wage
+ * base, reducing how much self-employment income is still subject to the
+ * 12.4% portion. Interest and dividends do NOT consume the base.
+ */
+const W2_WAGE_CATEGORIES: ReadonlySet<string> = new Set(["Wages & Salaries"]);
+
+export function isW2WageCategory(category: string | null | undefined): boolean {
+  return !!category && W2_WAGE_CATEGORIES.has(category);
 }
 
 /**

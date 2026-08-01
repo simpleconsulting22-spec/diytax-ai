@@ -375,6 +375,177 @@ export function selfEmploymentTax(
   return { seTax, deductiblePortion: seTax * SE_DEDUCTIBLE_SHARE };
 }
 
+// ─── Federal estimate — the single lane-aware pipeline ────────────────────────
+//
+// Every surface (dashboard meter, Cloud Function forecast, morning push) runs
+// through this one function so a dollar can never be taxed differently
+// depending on which screen you look at.
+//
+// THE LANE RULE, and why it matters:
+//   Self-employment tax applies to net earnings from a trade or business
+//   (IRC § 1402(a)). It does NOT apply to wages, interest, dividends,
+//   retirement distributions, Social Security, or rental real estate income —
+//   § 1402(a)(1) excludes rentals from real estate explicitly. Pooling those
+//   into "income minus expenses" and taxing the result at 15.3% overstates SE
+//   tax badly. Likewise, Schedule A and Schedule E deductions must not reduce
+//   Schedule C net profit. Keep the lanes separate.
+
+export type QbiStatus =
+  /** Below the § 199A threshold, where 20% of QBI is exactly correct. */
+  | "calculated"
+  /** At/above the threshold — depends on W-2 wages paid and UBIA of qualified
+   *  property, which this app does not collect. NOT computed; disclose it. */
+  | "not_calculated_above_threshold"
+  /** No qualified business income to deduct against. */
+  | "none";
+
+export interface FederalEstimateInput {
+  /** Schedule C net profit or loss. THE ONLY input to self-employment tax. */
+  scheduleCNet: number;
+  /** Schedule E net rental income or loss. Never subject to SE tax. */
+  scheduleENet: number;
+  /** W-2 wages — ordinary income, and the only thing that consumes the Social
+   *  Security wage base alongside SE earnings. */
+  w2Wages: number;
+  /** Interest, dividends, retirement, Social Security, other ordinary income.
+   *  Ordinary income only: never SE tax, never consumes the wage base. */
+  otherOrdinaryIncome: number;
+  /** Schedule A itemized deductions. Compete with the standard deduction;
+   *  never reduce Schedule C net profit. */
+  itemizedDeductions: number;
+  iraContributions: number;
+  filingStatus: FilingStatus;
+  taxYear: number;
+}
+
+export interface FederalEstimate {
+  taxYear: number;
+  ssWageBase: number;
+  /** Exactly what SE tax was charged on — surfaced so it can be audited. */
+  seTaxBase: number;
+  seTax: number;
+  seDeduction: number;
+  grossIncome: number;
+  agi: number;
+  standardDeduction: number;
+  itemizedDeduction: number;
+  deductionUsed: number;
+  usingItemized: boolean;
+  qbiDeduction: number;
+  qbiStatus: QbiStatus;
+  taxableIncome: number;
+  federalTax: number;
+  marginalRate: number;
+  totalTax: number;
+  effectiveRate: number;
+}
+
+export function computeFederalEstimate(input: FederalEstimateInput): FederalEstimate {
+  const taxYear = effectiveTaxYear(input.taxYear);
+  const ssWageBase = pickYear(taxYear, SS_WAGE_BASE_BY_YEAR);
+  const standardDeduction = pickYear(taxYear, STANDARD_DEDUCTION_BY_YEAR)[input.filingStatus];
+  const qbiThreshold = pickYear(taxYear, QBI_THRESHOLD_BY_YEAR)[input.filingStatus];
+
+  // SE tax: Schedule C net profit only. W-2 wages consume the OASDI base first.
+  const seTaxBase = Math.max(0, input.scheduleCNet);
+  const { seTax, deductiblePortion: seDeduction } =
+    selfEmploymentTax(seTaxBase, taxYear, input.w2Wages);
+
+  const grossIncome = round2(
+    input.w2Wages +
+      input.otherOrdinaryIncome +
+      Math.max(0, input.scheduleCNet) +
+      Math.max(0, input.scheduleENet)
+  );
+
+  // AGI floored at 0. Net operating loss carryforward is NOT modeled — a loss
+  // bigger than other income simply disappears rather than carrying forward.
+  const agi = Math.max(
+    0,
+    round2(
+      input.w2Wages +
+        input.otherOrdinaryIncome +
+        input.scheduleCNet +
+        input.scheduleENet -
+        seDeduction -
+        input.iraContributions
+    )
+  );
+
+  const itemizedDeduction = round2(input.itemizedDeductions);
+  const deductionUsed = Math.max(standardDeduction, itemizedDeduction);
+  const usingItemized = itemizedDeduction > standardDeduction;
+
+  // QBI (§ 199A). Below the threshold the 20% computation is exact. At or above
+  // it, the deduction is limited by W-2 wages paid and UBIA of qualified
+  // property — data this app does not collect. Rather than silently reporting
+  // a $0 deduction (which overstates tax and looks like a computed answer),
+  // the status says it was not calculated so the UI can disclose it.
+  let qbiDeduction = 0;
+  let qbiStatus: QbiStatus = "none";
+  const qualifiedBusinessIncome = Math.max(0, input.scheduleCNet);
+  if (qualifiedBusinessIncome > 0) {
+    if (agi <= qbiThreshold) {
+      const tentativeTaxable = Math.max(0, agi - deductionUsed);
+      qbiDeduction = round2(Math.min(qualifiedBusinessIncome * 0.2, tentativeTaxable * 0.2));
+      qbiStatus = "calculated";
+    } else {
+      qbiStatus = "not_calculated_above_threshold";
+    }
+  }
+
+  const taxableIncome = Math.max(0, round2(agi - qbiDeduction - deductionUsed));
+  const { tax, marginalRate } = federalIncomeTax(taxableIncome, input.filingStatus, taxYear);
+  const federalTax = round2(tax);
+  const totalTax = round2(federalTax + seTax);
+  const effectiveRate =
+    grossIncome > 0 ? Math.round((totalTax / grossIncome) * 1000) / 10 : 0;
+
+  return {
+    taxYear,
+    ssWageBase,
+    seTaxBase: round2(seTaxBase),
+    seTax: round2(seTax),
+    seDeduction: round2(seDeduction),
+    grossIncome,
+    agi,
+    standardDeduction,
+    itemizedDeduction,
+    deductionUsed,
+    usingItemized,
+    qbiDeduction,
+    qbiStatus,
+    taxableIncome,
+    federalTax,
+    marginalRate,
+    totalTax,
+    effectiveRate,
+  };
+}
+
+/**
+ * Everything the estimate does NOT account for. Surfaced in the UI so the
+ * number is never mistaken for a filing-ready liability. Keep this list honest:
+ * if a calculation cannot be done accurately from the data the app holds, it
+ * belongs here rather than being approximated.
+ */
+export const ESTIMATE_EXCLUSIONS: string[] = [
+  "State and local income tax",
+  "Tax credits (child tax credit, education, energy, premium tax credit, etc.)",
+  "Capital gains preferential rates — investment income is treated as ordinary",
+  "Alternative Minimum Tax",
+  "QBI deduction above the § 199A income threshold (needs W-2 wages paid and UBIA)",
+  "OBBBA senior, qualified tips, qualified overtime, and auto-loan-interest deductions",
+  "SALT cap and other Schedule A limitations",
+  "Additional standard deduction for age 65+ or blindness",
+  "Net operating loss carryforward — a loss larger than other income is dropped",
+  "Estimated-tax penalties, prior-year safe harbor, and withholding already paid",
+];
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 // ─── Quarterly estimated tax due dates ────────────────────────────────────────
 // Statutory dates are Apr 15 / Jun 15 / Sep 15 of the tax year and Jan 15 of
 // the following year (IRC § 6654(c)(2)). When one falls on a Saturday, Sunday,

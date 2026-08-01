@@ -21,13 +21,28 @@ import {
 // published a change that needs a deliberate update.
 
 describe("published IRS/SSA figures", () => {
-  it("uses the OBBBA 2025 standard deduction, not the superseded Rev. Proc. 2024-40 figures", () => {
+  it("uses the OBBBA 2025 standard deduction for all five filing statuses", () => {
     // Rev. Proc. 2024-40 originally said 15,000 / 30,000 / 22,500. The One Big
     // Beautiful Bill Act raised them retroactively for tax year 2025.
-    expect(STANDARD_DEDUCTION_BY_YEAR[2025].single).toBe(15750);
-    expect(STANDARD_DEDUCTION_BY_YEAR[2025].married_jointly).toBe(31500);
-    expect(STANDARD_DEDUCTION_BY_YEAR[2025].married_separately).toBe(15750);
-    expect(STANDARD_DEDUCTION_BY_YEAR[2025].head_of_household).toBe(23625);
+    // Verified against the 2025 Instructions for Form 1040 standard deduction
+    // chart: "Single or Married filing separately $15,750; Married filing
+    // jointly or Qualifying surviving spouse $31,500; Head of household
+    // $23,625."
+    expect(STANDARD_DEDUCTION_BY_YEAR[2025]).toEqual({
+      single: 15750,
+      married_separately: 15750,
+      married_jointly: 31500,
+      qualifying_surviving_spouse: 31500,
+      head_of_household: 23625,
+    });
+  });
+
+  it("has no filing status left on the superseded pre-OBBBA 2025 amounts", () => {
+    const superseded = [15000, 30000, 22500];
+    for (const status of FILING_STATUSES) {
+      expect(superseded, `${status} still on a pre-OBBBA amount`)
+        .not.toContain(STANDARD_DEDUCTION_BY_YEAR[2025][status]);
+    }
   });
 
   it("has the 2024 and 2026 standard deductions", () => {

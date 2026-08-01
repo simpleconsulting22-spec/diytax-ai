@@ -155,6 +155,49 @@ deadline that has already passed.
 
 ---
 
+### D11 — Wages, interest, dividends and rent inflated the SE tax base 🔴 FIXED
+
+`getTaxForecast` pooled all income into one total and all deductible expenses
+into another, then fed `income − expenses` to `selfEmploymentTax()`. That
+charged **15.3% self-employment tax on W-2 wages, interest, dividends and
+rental income**, none of which are self-employment earnings — IRC § 1402(a)
+covers trade or business income, and § 1402(a)(1) excludes rental real estate
+explicitly. The same pooling let Schedule A and Schedule E deductions reduce
+Schedule C profit.
+
+On the synthetic fixture (Sch C net 105,000; wages 65,000; portfolio 3,500;
+Sch E net 20,000) the pooled base was **191,500** against a correct base of
+**105,000** — an overstatement of roughly **$12,100 of SE tax**.
+
+### D12 — The morning push had the same bug, plus double-counted W-2 🔴 FIXED
+
+`morningSnapshot` computed `netProfit = all income − all expenses` with no
+bucket awareness at all and passed it as Schedule C net profit. It also added
+`profile.w2Income` on top of wage transactions that were already counted.
+
+Both now run through `summarizeTransactions()` (lane split) and
+`computeFederalEstimate()` (tax maths) — one implementation, shared with the
+dashboard. `quickTaxEstimate` took a bare `netProfit` number, which is what let
+callers pass the wrong thing; it now takes an explicit lane-separated object.
+
+### D13 — Interest and dividends sheltered SE income from OASDI 🟠 FIXED
+
+The dashboard calculator pooled every non-SE, non-rental income into `w2FromTxns`
+and passed it as the W-2 wage figure that consumes the Social Security wage
+base. Interest and dividends are not wages and do not consume it, so a filer
+with large portfolio income had their SE tax understated. Wages are now split
+from other ordinary income (`isW2WageCategory`).
+
+### D14 — QBI was a silent cliff 🟠 FIXED
+
+Above the § 199A threshold the deduction was reported as `0` — indistinguishable
+from a computed answer of "you get nothing". The real deduction there depends on
+W-2 wages paid by the business and UBIA of qualified property, neither of which
+this app collects. The estimate now returns `qbiStatus`, and the UI says the
+deduction was **not calculated** and that actual tax is likely lower.
+
+---
+
 ## 4. Verified figures and their sources
 
 | Item | 2024 | 2025 | 2026 | Source |
@@ -171,26 +214,71 @@ against the IRS published tables and were already correct.
 
 ---
 
+## 4a. The category → tax lane matrix
+
+Generated from `TAX_MAP` by running one $10,000 transaction of each category
+through `summarizeTransactions` → `computeFederalEstimate` (2025, single).
+Asserted in `functions/test/taxLanes.test.ts`.
+
+| Category | Bucket | Total income | Sch C gross | Sch C net | Sch E net | AGI | **SE base** |
+|---|---|---|---|---|---|---|---|
+| Wages & Salaries | ordinary_income | 10,000 | — | — | — | 10,000 | **—** |
+| Interest Income | ordinary_income | 10,000 | — | — | — | 10,000 | **—** |
+| Dividend Income | ordinary_income | 10,000 | — | — | — | 10,000 | **—** |
+| Investment Income | ordinary_income | 10,000 | — | — | — | 10,000 | **—** |
+| Other Income | ordinary_income | 10,000 | — | — | — | 10,000 | **—** |
+| **Business Income** | se_income | 10,000 | 10,000 | 10,000 | — | 9,293.52 | **10,000** |
+| **Rental Income** | rental_income | 10,000 | — | — | 10,000 | 10,000 | **—** |
+| All 22 Sch C expense categories | se_expense | — | — | −10,000 | — | — | — |
+| All 7 Sch A categories | itemized_deduction | — | — | — | — | — | — |
+| All 7 Sch E expense categories | rental_expense | — | — | — | −10,000 | — | — |
+| All 13 personal / non-deductible | personal | — | — | — | — | — | — |
+
+Business Income's AGI of 9,293.52 is 10,000 less the deductible half of SE tax
+(706.48) — the only category where AGI differs from income, exactly as expected.
+
+**Retirement and Social Security income** are held in separate collections
+(`useSSAData`, `useRetirementData`), surface on `/tax-summary` only, and never
+enter Schedule C or the SE base. A pension deposit categorized as a
+transaction lands in "Other Income" → ordinary income, also never SE.
+
+---
+
 ## 5. Known limitations — deliberately NOT modeled
 
 These are not defects to fix silently; they are gaps a user must know about.
+They are surfaced in the UI via `ESTIMATE_EXCLUSIONS`, on the dashboard meter,
+the tax estimate page, and the tax summary page.
 
-- **Duplicate imports are not detected at all.** No `isDuplicate` / `duplicateOf`
-  field exists anywhere in the schema. A transaction imported twice is counted
-  twice. Adding dedup means choosing a matching rule, which is its own change.
+- **Duplicate imports: deterministic protection only.** Plaid rows are keyed on
+  the provider's stable `transaction_id` (doc id `plaid_<id>`, written with
+  `.create()`), so re-syncing is idempotent. CSV / AI rows are keyed on an exact
+  hash of account + date + signed amount + normalized description. There is no
+  fuzzy matching, deliberately — a near-miss heuristic would discard legitimate
+  transactions. Two consequences follow, and both are disclosed:
+  - Genuinely distinct rows identical on all four fields collapse into one
+    (two identical coffees, same shop, same day). This **under**-counts.
+  - Rows the user force-imported past a duplicate warning carry
+    `isForceImport: true` and are counted in the totals. The tax summary shows a
+    banner naming how many, since those are the only rows that can double-count.
+  - Re-importing the same CSV against a *different* `accountId` produces a
+    different hash and will duplicate.
 - **OBBBA's new deductions are not modeled**: senior ($6,000, 65+), tips
   ($25,000), overtime ($12,500 / $25,000 joint), car loan interest ($10,000).
   All are 2025–2028 provisions and would reduce tax for those who qualify.
 - **SALT cap changes are not modeled**; Schedule A totals are uncapped.
 - **Additional standard deduction for age 65+ or blindness** is not applied.
-- **QBI is a cliff, not a phase-in.** Above the § 199A threshold the deduction
-  drops to zero rather than phasing out (SSTB) or applying the W-2 wage / UBIA
-  limit. This **overstates** tax for higher-income Schedule C filers.
+- **QBI above the § 199A threshold is not calculated.** It depends on W-2 wages
+  paid by the business and UBIA of qualified property, which the app does not
+  collect. No benefit is included, so tax is **overstated** for those filers —
+  and the UI says so rather than showing a computed-looking $0.
 - **Capital gains preferential rates, AMT, and tax credits** are not modeled;
   investment income is taxed as ordinary income.
 - **No state taxes.** `breakdown.state` is always 0.
-- **Schedule E is not folded into the dashboard meter** — rental income appears
-  on `/tax-summary` and `/schedule-e` only.
+- **Passive activity loss limits are not applied to Schedule E.** A rental loss
+  reduces AGI in full; the real § 469 limits may disallow some of it.
+- **Social Security taxability is not modeled** — SSA benefits are shown but not
+  run through the 50%/85% inclusion worksheet.
 - **Net operating loss carryforward is not implemented**; AGI is floored at 0
   when a Schedule C loss exceeds other income, and the loss simply disappears.
 
@@ -210,27 +298,59 @@ professional. No "File with IRS" capability exists or should be implied.
 
 ## 7. Test coverage
 
-`functions/` — 128 tests passing (`npm test`):
+`functions/` — 182 tests passing (`npm test`):
 
-- `taxConstants.test.ts` — published IRS/SSA figures, MFS vs MFJ divergence,
-  progressive bracket application, filing-status normalization and rejection,
-  SE tax including the wage-base cap and W-2 interaction, quarterly date
-  shifting against known IRS deadlines, year fallback
-- `summarizeTransactions.test.ts` — D3 income routing across every income
-  category, personal vs deductible split, Schedule C/E/A separation, refund
-  netting, entity-based routing, exclusions and their counts
-- `taxEstimate.test.ts` — year sensitivity, MFS vs MFJ, vocabulary tolerance,
-  head of household, W-2 wage-base interaction
+- `taxConstants.test.ts` — published IRS/SSA figures including all five 2025
+  standard deductions, MFS vs MFJ divergence, progressive bracket application,
+  filing-status normalization and rejection, SE tax including the wage-base cap
+  and W-2 interaction, quarterly date shifting against known IRS deadlines
+- `taxLanes.test.ts` — **the category → lane matrix**: every category's
+  contribution to total income, Sch C gross, Sch C net, Sch E, AGI and the SE
+  base; non-deductible categories; unknown categories staying review-required
+- `summarizeTransactions.test.ts` — income routing across every income category,
+  personal vs deductible split, refund netting, entity routing, exclusions
+- `taxEstimate.test.ts` — year sensitivity, filing statuses, QBI status, AGI
+  assembly, itemized-vs-standard selection, disclosure completeness
+- `syntheticEndToEnd.test.ts` — synthetic-data proof through the real callables
+  with an in-memory Firestore: owner / spouse / accountant access via
+  `effectiveOwnerUid`, cross-owner isolation, unauthenticated rejection,
+  hand-derived totals for every lane, forecast SE base, completed-year deadline
+  behavior, dynamic year labeling
+- `duplicateProtection.test.ts` — Plaid idempotency on `transaction_id`, exact
+  (non-fuzzy) CSV hashing, force-import lineage
 - `sharedMirrors.test.ts` — mirror drift guard for `taxConstants.ts` and `taxMap.ts`
 
+### Why the tax constants are mirrored, and how drift is caught
+
+Firebase Functions deploy from `functions/` with their own `tsconfig` and
+`node_modules`; a `../frontend/src/...` import does not resolve at build time and
+would not be bundled. Publishing a shared npm package would mean a versioned
+release on every IRS figure change. So `taxConstants.ts` is duplicated, and the
+duplication is made safe by making it *checkable*: the two copies must be
+byte-for-byte identical, and `sharedMirrors.test.ts` asserts exactly that as
+part of the normal `npm test` run — not an optional script.
+
+This was verified by mutating one copy alone (`single: 15750` → `15751` in the
+backend file only) and confirming the suite fails. It does. The `taxMap.ts`
+copies intentionally differ in comments and tooltip hints, so that guard
+compares the routing data (category → group → schedule → bucket) instead.
+
 The frontend has no test runner. Its tax tables are the byte-identical mirror
-verified by `sharedMirrors.test.ts`, so the tested numbers are the ones it uses.
+verified above, so the tested numbers are the ones it uses; its calculator also
+now delegates the maths to the shared `computeFederalEstimate`.
 
 ---
 
 ## 8. Remaining recommendation
 
-D1–D10 are fixed and tested, and the numbers are traceable to IRS/SSA sources.
-Before filing from this app, still reconcile against the source documents
-(1099s, bank statements) and review the limitations in section 5 — particularly
-duplicate imports, which the app cannot currently detect.
+D1–D14 are fixed and tested, and every implemented rule is traceable to an
+IRS or SSA source cited in `shared/taxConstants.ts`.
+
+**This app produces an estimate, not a filing-ready tax liability.** Section 5
+lists what it does not compute; those items are shown to the user in the app,
+not just recorded here. Before filing, reconcile against the source documents
+(1099s, W-2s, bank statements) and have a tax professional review the return.
+
+Out of scope for this work and still open: the login restriction for
+unverified clients remains blocked on AWS approving SES production access —
+nothing in this branch changes that.

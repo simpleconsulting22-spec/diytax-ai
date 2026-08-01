@@ -81,9 +81,17 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
           <strong>{fmtExact(e.seDeduction)}</strong>
         </li>
         <li>
-          <strong>AGI:</strong> W-2 {fmtExact(e.w2Income)} + Schedule C{" "}
-          {fmtExact(e.scheduleCNet)} − SE deduction {fmtExact(e.seDeduction)} ={" "}
+          <strong>AGI:</strong> W-2 {fmtExact(e.w2Income)}
+          {e.otherOrdinaryIncome > 0 && <> + interest/dividends {fmtExact(e.otherOrdinaryIncome)}</>}
+          {" "}+ Schedule C {fmtExact(e.scheduleCNet)}
+          {e.scheduleENet !== 0 && <> + Schedule E {fmtExact(e.scheduleENet)}</>}
+          {" "}− SE deduction {fmtExact(e.seDeduction)} ={" "}
           <strong>{fmtExact(e.agi)}</strong>
+          <div style={{ fontSize: "11px", color: "#6b7280" }}>
+            Wages, interest, dividends and rental income are taxed as income but
+            are <strong>not</strong> self-employment earnings — SE tax was
+            charged on {fmtExact(e.seTaxBase)} of Schedule C profit only.
+          </div>
         </li>
         <li>
           <strong>Deduction used ({e.usingItemized ? "Itemized" : "Standard"}):</strong>{" "}
@@ -91,10 +99,19 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
           {fmtExact(e.itemizedDeduction)} →{" "}
           <strong>{fmtExact(e.deductionUsed)}</strong> used
         </li>
-        {e.qbiDeduction > 0 && (
+        {e.qbiStatus === "calculated" && (
           <li>
             <strong>QBI deduction (Section 199A):</strong> 20% of self-employment
             income = <strong>{fmtExact(e.qbiDeduction)}</strong>
+          </li>
+        )}
+        {e.qbiStatus === "not_calculated_above_threshold" && (
+          <li style={{ color: "#b45309" }}>
+            <strong>QBI deduction (Section 199A): not calculated.</strong> Your
+            income is above the {e.taxYear} threshold, where the deduction
+            depends on W-2 wages your business paid and the cost of qualified
+            property — figures this app doesn't collect. No QBI benefit is
+            included below, so your real tax is likely <em>lower</em> than shown.
           </li>
         )}
         <li>
@@ -120,8 +137,17 @@ function HowCalcPanel({ e }: { e: TaxEstimate }) {
           lineHeight: "1.5",
         }}
       >
-        Estimate uses {e.taxYear} IRS rates. State taxes, credits, and carryforwards not
-        included. Consult a tax professional for advice specific to your situation.
+        <strong>This is an estimate, not a filing-ready tax liability.</strong>{" "}
+        It uses {e.taxYear} IRS rates and does not include:
+      </p>
+      <ul style={{ margin: "6px 0 0", paddingLeft: "20px", fontSize: "11px", color: "#9ca3af", lineHeight: 1.5 }}>
+        {e.exclusions.map((x) => (
+          <li key={x}>{x}</li>
+        ))}
+      </ul>
+      <p style={{ margin: "8px 0 0", fontSize: "11px", color: "#9ca3af", lineHeight: 1.5 }}>
+        Review against your 1099s and bank statements, and consult a tax
+        professional before filing.
       </p>
     </div>
   );

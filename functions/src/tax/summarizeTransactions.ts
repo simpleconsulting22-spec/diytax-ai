@@ -8,7 +8,7 @@
 // category, which is the normal case.
 
 import { expenseContribution, incomeContribution } from "../shared/transactionMath";
-import { getTaxBucket, isIncomeBucket } from "../shared/taxMap";
+import { getTaxBucket, isIncomeBucket, isW2WageCategory } from "../shared/taxMap";
 
 export interface SummarizableTransaction {
   category?: string | null;
@@ -18,6 +18,7 @@ export interface SummarizableTransaction {
   entityType?: string | null;
   status?: string | null;
   amount?: number | null;
+  isForceImport?: boolean | null;
 }
 
 export interface TaxSummaryTotals {
@@ -33,13 +34,22 @@ export interface TaxSummaryTotals {
   scheduleEExpenses: number;
   scheduleENet: number;
   scheduleADeductions: number;
+  /** All non-SE, non-rental income: wages + interest + dividends + other. */
   ordinaryIncome: number;
+  /** W-2 wages only — the slice of ordinary income that consumes the OASDI
+   *  wage base. Split out because interest and dividends do not. */
+  w2Wages: number;
+  /** Ordinary income that is NOT W-2 wages (interest, dividends, other). */
+  otherOrdinaryIncome: number;
   byCategory: Array<{ category: string; total: number }>;
   excluded: {
     transfers: number;
     needsReview: number;
     uncategorized: number;
   };
+  /** Rows the user explicitly force-imported past duplicate detection. Surfaced
+   *  so a possible double-count is visible rather than silently included. */
+  forceImported: number;
   transactionCount: number;
 }
 
@@ -72,10 +82,13 @@ export function summarizeTransactions(txns: SummarizableTransaction[]): TaxSumma
   let scheduleEExpenses = 0;
   let scheduleADeductions = 0;
   let ordinaryIncome = 0;
+  let w2Wages = 0;
+  let otherOrdinaryIncome = 0;
 
   let transfers = 0;
   let needsReview = 0;
   let uncategorized = 0;
+  let forceImported = 0;
 
   for (const txn of txns) {
     if (txn.type === "transfer") {
@@ -90,6 +103,7 @@ export function summarizeTransactions(txns: SummarizableTransaction[]): TaxSumma
       uncategorized++;
       continue;
     }
+    if (txn.isForceImport) forceImported++;
 
     const cat = txn.category;
     const bucket = getTaxBucket({
@@ -106,9 +120,17 @@ export function summarizeTransactions(txns: SummarizableTransaction[]): TaxSumma
     if (isIncomeBucket(bucket)) {
       categoryTotals[cat] = (categoryTotals[cat] ?? 0) + incContrib;
       totalIncome += incContrib;
-      if (bucket === "se_income") scheduleCIncome += incContrib;
-      else if (bucket === "rental_income") scheduleEIncome += incContrib;
-      else ordinaryIncome += incContrib;
+      if (bucket === "se_income") {
+        scheduleCIncome += incContrib;
+      } else if (bucket === "rental_income") {
+        scheduleEIncome += incContrib;
+      } else {
+        // Ordinary income. Split W-2 wages out — only they consume the OASDI
+        // wage base against self-employment earnings.
+        ordinaryIncome += incContrib;
+        if (isW2WageCategory(cat)) w2Wages += incContrib;
+        else otherOrdinaryIncome += incContrib;
+      }
       continue;
     }
 
@@ -133,7 +155,14 @@ export function summarizeTransactions(txns: SummarizableTransaction[]): TaxSumma
     totalIncome: round2(totalIncome),
     totalExpenses: round2(totalExpenses),
     personalSpending: round2(personalSpending),
-    netProfit: round2(totalIncome - totalExpenses),
+    /**
+     * "Net profit" means SCHEDULE C net profit — the Form 1040 sense of the
+     * term, and the only figure self-employment tax applies to. It deliberately
+     * does NOT mean "all income minus all expenses": that would let wages,
+     * interest and dividends inflate it, and let Schedule A/E deductions
+     * shrink it. Use `totalIncome` and `totalExpenses` for the cash view.
+     */
+    netProfit: round2(scheduleCIncome - scheduleCExpenses),
     scheduleCIncome: round2(scheduleCIncome),
     scheduleCExpenses: round2(scheduleCExpenses),
     scheduleCNet: round2(scheduleCIncome - scheduleCExpenses),
@@ -142,8 +171,11 @@ export function summarizeTransactions(txns: SummarizableTransaction[]): TaxSumma
     scheduleENet: round2(scheduleEIncome - scheduleEExpenses),
     scheduleADeductions: round2(scheduleADeductions),
     ordinaryIncome: round2(ordinaryIncome),
+    w2Wages: round2(w2Wages),
+    otherOrdinaryIncome: round2(otherOrdinaryIncome),
     byCategory,
     excluded: { transfers, needsReview, uncategorized },
+    forceImported,
     transactionCount: txns.length,
   };
 }
