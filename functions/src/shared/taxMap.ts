@@ -115,6 +115,67 @@ export function getMapping(category: string | null | undefined): TaxMapping | un
 }
 
 /**
+ * The "natural" bucket for a category — what the IRS would call this kind of
+ * transaction in isolation, ignoring who the user assigned it to. Driven by
+ * TAX_MAP with a legacy fallback to the stored `taxSchedule`.
+ *
+ * Ported from the frontend canonical file so backend aggregation routes money
+ * the same way the dashboard does.
+ */
+function getNaturalBucket(txn: {
+  category?: string | null;
+  taxCategory?: string | null;
+  taxSchedule?: string | null;
+  type?: string;
+}): TaxBucket {
+  const m = getMapping(txn.category ?? txn.taxCategory);
+  if (m) return m.taxBucket;
+  // Legacy fallback — derive from taxSchedule + type.
+  if (txn.taxSchedule === "Schedule C") return txn.type === "income" ? "se_income" : "se_expense";
+  if (txn.taxSchedule === "Schedule E") return txn.type === "income" ? "rental_income" : "rental_expense";
+  if (txn.taxSchedule === "Schedule A") return "itemized_deduction";
+  if (txn.type === "income") return "ordinary_income";
+  return "personal";
+}
+
+/**
+ * Resolve a transaction's tax bucket from BOTH its category and its assigned
+ * entity. Business entities promote Sch A / Sch E expenses to Sch C; rental
+ * entities do the mirror image. Personal / unset entities trust the category.
+ *
+ * MUST match frontend/src/shared/taxMap.ts — see the mirror note at the top.
+ */
+export function getTaxBucket(txn: {
+  category?: string | null;
+  taxCategory?: string | null;
+  taxSchedule?: string | null;
+  type?: string;
+  entityType?: string | null;
+}): TaxBucket {
+  const natural = getNaturalBucket(txn);
+  const entity = txn.entityType;
+
+  if (entity === "business") {
+    if (natural === "itemized_deduction" || natural === "rental_expense") return "se_expense";
+    if (natural === "rental_income") return "se_income";
+    return natural;
+  }
+
+  if (entity === "rental") {
+    if (natural === "itemized_deduction" || natural === "se_expense") return "rental_expense";
+    if (natural === "se_income") return "rental_income";
+    return natural;
+  }
+
+  return natural;
+}
+
+/** True for buckets that represent money coming IN. */
+export function isIncomeBucket(bucket: TaxBucket): boolean {
+  return bucket === "ordinary_income" || bucket === "se_income" || bucket === "rental_income";
+}
+
+/**
  * Lenient lookup — case/whitespace insensitive. Lets us repair AI responses
  * that drift in casing ("Wages and Salaries" vs "Wages & Salaries"). Caller
  * should still treat a hit here as confidence-reducing — the AI didn't return

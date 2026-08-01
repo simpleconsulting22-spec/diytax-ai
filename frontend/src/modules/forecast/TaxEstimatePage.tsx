@@ -3,12 +3,22 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { apiClient } from "../../services/apiClient";
 import AppNav from "../../components/AppNav";
+import {
+  FILING_STATUSES,
+  FILING_STATUS_LABELS,
+  quarterlyDueDates,
+  type FilingStatus,
+} from "../../shared/taxConstants";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 interface TaxForecast {
   taxYear: number;
   filingStatus: string;
+  /** Year whose IRS tables the backend actually used. */
+  tableYear: number;
+  /** Standard deduction applied, from the year-indexed shared tables. */
+  standardDeduction: number;
   ytdIncome: number;
   ytdDeductible: number;
   ytdNetProfit: number;
@@ -24,8 +34,9 @@ interface TaxForecast {
   effectiveTaxRate: number;
   quarterlyPayment: number;
   remainingQuarters: number;
-  nextQuarterlyDue: string;
-  nextQuarterLabel: string;
+  /** Null once every deadline for the year has passed. */
+  nextQuarterlyDue: string | null;
+  nextQuarterLabel: string | null;
   progressPercent: number;
   transactionCount: number;
 }
@@ -48,7 +59,7 @@ export default function TaxEstimatePage() {
   const uid = user?.uid;
 
   const [forecast,      setForecast]      = useState<TaxForecast | null>(null);
-  const [filingStatus,  setFilingStatus]  = useState<"single" | "married_filing_jointly">("single");
+  const [filingStatus,  setFilingStatus]  = useState<FilingStatus>("single");
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
 
@@ -67,8 +78,7 @@ export default function TaxEstimatePage() {
 
   useEffect(() => { if (uid) runForecast(); }, [uid, taxYear]); // eslint-disable-line
 
-  const days = forecast ? daysUntil(forecast.nextQuarterlyDue) : null;
-  const stdDed = filingStatus === "married_filing_jointly" ? 29200 : 14600;
+  const days = forecast?.nextQuarterlyDue ? daysUntil(forecast.nextQuarterlyDue) : null;
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font }}>
@@ -88,11 +98,12 @@ export default function TaxEstimatePage() {
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <select
               value={filingStatus}
-              onChange={(e) => { const s = e.target.value as "single" | "married_filing_jointly"; setFilingStatus(s); runForecast(s); }}
+              onChange={(e) => { const s = e.target.value as FilingStatus; setFilingStatus(s); runForecast(s); }}
               style={{ padding: "7px 10px", borderRadius: "8px", border: "1px solid #d1d5db", fontSize: "12px", color: "#374151", fontFamily: font, backgroundColor: "#fff" }}
             >
-              <option value="single">Single</option>
-              <option value="married_filing_jointly">Married Filing Jointly</option>
+              {FILING_STATUSES.map((s) => (
+                <option key={s} value={s}>{FILING_STATUS_LABELS[s]}</option>
+              ))}
             </select>
             <button
               onClick={() => runForecast()}
@@ -148,15 +159,23 @@ export default function TaxEstimatePage() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "2px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                    {forecast.nextQuarterLabel} Estimated Tax Payment
+                    {forecast.nextQuarterlyDue
+                      ? `${forecast.nextQuarterLabel} Estimated Tax Payment`
+                      : "Estimated Tax Payment"}
                   </div>
                   <div style={{ fontSize: "32px", fontWeight: 800, color: "#111827", lineHeight: 1 }}>{fmt(forecast.quarterlyPayment)}</div>
                   <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "6px" }}>
-                    Due {formatDate(forecast.nextQuarterlyDue)}
-                    {days !== null && (
-                      <span style={{ marginLeft: "8px", fontWeight: 700, color: days <= 0 ? "#dc2626" : days <= 14 ? "#dc2626" : days <= 30 ? "#d97706" : "#16A34A" }}>
-                        · {days < 0 ? `${Math.abs(days)} days overdue` : days === 0 ? "Due today" : `${days} days`}
-                      </span>
+                    {forecast.nextQuarterlyDue ? (
+                      <>
+                        Due {formatDate(forecast.nextQuarterlyDue)}
+                        {days !== null && (
+                          <span style={{ marginLeft: "8px", fontWeight: 700, color: days <= 0 ? "#dc2626" : days <= 14 ? "#dc2626" : days <= 30 ? "#d97706" : "#16A34A" }}>
+                            · {days < 0 ? `${Math.abs(days)} days overdue` : days === 0 ? "Due today" : `${days} days`}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <>All {forecast.taxYear} estimated-tax deadlines have passed.</>
                     )}
                   </div>
                 </div>
@@ -197,7 +216,7 @@ export default function TaxEstimatePage() {
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>Federal Income Tax</div>
                 {[
                   { label: "Adjusted Gross Income", amount: forecast.projectedAGI },
-                  { label: `Standard Deduction (${filingStatus === "married_filing_jointly" ? "MFJ" : "Single"})`, amount: -stdDed, muted: true },
+                  { label: `Standard Deduction (${FILING_STATUS_LABELS[filingStatus]}, ${forecast.tableYear})`, amount: -forecast.standardDeduction, muted: true },
                   { label: "Taxable Income", amount: forecast.projectedTaxableIncome },
                   { label: "Federal Income Tax", amount: forecast.projectedIncomeTax, bold: true },
                 ].map(({ label, amount, muted, bold }) => (
@@ -234,12 +253,12 @@ export default function TaxEstimatePage() {
             {/* All quarterly dates */}
             <div style={{ backgroundColor: "#fff", borderRadius: "16px", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", padding: "20px 24px", marginBottom: "24px" }}>
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#111827", marginBottom: "14px" }}>Quarterly Payment Schedule</div>
-              {[
-                { label: "Q1", due: `${taxYear}-04-15`,      period: "Jan – Mar" },
-                { label: "Q2", due: `${taxYear}-06-16`,      period: "Apr – May" },
-                { label: "Q3", due: `${taxYear}-09-15`,      period: "Jun – Aug" },
-                { label: "Q4", due: `${taxYear + 1}-01-15`,  period: "Sep – Dec" },
-              ].map(({ label, due, period }) => {
+              {/* Dates come from the shared calculator, which applies the
+                  weekend/holiday shift — they were hard-coded to 2025's. */}
+              {quarterlyDueDates(taxYear).map((q, i) => {
+                const label = q.label;
+                const due = q.dueDate;
+                const period = ["Jan – Mar", "Apr – May", "Jun – Aug", "Sep – Dec"][i];
                 const d = daysUntil(due);
                 const isPast = d < 0;
                 const isNext = due === forecast.nextQuarterlyDue;

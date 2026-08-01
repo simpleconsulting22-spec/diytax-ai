@@ -15,7 +15,7 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-function exportCSV(entities: EntityScheduleC[]) {
+function exportCSV(entities: EntityScheduleC[], taxYear: number) {
   const rows: string[][] = [["Entity", "Line", "Description", "Amount"]];
 
   for (const entity of entities) {
@@ -34,7 +34,7 @@ function exportCSV(entities: EntityScheduleC[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "schedule-c-2025.csv";
+  a.download = `schedule-c-${taxYear}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -277,7 +277,7 @@ export default function TaxSummaryPage() {
             {!loading && entities.length > 0 && (
               <>
                 <button
-                  onClick={() => exportCSV(entities)}
+                  onClick={() => exportCSV(entities, selectedYear)}
                   className="no-print"
                   style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
                 >

@@ -1,4 +1,5 @@
 import { DateRange } from "./periodRange";
+import { businessMileageRate } from "../../../shared/taxConstants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,11 +40,23 @@ export interface Insight {
 
 // ─── Tax deductibility notes ──────────────────────────────────────────────────
 
+/** Today's IRS business standard mileage rate. 2026 splits mid-year, so this
+ *  resolves by date rather than carrying a hard-coded figure. */
+function formatMileageRate(): string {
+  const rate = businessMileageRate(new Date().toISOString().slice(0, 10));
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  }).format(rate);
+}
+
 export const TAX_NOTES: Record<string, string> = {
   "Meals & Entertainment":    "Only 50% of meals & entertainment is tax deductible (IRS §274).",
   "Travel":                   "Business travel is 100% deductible — keep all receipts and a trip log.",
   "Home Office":              "Home office requires exclusive, regular business use — track square footage.",
-  "Vehicle & Mileage":        "Business mileage rate is $0.70/mile — keep a mileage log.",
+  "Vehicle & Mileage":        `Business mileage rate is ${formatMileageRate()}/mile — keep a mileage log.`,
   "Professional Services":    "Legal and professional fees are fully deductible.",
   "Advertising":              "Advertising and marketing expenses are fully deductible.",
   "Office Supplies":          "Office supplies are fully deductible in the year purchased.",

@@ -5,6 +5,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { apiClient } from "../../services/apiClient";
 import AppNav from "../../components/AppNav";
+import { FILING_STATUSES, FILING_STATUS_LABELS, type FilingStatus } from "../../shared/taxConstants";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -13,6 +14,10 @@ const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 interface TaxForecast {
   taxYear: number;
   filingStatus: string;
+  /** Year whose IRS tables the backend actually used. */
+  tableYear: number;
+  /** Standard deduction applied, from the year-indexed shared tables. */
+  standardDeduction: number;
   ytdIncome: number;
   ytdDeductible: number;
   ytdNetProfit: number;
@@ -28,8 +33,9 @@ interface TaxForecast {
   effectiveTaxRate: number;
   quarterlyPayment: number;
   remainingQuarters: number;
-  nextQuarterlyDue: string;
-  nextQuarterLabel: string;
+  /** Null once every deadline for the year has passed. */
+  nextQuarterlyDue: string | null;
+  nextQuarterLabel: string | null;
   progressPercent: number;
   transactionCount: number;
 }
@@ -74,7 +80,7 @@ export default function ForecastPage() {
 
   const [forecast,         setForecast]         = useState<TaxForecast | null>(null);
   const [recurring,        setRecurring]        = useState<RecurringItem[]>([]);
-  const [filingStatus,     setFilingStatus]     = useState<"single" | "married_filing_jointly">("single");
+  const [filingStatus,     setFilingStatus]     = useState<FilingStatus>("single");
   const [loadingForecast,  setLoadingForecast]  = useState(false);
   const [loadingRecurring, setLoadingRecurring] = useState(false);
   const [error,            setError]            = useState<string | null>(null);
@@ -124,12 +130,12 @@ export default function ForecastPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, taxYear]);
 
-  function handleFilingStatusChange(status: "single" | "married_filing_jointly") {
+  function handleFilingStatusChange(status: FilingStatus) {
     setFilingStatus(status);
     runForecast(status);
   }
 
-  const days = forecast ? daysUntil(forecast.nextQuarterlyDue) : null;
+  const days = forecast?.nextQuarterlyDue ? daysUntil(forecast.nextQuarterlyDue) : null;
 
   // Upcoming recurring: next 90 days
   const today = new Date().toISOString().split("T")[0];
@@ -155,11 +161,12 @@ export default function ForecastPage() {
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <select
               value={filingStatus}
-              onChange={(e) => handleFilingStatusChange(e.target.value as "single" | "married_filing_jointly")}
+              onChange={(e) => handleFilingStatusChange(e.target.value as FilingStatus)}
               style={{ padding: "7px 12px", borderRadius: "8px", border: "1px solid #d1d5db", fontSize: "13px", color: "#374151", fontFamily: font, backgroundColor: "#fff" }}
             >
-              <option value="single">Single</option>
-              <option value="married_filing_jointly">Married Filing Jointly</option>
+              {FILING_STATUSES.map((s) => (
+                <option key={s} value={s}>{FILING_STATUS_LABELS[s]}</option>
+              ))}
             </select>
             <button
               onClick={() => runForecast()}
@@ -217,7 +224,7 @@ export default function ForecastPage() {
                   { label: "Self-Employment Tax (15.3%)", amount: forecast.projectedSETax },
                   { label: "SE Tax Deduction", amount: -forecast.projectedSEDeduction, muted: true },
                   { label: "Adjusted Gross Income", amount: forecast.projectedAGI, muted: true },
-                  { label: `Standard Deduction (${filingStatus === "married_filing_jointly" ? "$29,200" : "$14,600"})`, amount: -(filingStatus === "married_filing_jointly" ? 29200 : 14600), muted: true },
+                  { label: `Standard Deduction (${forecast.tableYear})`, amount: -forecast.standardDeduction, muted: true },
                   { label: "Taxable Income", amount: forecast.projectedTaxableIncome, muted: true },
                   { label: "Federal Income Tax", amount: forecast.projectedIncomeTax },
                 ].map(({ label, amount, muted }) => (
@@ -239,20 +246,28 @@ export default function ForecastPage() {
               </div>
             </div>
 
-            {/* Next quarterly payment callout */}
+            {/* Next quarterly payment callout — a completed year has none. */}
             <div style={{ margin: "0 24px 24px", padding: "16px 20px", backgroundColor: days !== null && days <= 30 ? "#fef2f2" : "#f0fdf4", border: `1px solid ${days !== null && days <= 30 ? "#fecaca" : "#bbf7d0"}`, borderRadius: "12px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "2px" }}>
-                    Next Quarterly Payment ({forecast.nextQuarterLabel})
+                    {forecast.nextQuarterlyDue
+                      ? `Next Quarterly Payment (${forecast.nextQuarterLabel})`
+                      : "Quarterly Payments"}
                   </div>
                   <div style={{ fontSize: "22px", fontWeight: 800, color: "#111827" }}>{fmt(forecast.quarterlyPayment)}</div>
                   <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-                    Due {formatDate(forecast.nextQuarterlyDue)}
-                    {days !== null && (
-                      <span style={{ marginLeft: "6px", fontWeight: 600, color: days <= 14 ? "#dc2626" : days <= 30 ? "#f59e0b" : "#16A34A" }}>
-                        {days < 0 ? "overdue" : days === 0 ? "due today" : `${days} days away`}
-                      </span>
+                    {forecast.nextQuarterlyDue ? (
+                      <>
+                        Due {formatDate(forecast.nextQuarterlyDue)}
+                        {days !== null && (
+                          <span style={{ marginLeft: "6px", fontWeight: 600, color: days <= 14 ? "#dc2626" : days <= 30 ? "#f59e0b" : "#16A34A" }}>
+                            {days < 0 ? "overdue" : days === 0 ? "due today" : `${days} days away`}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <>All {forecast.taxYear} estimated-tax deadlines have passed.</>
                     )}
                   </div>
                 </div>

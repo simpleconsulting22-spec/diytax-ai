@@ -89,9 +89,12 @@ export function useScheduleA() {
 
       // Refunds (type=refund) subtract from the deductible total — a refund of
       // a charitable contribution or medical bill reduces the deduction.
+      // Unreviewed rows are excluded, matching the dashboard meter and the
+      // Schedule C/E pages: an unconfirmed guess must not become a deduction.
       const reduceWithRefunds = (docs: typeof charitySnap.docs) =>
         docs.reduce((s, d) => {
           const data = d.data();
+          if (data.status === "needs_review") return s;
           const amt = Math.abs((data.amount as number) ?? 0);
           if (data.type === "refund") return s - amt;
           if (data.type === "expense") return s + amt;

@@ -2,16 +2,22 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { sendPush, writeHistory } from "./fcmHelpers";
 import { quickTaxEstimate } from "../utils/taxEstimate";
+import { quarterlyDueDates } from "../shared/taxConstants";
 
-// Quarterly estimated tax deadlines — [YYYY-MM-DD]
-const QUARTERLY_DEADLINES = [
-  "2025-04-15", "2025-06-16", "2025-09-15", "2026-01-15",
-  "2026-04-15", "2026-06-15", "2026-09-15", "2027-01-15",
-];
-
+/**
+ * Next estimated-tax deadline, computed from the statutory dates with the
+ * weekend/holiday shift applied. Replaces a hard-coded list that had to be
+ * hand-extended every year (and had 2027 Q2 wrong).
+ */
 function nextDeadline(now: Date): { label: string; daysUntil: number } | null {
-  for (const d of QUARTERLY_DEADLINES) {
-    const date = new Date(d + "T12:00:00Z");
+  const year = now.getUTCFullYear();
+  const upcoming = [
+    ...quarterlyDueDates(year - 1),
+    ...quarterlyDueDates(year),
+    ...quarterlyDueDates(year + 1),
+  ];
+  for (const q of upcoming) {
+    const date = new Date(q.dueDate + "T12:00:00Z");
     const days = Math.round((date.getTime() - now.getTime()) / 86_400_000);
     if (days >= 0) {
       const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -70,7 +76,7 @@ export const morningSnapshot = onSchedule(
 
         const w2Income    = (profile.w2Income as number) ?? 0;
         const filingStatus = (profile.filingStatus as string) ?? "single";
-        const estimate    = quickTaxEstimate(netProfit, w2Income, filingStatus);
+        const estimate    = quickTaxEstimate(netProfit, w2Income, filingStatus, Number(year));
 
         const fmt = (n: number) =>
           new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);

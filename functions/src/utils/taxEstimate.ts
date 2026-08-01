@@ -1,76 +1,68 @@
-// Lightweight 2024 IRS tax estimate — used in Cloud Functions (no React deps)
+// Lightweight federal tax estimate for Cloud Functions (no React deps).
+//
+// All IRS/SSA figures come from shared/taxConstants.ts, which is year-indexed
+// and mirrored with the frontend. This file previously carried its own 2024-only
+// copy of the brackets and deductions, so selecting 2025 in the UI changed
+// nothing here and the dashboard and Cloud Functions could disagree.
+
+import {
+  FilingStatus,
+  federalIncomeTax,
+  normalizeFilingStatus,
+  pickYear,
+  selfEmploymentTax,
+  STANDARD_DEDUCTION_BY_YEAR,
+  effectiveTaxYear,
+} from "../shared/taxConstants";
 
 export interface QuickTaxEstimate {
   selfEmploymentTax: number;
   federalTax:        number;
   totalTax:          number;
   effectiveRate:     number;
+  /** Status actually used, after normalizing whatever the profile stored. */
+  filingStatus:      FilingStatus;
+  /** Year whose IRS tables were used (input year, or the latest known year). */
+  taxYear:           number;
 }
 
-const BRACKETS_SINGLE_2024 = [
-  { limit: 11600,  rate: 0.10 },
-  { limit: 47150,  rate: 0.12 },
-  { limit: 100525, rate: 0.22 },
-  { limit: 191950, rate: 0.24 },
-  { limit: 243725, rate: 0.32 },
-  { limit: 609350, rate: 0.35 },
-  { limit: Infinity, rate: 0.37 },
-];
-
-const BRACKETS_MFJ_2024 = [
-  { limit: 23200,  rate: 0.10 },
-  { limit: 94300,  rate: 0.12 },
-  { limit: 201050, rate: 0.22 },
-  { limit: 383900, rate: 0.24 },
-  { limit: 487450, rate: 0.32 },
-  { limit: 731200, rate: 0.35 },
-  { limit: Infinity, rate: 0.37 },
-];
-
-const STANDARD_DEDUCTION: Record<string, number> = {
-  single:            14600,
-  married_jointly:   29200,
-  married_separately: 14600,
-  head_of_household: 21900,
-};
-
-const SS_WAGE_BASE = 168600;
-
-function applyBrackets(income: number, brackets: typeof BRACKETS_SINGLE_2024): number {
-  let tax = 0;
-  let prev = 0;
-  for (const bracket of brackets) {
-    if (income <= prev) break;
-    const taxable = Math.min(income, bracket.limit) - prev;
-    tax += taxable * bracket.rate;
-    prev = bracket.limit;
-  }
-  return tax;
-}
-
+/**
+ * Estimate federal income + SE tax.
+ *
+ * `filingStatus` accepts either vocabulary the app has used (`married_jointly`
+ * from onboarding, `married_filing_jointly` from the forecast pages). An
+ * unrecognized value falls back to `single` — this is the notification path,
+ * where a missing profile field must not throw; callable endpoints validate
+ * strictly instead and reject.
+ */
 export function quickTaxEstimate(
   netProfit: number,
   w2Income: number,
-  filingStatus: string
+  filingStatus: string,
+  taxYear: number = new Date().getFullYear()
 ): QuickTaxEstimate {
-  const seNet    = Math.max(0, netProfit) * 0.9235;
-  const seSSTax  = Math.min(seNet, Math.max(0, SS_WAGE_BASE - w2Income)) * 0.124;
-  const seMedTax = seNet * 0.029;
-  const selfEmploymentTax = seSSTax + seMedTax;
+  const status = normalizeFilingStatus(filingStatus) ?? "single";
+  const year = effectiveTaxYear(taxYear);
 
-  const seDeduction = selfEmploymentTax * 0.5;
-  const agi         = netProfit + w2Income - seDeduction;
-  const stdDed      = STANDARD_DEDUCTION[filingStatus] ?? 14600;
+  // W-2 wages consume the Social Security wage base before SE earnings do.
+  const { seTax, deductiblePortion } = selfEmploymentTax(netProfit, year, w2Income);
+
+  const agi = netProfit + w2Income - deductiblePortion;
+  const stdDed = pickYear(year, STANDARD_DEDUCTION_BY_YEAR)[status];
   const taxableIncome = Math.max(0, agi - stdDed);
 
-  const brackets = (filingStatus === "married_jointly" || filingStatus === "married_separately")
-    ? BRACKETS_MFJ_2024
-    : BRACKETS_SINGLE_2024;
+  const { tax: federalTax } = federalIncomeTax(taxableIncome, status, year);
 
-  const federalTax  = applyBrackets(taxableIncome, brackets);
-  const totalTax    = selfEmploymentTax + federalTax;
+  const totalTax = seTax + federalTax;
   const grossIncome = netProfit + w2Income;
   const effectiveRate = grossIncome > 0 ? (totalTax / grossIncome) * 100 : 0;
 
-  return { selfEmploymentTax, federalTax, totalTax, effectiveRate };
+  return {
+    selfEmploymentTax: seTax,
+    federalTax,
+    totalTax,
+    effectiveRate,
+    filingStatus: status,
+    taxYear: year,
+  };
 }
