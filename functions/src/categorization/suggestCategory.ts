@@ -1,6 +1,12 @@
 import { onCall } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import OpenAI from "openai";
+import {
+  CANONICAL_CATEGORIES,
+  CATEGORIZATION_MODEL,
+  describeAnthropicError,
+  firstText,
+  getAnthropic,
+} from "../services/anthropicClient";
 import { resolveEffectiveOwner } from "../middleware/auth";
 import { extractVendorName } from "../services/vendorExtraction";
 import {
@@ -11,8 +17,24 @@ import {
   scheduleForCategory,
 } from "../shared/taxMap";
 
+/**
+ * taxSchedule is not requested from the model — it is derived from TAX_MAP by
+ * scheduleForCategory() below, so asking for it would create a second source
+ * of truth that can disagree with the tax engine.
+ */
+const SUGGEST_SCHEMA = {
+  type: "object",
+  properties: {
+    category: { type: "string", enum: CANONICAL_CATEGORIES },
+    taxCategory: { type: "string", description: "Human-readable tax label" },
+    confidence: { type: "number", description: "0.0-1.0" },
+  },
+  required: ["category", "taxCategory", "confidence"],
+  additionalProperties: false,
+};
+
 export const suggestCategory = onCall(
-  { cors: true, invoker: "public" },
+  { secrets: ["ANTHROPIC_API_KEY"], cors: true, invoker: "public" },
   async (request) => {
     const { effectiveOwnerUid } = await resolveEffectiveOwner(request);
     const { description, amount } = request.data as {
@@ -48,9 +70,9 @@ export const suggestCategory = onCall(
       };
     }
 
-    // Fall back to GPT-4o-mini
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    // Fall back to Claude
+    const anthropic = getAnthropic();
+    if (!anthropic) {
       return { category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none" };
     }
 
@@ -58,29 +80,24 @@ export const suggestCategory = onCall(
 Vendor/Description: "${description}"
 ${amount !== undefined ? `Amount: $${amount}` : ""}
 
-Choose the single best category from the list below. Use EXACT spelling
-including ampersands. Do not invent variations.
+Choose the single best category from the list below.
 
 ${buildAIPromptCategoryList()}
 
-Return ONLY valid JSON (no markdown, no code fences):
-{"category":"string","taxCategory":"string","taxSchedule":"Schedule C|Schedule A|Schedule E|Form 1040|Personal","confidence":0.0}`;
+Set confidence below 0.8 if you are genuinely unsure.`;
 
     try {
-      const openai = new OpenAI({ apiKey });
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 120,
+      const message = await anthropic.messages.create({
+        model: CATEGORIZATION_MODEL,
+        max_tokens: 300,
         temperature: 0,
+        output_config: { format: { type: "json_schema", schema: SUGGEST_SCHEMA } },
+        messages: [{ role: "user", content: prompt }],
       });
 
-      const raw = completion.choices[0]?.message?.content?.trim() ?? "{}";
-      const clean = raw.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-      const parsed = JSON.parse(clean) as {
+      const parsed = JSON.parse(firstText(message) || "{}") as {
         category?: string;
         taxCategory?: string;
-        taxSchedule?: string;
         confidence?: number;
       };
 
@@ -114,7 +131,7 @@ Return ONLY valid JSON (no markdown, no code fences):
         source: "ai",
       };
     } catch (err) {
-      console.error("[suggestCategory] error:", err);
+      console.error("[suggestCategory] error:", describeAnthropicError(err));
       return { category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none" };
     }
   }

@@ -1,6 +1,53 @@
 # Credential rotation checklist
 
-**Status: ACTION REQUIRED — credentials are exposed and are still live.**
+**Status: IN PROGRESS — started 2026-08-02.**
+
+| # | Credential | Status | Date | Verification |
+|---|---|---|---|---|
+| 1 | OpenAI | ✅ **Closed — nothing to revoke** | 2026-08-02 | See § 1 |
+| 2 | Twilio | ✅ **Closed — account terminated** | 2026-08-02 | See § 3 |
+| 3 | SendGrid | ⏳ Next | — | — |
+| 4 | Anthropic | ⏳ Pending | — | — |
+| 5 | Plaid | ⏳ Pending (last, highest risk) | — | — |
+
+## Preflight audit — 2026-08-02
+
+Read-only. `main` at `ed1f8bc`, identical to `origin/main`. Performed before any
+provider action, and it corrected three assumptions this runbook was written on:
+
+1. **`functions/.env` no longer holds any secret.** Six keys remain, all
+   non-sensitive config: `PLAID_CLIENT_ID`, `PLAID_ENV`, `PLAID_WEBHOOK_URL`,
+   `PLAID_REDIRECT_URI`, `APP_URL`, `AWS_SES_REGION`. `PLAID_ENV=production`.
+2. **No `SENDGRID_API_KEY` secret exists in Secret Manager.** The destroy
+   command in § 4 is a no-op; step 3 is a provider-side delete only.
+3. **Zero plaintext credentials survive in Cloud Run.** All 40 deployed services
+   were swept by variable name and `secretKeyRef` only — no value was read,
+   printed, or logged.
+
+Cloud Run references secrets through v1-API aliases (`secret-<uuid>`), resolved
+via the `run.googleapis.com/secrets` template annotation. The aliases are not
+Secret Manager resources; do not look them up directly.
+
+| Credential | Source consumers | Cloud Run bindings | Secret Manager |
+|---|---|---|---|
+| `OPENAI_API_KEY` | 4 files, all warn-and-skip | **0** | does not exist |
+| `TWILIO_*` | **0** | **0** | does not exist |
+| `SENDGRID_API_KEY` | **0** | **0** | does not exist |
+| `ANTHROPIC_API_KEY` | `parser/parseFinancialData.ts` | 1 → `parsefinancialdata` | v2 active |
+| `PLAID_SECRET` | 13 files | 13, all `secretKeyRef` | v2 active |
+| `AWS_SES_*` | `sendMfaCode`, `sendInvite` | 2 each | v2 / v4 active |
+
+Version 1 of every secret is still `enabled`. Disable the superseded versions as
+hygiene once rotation is finished.
+
+**Note on the Anthropic/OpenAI split:** `ANTHROPIC_API_KEY` powers *financial
+data parsing* only (`parseFinancialData.ts`, `claude-haiku-4-5-20251001` with a
+`claude-sonnet-4-6` path). AI *categorization* is still OpenAI-shaped and inert.
+These are different features; do not conflate them.
+
+---
+
+**Original status when written: ACTION REQUIRED — credentials are exposed and are still live.**
 
 `functions/.env` was tracked in Git and its contents were committed. It has now
 been untracked (`git rm --cached functions/.env`) and added to `.gitignore`, and
@@ -118,15 +165,36 @@ which is why AI categorization has been silently inactive since — the code log
 secret any more, so a replacement key would not be consumed. Just kill the old
 one.
 
-- [ ] <https://platform.openai.com/api-keys> → find the exposed key
-- [ ] If it is already gone (deleted, or lost with an expired trial), you are
-      done — no further action
-- [ ] Otherwise **delete it**
-- [ ] Confirm it is dead:
-      `curl -s -o /dev/null -w "%{http_code}" https://api.openai.com/v1/models -H "Authorization: Bearer OLD_KEY"`
-      → expect **401**
+- [x] <https://platform.openai.com/api-keys> → no keys exist
+- [x] Already gone — lost with the earlier trial. **No action was required.**
 - [ ] Optionally remove the four `process.env.OPENAI_API_KEY` reads once
       categorization moves to Claude
+
+#### ✅ Closed 2026-08-02 — no revocation was possible or necessary
+
+**Verification performed** (console evidence + repository timeline):
+
+- API keys page shows **0 results** under the only project, `Default project`
+  (`proj_lQuXXXY34CXu0KGDrvdi4RVh`), with 0 members and **$0 monthly spend**.
+- **Admin keys: 0 results with `?status=all`** — no status filter applied, so
+  nothing is hidden. Admin keys (`sk-admin-` prefix) are an org-scoped credential
+  type that does not appear in the project key list, hence checked separately.
+- **Exactly one organization** (`Personal`), confirmed via the org switcher, so
+  no keys exist under a second org.
+- The account has exactly **one project**, created **Apr 25 2026**. The exposed
+  key was already committed in `functions/.env` as of the **Apr 8 2026** commit —
+  it therefore belonged to an earlier trial org/project that no longer exists.
+  A key whose issuing project is deleted is permanently rejected.
+- No Cloud Run service binds `OPENAI_API_KEY`; no Secret Manager entry exists.
+
+**Affected functions: none.** No deploy was performed and none was required —
+runtime behavior is unchanged, because AI categorization was already inert.
+
+**Deliberately not done:** the old key was *not* extracted from git history to
+test against `api.openai.com`. Doing so would mean handling the credential
+value. Absence from the account is sufficient proof of revocation.
+
+**Residual risk: none.** AI categorization remains inert until the Haiku port.
 
 Do **not** create an OpenAI account or project to do this. If you never had one,
 there is no key to revoke and this step is already complete.
@@ -164,17 +232,42 @@ imported — the SMS path was never built. The three `TWILIO_*` lines have been
 removed from `functions/.env`, so after that deploy the auth token is no longer
 present in any function's Cloud Run environment.
 
-**There is nothing to update or redeploy.** The token is still live and still in
-git history, so revoke it — it grants full account access, including sending SMS
-at your expense.
+**There is nothing to update or redeploy.**
 
-- [ ] <https://console.twilio.com> → Account → API keys & tokens
-- [ ] Delete the exposed auth token. (Twilio's usual zero-downtime dance —
-      create a secondary, promote, delete the old — is unnecessary here, since
-      nothing consumes it.)
-- [ ] Confirm it is dead:
-      `curl -s -o /dev/null -w "%{http_code}" https://api.twilio.com/2010-04-01/Accounts/ACCOUNT_SID.json -u ACCOUNT_SID:OLD_TOKEN`
-      → expect **401**
+- [x] <https://console.twilio.com> → Admin → Account settings
+- [x] **Account closed outright** rather than rotated.
+
+#### ✅ Closed 2026-08-02 — Twilio account terminated
+
+**Two corrections to what this section originally said:**
+
+1. **"Delete the exposed auth token" was not possible.** A Twilio *primary* Auth
+   Token cannot be deleted — every account always has one. It can only be
+   invalidated by rotation (create secondary → promote to primary), or by
+   terminating the account. Closing the account was chosen, since the user
+   confirmed no intent to use Twilio; it removes the credential *and* the
+   billing surface instead of superseding one live token with another.
+2. **The stated risk was overstated.** This section claimed the token granted
+   "full account access, including sending SMS at your expense." The console
+   showed an **unupgraded trial account** (`Trial: $5.1256`, "Upgraded Twilio
+   account" unchecked, no phone number provisioned). With no payment method on
+   file and trial sending restricted to verified caller IDs, maximum loss was
+   the ~$5.12 of trial credit — not open-ended billing.
+
+**Verification performed:** account closed via the Twilio console; closure
+confirmed by the user. Closure terminates the credential, so no live-token test
+was run — and could not be, since the token value is deliberately never handled.
+
+**Affected functions: none.** No code change, no deploy, no redeploy. The
+`TWILIO_*` variables were already absent from every Cloud Run service before
+this step began (see the preflight audit).
+
+**Residual risk: none.** The Account SID remains in git history; it is an
+identifier, not a credential, and its account no longer exists.
+
+**Follow-up, not blocking:** `twilio@^5.13.1` is still listed in
+`functions/package.json` but is never imported. Dead dependency — remove it
+alongside the other unused packages (`nodemailer@^8.0.4`) in a separate cleanup.
 
 ### 4. Remaining credentials
 

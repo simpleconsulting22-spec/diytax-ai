@@ -294,7 +294,13 @@ async function fetchExistingDedupeHashes(
 // ─── HTTPS callable wrapper ──────────────────────────────────────────────────
 
 export const ingestTransactions = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  {
+    secrets: ["ANTHROPIC_API_KEY"],
+    cors: true,
+    invoker: "public",
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
   async (request): Promise<IngestReport> => {
     const uid = await requireAuth(request);
     return ingestTransactionsCore(uid, request.data as IngestRequest);
