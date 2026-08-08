@@ -54,9 +54,12 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // MFA is only required for the account owner — shared users (spouse/accountant)
-  // authenticate with their own Firebase credentials and don't manage tax data directly.
-  if (!mfaVerified && role === "owner") {
+  // Every role enrols, including spouses and accountants. They read and write
+  // the owner's financial records, so prompting owners alone would leave that
+  // data reachable with a single factor through a shared account — and the
+  // Firestore rules require the claim of shared users too, so skipping the
+  // prompt for them would render the app unusable rather than merely laxer.
+  if (!mfaVerified) {
     // refreshMfaClaim re-mints the ID token so the new claim is actually in
     // hand. Flipping local state instead would clear the modal while every
     // Firestore read still failed the rule check.

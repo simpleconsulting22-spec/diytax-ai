@@ -31,17 +31,20 @@ service cloud.firestore {
           && request.time.toMillis() - request.auth.token.mfaVerifiedAt < 86400000;
     }
 
-    // Owners must have passed MFA. Shared users deliberately do not: they hold
-    // their own Firebase credentials and never enrol (AuthGuard prompts only
-    // for owners), so requiring it here would lock every spouse and accountant
-    // out of the account entirely.
+    // Every principal that reaches account data must have passed MFA — owners
+    // here, shared users in isSharedUser() below.
     function isOwner(ownerUid) {
       return request.auth != null && request.auth.uid == ownerUid && hasFreshMfa();
     }
 
+    // Shared users are held to the same second factor as owners. They read and
+    // write the owner's financial records, so exempting them would leave that
+    // data reachable with one factor through a spouse or accountant account —
+    // the weakest link sets the bar for the whole account, not the strongest.
     function isSharedUser(ownerUid) {
       let od = ownerDoc(ownerUid);
       return request.auth != null
+          && hasFreshMfa()
           && od.data.sharedUids != null
           && od.data.sharedUids.hasAny([request.auth.uid]);
     }

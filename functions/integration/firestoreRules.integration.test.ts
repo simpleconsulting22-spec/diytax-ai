@@ -302,9 +302,9 @@ describe("transactions", () => {
 //
 // Until the mfaVerifiedAt claim existed, MFA was React state restored from
 // localStorage: it gated the modal and nothing else, so a valid ID token read
-// everything without encountering it. These assert the gate is real — and that
-// it does NOT apply to shared users, who never enrol and would otherwise be
-// locked out of the account entirely.
+// everything without encountering it. These assert the gate is real, and that
+// it applies to every principal reaching account data — shared users included,
+// since a spouse or accountant reads and writes the same financial records.
 
 describe("MFA claim enforcement", () => {
   const TXN = { uid: OWNER, date: "2026-01-15", amount: -10, description: "X" };
@@ -334,20 +334,43 @@ describe("MFA claim enforcement", () => {
     await assertFails(setDoc(doc(db, "transactions", "txn-new"), TXN));
   });
 
-  it("a spouse without any MFA claim still has access", async () => {
-    // Shared users hold their own credentials and never enrol. Requiring the
-    // claim of them would lock every spouse and accountant out.
+  // Shared users are held to the same bar. They read and write the owner's
+  // financial records, so exempting them would leave that data reachable with
+  // one factor through a spouse or accountant account.
+
+  it("a spouse WITHOUT the claim is denied", async () => {
     const db = asUserWithoutMfa(SPOUSE, SPOUSE_EMAIL);
+    await assertFails(getDoc(doc(db, "transactions", "txn-1")));
+    await assertFails(setDoc(doc(db, "transactions", "txn-1"), { amount: -2 }, { merge: true }));
+  });
+
+  it("an accountant WITHOUT the claim is denied", async () => {
+    const db = asUserWithoutMfa(ACCOUNTANT, ACCOUNTANT_EMAIL);
+    await assertFails(getDoc(doc(db, "transactions", "txn-1")));
+    await assertFails(
+      setDoc(doc(db, "transactions", "txn-1"), { category: "Meals" }, { merge: true })
+    );
+  });
+
+  it("a spouse with an EXPIRED claim is denied", async () => {
+    const db = asUserWithoutMfa(SPOUSE, SPOUSE_EMAIL, true);
+    await assertFails(getDoc(doc(db, "transactions", "txn-1")));
+  });
+
+  it("a spouse WITH a fresh claim has access", async () => {
+    const db = asUser(SPOUSE, SPOUSE_EMAIL);
     await assertSucceeds(getDoc(doc(db, "transactions", "txn-1")));
     await assertSucceeds(setDoc(doc(db, "transactions", "txn-1"), { amount: -2 }, { merge: true }));
   });
 
-  it("an accountant without any MFA claim still has scoped access", async () => {
-    const db = asUserWithoutMfa(ACCOUNTANT, ACCOUNTANT_EMAIL);
-    await assertSucceeds(getDoc(doc(db, "transactions", "txn-1")));
+  it("an accountant WITH a fresh claim keeps its scoped access", async () => {
+    // MFA is a precondition, not a role change — the field allowlist still
+    // applies on top of it.
+    const db = asUser(ACCOUNTANT, ACCOUNTANT_EMAIL);
     await assertSucceeds(
       setDoc(doc(db, "transactions", "txn-1"), { category: "Meals" }, { merge: true })
     );
+    await assertFails(setDoc(doc(db, "transactions", "txn-1"), { amount: -1 }, { merge: true }));
   });
 
   it("the user doc stays readable without MFA, so the app can bootstrap", async () => {
