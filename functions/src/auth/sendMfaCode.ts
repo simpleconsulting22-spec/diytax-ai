@@ -1,3 +1,4 @@
+import { randomInt } from "crypto";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { requireAuth } from "../middleware/auth";
@@ -8,8 +9,13 @@ import {
 } from "../services/emailService";
 import { reserveMfaAttempt, MfaThrottleError } from "./mfaThrottle";
 
+/**
+ * Six digits from a CSPRNG. Math.random() is a seeded PRNG (xorshift128+ in
+ * V8), not a cryptographic one: its output stream is predictable from enough
+ * observed values, and an OTP is exactly the thing that must not be guessable.
+ */
 function generateCode(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(randomInt(100000, 1000000));
 }
 
 /**

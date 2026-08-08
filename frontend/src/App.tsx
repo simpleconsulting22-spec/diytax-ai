@@ -39,7 +39,7 @@ import AIParserPage from "./modules/parser/AIParserPage";
 import PWAInstallBanner from "./components/PWAInstallBanner";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, userDoc, loading, mfaVerified, setMfaVerified, role } = useAuth();
+  const { user, userDoc, loading, mfaVerified, refreshMfaClaim, role } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -57,7 +57,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   // MFA is only required for the account owner — shared users (spouse/accountant)
   // authenticate with their own Firebase credentials and don't manage tax data directly.
   if (!mfaVerified && role === "owner") {
-    return <MfaModal onVerified={() => setMfaVerified(true)} />;
+    // refreshMfaClaim re-mints the ID token so the new claim is actually in
+    // hand. Flipping local state instead would clear the modal while every
+    // Firestore read still failed the rule check.
+    return <MfaModal onVerified={refreshMfaClaim} />;
   }
 
   // Skip onboarding for shared users — they access the owner's data, not their own.

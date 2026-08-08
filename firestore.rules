@@ -14,8 +14,29 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(ownerUid));
     }
 
+    // Second factor, carried in the ID token as a custom claim set by
+    // verifyMfaCode.
+    //
+    // MFA used to exist only as React state restored from localStorage: the
+    // modal gated the UI and nothing else. Any caller holding a valid ID token
+    // — the SDK from a console, curl against the REST API, a stolen session —
+    // reached every document without ever seeing it. The claim moves the
+    // signal somewhere the client cannot write and the rules can read.
+    //
+    // Freshness is checked here rather than trusted from issuance, so a token
+    // minted long ago stops satisfying it without needing revocation.
+    function hasFreshMfa() {
+      return request.auth != null
+          && request.auth.token.mfaVerifiedAt is number
+          && request.time.toMillis() - request.auth.token.mfaVerifiedAt < 86400000;
+    }
+
+    // Owners must have passed MFA. Shared users deliberately do not: they hold
+    // their own Firebase credentials and never enrol (AuthGuard prompts only
+    // for owners), so requiring it here would lock every spouse and accountant
+    // out of the account entirely.
     function isOwner(ownerUid) {
-      return request.auth != null && request.auth.uid == ownerUid;
+      return request.auth != null && request.auth.uid == ownerUid && hasFreshMfa();
     }
 
     function isSharedUser(ownerUid) {
@@ -85,7 +106,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.uid);
       allow update: if canUpdateTransaction(resource.data.uid);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.uid
+                    && (isOwner(request.resource.data.uid)
                         || (isSharedUser(request.resource.data.uid)
                             && sharedRole(request.resource.data.uid) == 'spouse'));
       allow delete: if canDelete(resource.data.uid);
@@ -97,7 +118,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.uid);
       allow update: if canWrite(resource.data.uid);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.uid
+                    && (isOwner(request.resource.data.uid)
                         || (isSharedUser(request.resource.data.uid)
                             && sharedRole(request.resource.data.uid) == 'spouse'));
       allow delete: if canDelete(resource.data.uid);
@@ -109,7 +130,7 @@ service cloud.firestore {
     match /categoryRules/{doc} {
       allow read:   if canRead(resource.data.uid);
       allow create: if request.auth != null && isSharedUser(request.resource.data.uid)
-                    || request.auth != null && request.auth.uid == request.resource.data.uid;
+                    || request.auth != null && isOwner(request.resource.data.uid);
       allow update: if canWrite(resource.data.uid);
       allow delete: if canDelete(resource.data.uid);
     }
@@ -134,7 +155,7 @@ service cloud.firestore {
     match /typeRules/{doc} {
       allow read:   if canRead(resource.data.uid);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.uid
+                    && (isOwner(request.resource.data.uid)
                         || (isSharedUser(request.resource.data.uid)
                             && sharedRole(request.resource.data.uid) == 'spouse'));
       allow update: if canWrite(resource.data.uid);
@@ -148,7 +169,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.userId
+                    && (isOwner(request.resource.data.userId)
                         || (isSharedUser(request.resource.data.userId)
                             && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete: if canDelete(resource.data.userId);
@@ -159,7 +180,7 @@ service cloud.firestore {
     match /taxProfiles/{doc} {
       allow read:   if canRead(resource.data.uid);
       allow update: if canWrite(resource.data.uid);
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow create: if request.auth != null && isOwner(request.resource.data.uid);
       allow delete: if canDelete(resource.data.uid);
     }
 
@@ -168,7 +189,7 @@ service cloud.firestore {
     match /taxSessions/{doc} {
       allow read:   if canRead(resource.data.uid);
       allow update: if canWrite(resource.data.uid);
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow create: if request.auth != null && isOwner(request.resource.data.uid);
       allow delete: if canDelete(resource.data.uid);
     }
 
@@ -177,7 +198,7 @@ service cloud.firestore {
     match /userProfiles/{doc} {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow create: if request.auth != null && isOwner(request.resource.data.userId);
       allow delete: if canDelete(resource.data.userId);
     }
 
@@ -187,7 +208,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.userId
+                    && (isOwner(request.resource.data.userId)
                         || (isSharedUser(request.resource.data.userId)
                             && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete: if canDelete(resource.data.userId);
@@ -199,7 +220,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.userId
+                    && (isOwner(request.resource.data.userId)
                         || (isSharedUser(request.resource.data.userId)
                             && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete: if canDelete(resource.data.userId);
@@ -213,7 +234,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.userId
+                    && (isOwner(request.resource.data.userId)
                         || (isSharedUser(request.resource.data.userId)
                             && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete: if canDelete(resource.data.userId);
@@ -226,7 +247,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.userId);
       allow update: if canWrite(resource.data.userId);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.userId
+                    && (isOwner(request.resource.data.userId)
                         || (isSharedUser(request.resource.data.userId)
                             && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete: if canDelete(resource.data.userId);
@@ -241,7 +262,7 @@ service cloud.firestore {
       allow read:   if canRead(resource.data.uid);
       allow update: if canWrite(resource.data.uid);
       allow create: if request.auth != null
-                    && (request.auth.uid == request.resource.data.uid
+                    && (isOwner(request.resource.data.uid)
                         || (isSharedUser(request.resource.data.uid)
                             && sharedRole(request.resource.data.uid) == 'spouse'));
       allow delete: if canDelete(resource.data.uid);
@@ -253,7 +274,7 @@ service cloud.firestore {
     match /imports/{doc} {
       allow read:          if canRead(resource.data.userId);
       allow create, update: if request.auth != null
-                            && (request.auth.uid == request.resource.data.userId
+                            && (isOwner(request.resource.data.userId)
                                 || (isSharedUser(request.resource.data.userId)
                                     && sharedRole(request.resource.data.userId) == 'spouse'));
       allow delete:        if canDelete(resource.data.userId);
@@ -265,7 +286,7 @@ service cloud.firestore {
     match /categories/{doc} {
       allow read:   if canRead(resource.data.uid);
       allow create: if request.auth != null && isSharedUser(request.resource.data.uid)
-                    || request.auth != null && request.auth.uid == request.resource.data.uid;
+                    || request.auth != null && isOwner(request.resource.data.uid);
       allow update: if canWrite(resource.data.uid);
       allow delete: if canDelete(resource.data.uid);
     }

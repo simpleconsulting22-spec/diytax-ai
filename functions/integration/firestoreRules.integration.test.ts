@@ -80,10 +80,26 @@ beforeEach(async () => {
   });
 });
 
-/** Signed-in client whose token carries an email, as Firebase Auth issues. */
+/**
+ * Signed-in client whose token carries an email and a fresh MFA claim — what
+ * an owner holds after verifyMfaCode and a token refresh.
+ */
 function asUser(uid: string, email: string) {
-  return testEnv.authenticatedContext(uid, { email }).firestore();
+  return testEnv
+    .authenticatedContext(uid, { email, mfaVerifiedAt: Date.now() })
+    .firestore();
 }
+
+/**
+ * Signed in, but without a usable MFA claim. `stale` models a token minted
+ * more than the 24h TTL ago; the default models a session that never verified.
+ */
+function asUserWithoutMfa(uid: string, email: string, stale = false) {
+  const claims: Record<string, unknown> = { email };
+  if (stale) claims.mfaVerifiedAt = Date.now() - 25 * 60 * 60 * 1000;
+  return testEnv.authenticatedContext(uid, claims).firestore();
+}
+
 const asAnon = () => testEnv.unauthenticatedContext().firestore();
 
 async function seed(path: string, id: string, data: Record<string, unknown>) {
@@ -279,6 +295,66 @@ describe("transactions", () => {
     await assertFails(
       getDoc(doc(asUser(STRANGER, STRANGER_EMAIL), "transactions", "txn-1"))
     );
+  });
+});
+
+// ─── MFA as a data-layer gate ────────────────────────────────────────────────
+//
+// Until the mfaVerifiedAt claim existed, MFA was React state restored from
+// localStorage: it gated the modal and nothing else, so a valid ID token read
+// everything without encountering it. These assert the gate is real — and that
+// it does NOT apply to shared users, who never enrol and would otherwise be
+// locked out of the account entirely.
+
+describe("MFA claim enforcement", () => {
+  const TXN = { uid: OWNER, date: "2026-01-15", amount: -10, description: "X" };
+
+  beforeEach(() => seed("transactions", "txn-1", TXN));
+
+  it("an owner WITHOUT the claim cannot read their own data", async () => {
+    const db = asUserWithoutMfa(OWNER, OWNER_EMAIL);
+    await assertFails(getDoc(doc(db, "transactions", "txn-1")));
+  });
+
+  it("an owner with an EXPIRED claim cannot read", async () => {
+    // Freshness is re-checked per request, so an old token stops working
+    // without anyone having to revoke it.
+    const db = asUserWithoutMfa(OWNER, OWNER_EMAIL, true);
+    await assertFails(getDoc(doc(db, "transactions", "txn-1")));
+  });
+
+  it("an owner with a fresh claim can read", async () => {
+    await assertSucceeds(getDoc(doc(asUser(OWNER, OWNER_EMAIL), "transactions", "txn-1")));
+  });
+
+  it("an owner without the claim cannot write or delete either", async () => {
+    const db = asUserWithoutMfa(OWNER, OWNER_EMAIL);
+    await assertFails(setDoc(doc(db, "transactions", "txn-1"), { amount: -1 }, { merge: true }));
+    await assertFails(deleteDoc(doc(db, "transactions", "txn-1")));
+    await assertFails(setDoc(doc(db, "transactions", "txn-new"), TXN));
+  });
+
+  it("a spouse without any MFA claim still has access", async () => {
+    // Shared users hold their own credentials and never enrol. Requiring the
+    // claim of them would lock every spouse and accountant out.
+    const db = asUserWithoutMfa(SPOUSE, SPOUSE_EMAIL);
+    await assertSucceeds(getDoc(doc(db, "transactions", "txn-1")));
+    await assertSucceeds(setDoc(doc(db, "transactions", "txn-1"), { amount: -2 }, { merge: true }));
+  });
+
+  it("an accountant without any MFA claim still has scoped access", async () => {
+    const db = asUserWithoutMfa(ACCOUNTANT, ACCOUNTANT_EMAIL);
+    await assertSucceeds(getDoc(doc(db, "transactions", "txn-1")));
+    await assertSucceeds(
+      setDoc(doc(db, "transactions", "txn-1"), { category: "Meals" }, { merge: true })
+    );
+  });
+
+  it("the user doc stays readable without MFA, so the app can bootstrap", async () => {
+    // AuthContext reads users/{uid} to resolve role before the modal shows.
+    // Gating this would deadlock: no role, so no way to know MFA is needed.
+    const db = asUserWithoutMfa(OWNER, OWNER_EMAIL);
+    await assertSucceeds(getDoc(doc(db, "users", OWNER)));
   });
 });
 
