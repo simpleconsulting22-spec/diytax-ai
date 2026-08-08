@@ -1,5 +1,11 @@
 import * as admin from "firebase-admin";
-import OpenAI from "openai";
+import {
+  CANONICAL_CATEGORIES,
+  CATEGORIZATION_MODEL,
+  describeAnthropicError,
+  firstText,
+  getAnthropic,
+} from "./anthropicClient";
 import {
   buildAIPromptCategoryList,
   fallbackCategoryForType,
@@ -217,12 +223,59 @@ interface AIBatchItem {
   index: number;
   category: string;
   taxCategory: string;
-  taxSchedule: string;
   type: string;
   assignment: string;
   confidence: number;
   explanation: string;
 }
+
+/**
+ * Response shape enforced by the API, not requested in prose.
+ *
+ * `category` is an enum of every TAX_MAP category, so the model cannot emit a
+ * category the tax engine doesn't route. The exact/fuzzy/fallback ladder below
+ * is kept anyway — it still catches a stale enum after someone edits TAX_MAP,
+ * and it is what downgrades confidence so a doubtful row lands in needs_review.
+ *
+ * taxSchedule is deliberately absent: it is derived from TAX_MAP via
+ * scheduleForCategory(), so asking the model for it only creates a second,
+ * disagreeing source of truth.
+ */
+const BATCH_SCHEMA = {
+  type: "object",
+  properties: {
+    classifications: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer", description: "The [n] index of the transaction" },
+          category: { type: "string", enum: CANONICAL_CATEGORIES },
+          taxCategory: { type: "string", description: "Human-readable tax label" },
+          type: { type: "string", enum: ["income", "expense", "transfer", "refund"] },
+          assignment: { type: "string", description: "Entity name, or \"Personal\"" },
+          confidence: {
+            type: "number",
+            description: "0.60-0.90. Use a low value when genuinely unsure.",
+          },
+          explanation: { type: "string", description: "One sentence" },
+        },
+        required: [
+          "index",
+          "category",
+          "taxCategory",
+          "type",
+          "assignment",
+          "confidence",
+          "explanation",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["classifications"],
+  additionalProperties: false,
+};
 
 async function callAIBatch(
   transactions: Array<{ idx: number; txn: TransactionInput }>,
@@ -232,9 +285,9 @@ async function callAIBatch(
   const results = new Map<number, CategorizationResult>();
   if (transactions.length === 0) return results;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn("[CategorizationService] OPENAI_API_KEY not set — skipping AI.");
+  const anthropic = getAnthropic();
+  if (!anthropic) {
+    console.warn("[CategorizationService] ANTHROPIC_API_KEY not set — skipping AI.");
     return results;
   }
 
@@ -276,21 +329,30 @@ async function callAIBatch(
     `Categories (use EXACT spelling, including ampersands):\n` +
     `${buildAIPromptCategoryList()}\n\n` +
     `Transactions to classify:\n${txnLines.join("\n")}\n\n` +
-    `Return ONLY a valid JSON array, one object per transaction, no markdown:\n` +
-    `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer|refund>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
+    `Return one classification object per transaction, in the "classifications" array.`;
 
   try {
-    const openai = new OpenAI({ apiKey });
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 300 * transactions.length,
+    const message = await anthropic.messages.create({
+      model: CATEGORIZATION_MODEL,
+      max_tokens: Math.min(8192, 400 * transactions.length),
       temperature: 0,
+      output_config: { format: { type: "json_schema", schema: BATCH_SCHEMA } },
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-    const jsonText = raw.replace(/^```json?\s*/i, "").replace(/\s*```$/, "").trim();
-    const parsed = JSON.parse(jsonText) as AIBatchItem[];
+    if (message.stop_reason === "max_tokens") {
+      console.warn(
+        `[CategorizationService] response truncated at max_tokens for ${transactions.length} txns — leaving them for the next pass`
+      );
+      return results;
+    }
+
+    // output_config.format guarantees schema-valid JSON in the first text
+    // block, so there are no code fences to strip.
+    const parsed =
+      (JSON.parse(firstText(message) || '{"classifications":[]}') as {
+        classifications?: AIBatchItem[];
+      }).classifications ?? [];
 
     const validEntityNames = new Set([...entities.map((e) => e.name), "Personal"]);
 
@@ -349,7 +411,7 @@ async function callAIBatch(
       });
     }
   } catch (err) {
-    console.error("[CategorizationService] AI batch error:", err);
+    console.error("[CategorizationService] AI batch error:", describeAnthropicError(err));
   }
 
   return results;
