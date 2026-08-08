@@ -26,6 +26,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.17.1",
     "typescript": "^5.6.3",
     "vitest": "^4.1.10"
   }
