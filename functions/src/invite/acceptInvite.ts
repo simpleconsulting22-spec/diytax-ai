@@ -17,6 +17,25 @@ import { requireAuth } from "../middleware/auth";
  *   users/{callerUid}.role          → role
  *   invites/{inviteId}.status       → "accepted"
  */
+/** Fallback TTL for invites written before `expiresAt` was recorded. */
+const LEGACY_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Expiry instant for an invite, in epoch ms, or null when it cannot be
+ * established (treated by the caller as expired).
+ */
+function resolveExpiry(invite: admin.firestore.DocumentData): number | null {
+  if (typeof invite.expiresAt === "number" && Number.isFinite(invite.expiresAt)) {
+    return invite.expiresAt;
+  }
+  // createdAt is a Timestamp; toMillis() is the only shape written here.
+  const createdAt = invite.createdAt;
+  if (createdAt && typeof createdAt.toMillis === "function") {
+    return createdAt.toMillis() + LEGACY_INVITE_TTL_MS;
+  }
+  return null;
+}
+
 export const acceptInvite = onCall(
   { cors: true, invoker: "public" },
   async (request) => {
@@ -40,6 +59,21 @@ export const acceptInvite = onCall(
       throw new HttpsError("failed-precondition", "This invite has already been used.");
     }
 
+    // Reject an expired invite before doing anything else.
+    //
+    // Invites written before expiresAt existed are aged off their createdAt
+    // instead. A legacy invite with neither field is treated as expired rather
+    // than as immortal: these predate the read-rule fix on /invites, so any
+    // still-pending one must be assumed to have been enumerable. The owner can
+    // resend, which mints a fresh expiry.
+    const expiresAt = resolveExpiry(invite);
+    if (expiresAt === null || Date.now() > expiresAt) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This invite has expired. Ask the account owner to send a new one."
+      );
+    }
+
     // Verify the caller's email matches the invite.
     const authUser = await admin.auth().getUser(callerUid);
     const callerEmail = authUser.email?.toLowerCase() ?? "";
@@ -47,6 +81,22 @@ export const acceptInvite = onCall(
       throw new HttpsError(
         "permission-denied",
         "Your account email does not match the invited email address."
+      );
+    }
+
+    // The address must be *proven*, not merely claimed.
+    //
+    // Matching on email alone assumes the caller controls the address, and
+    // nothing established that: anyone who learned an invited address could
+    // register it with email/password and redeem the invite, because Firebase
+    // does not verify an address at signup. Federated providers (Google) set
+    // emailVerified themselves; password accounts get here via the
+    // verification mail the client sends at signup.
+    if (!authUser.emailVerified) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Please verify your email address before accepting this invite. " +
+          "Check your inbox for the verification link, then try again."
       );
     }
 

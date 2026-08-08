@@ -4,6 +4,7 @@ import {
   GoogleAuthProvider,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
 } from "firebase/auth";
 import { doc, setDoc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -69,6 +70,16 @@ export default function LoginPage() {
       if (mode === "signup") {
         const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
         await ensureUserDoc(result.user.uid, result.user.email);
+        // Password signups start unverified. acceptInvite requires a verified
+        // address, so send the link now rather than at accept time — otherwise
+        // an invited user reaches the accept screen with no way forward.
+        // Non-fatal: sign-up itself succeeded, and the invite screen offers a
+        // resend if this did not land.
+        try {
+          await sendEmailVerification(result.user);
+        } catch {
+          /* delivery is retryable from the accept screen */
+        }
       } else {
         const result = await signInWithEmailAndPassword(auth, email.trim(), password);
         await ensureUserDoc(result.user.uid, result.user.email);

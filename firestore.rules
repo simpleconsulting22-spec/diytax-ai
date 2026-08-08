@@ -205,6 +205,48 @@ service cloud.firestore {
       allow delete: if canDelete(resource.data.userId);
     }
 
+    // ── SSA Forms (SSA-1099 benefit entries) ──────────────────────────────────
+    // Client-managed from /income/ssa. Keyed by `userId`, matching the
+    // hook and the composite index in firestore.indexes.json.
+
+    match /ssaForms/{doc} {
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.userId
+                        || (isSharedUser(request.resource.data.userId)
+                            && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete: if canDelete(resource.data.userId);
+    }
+
+    // ── Retirement Forms (1099-R distribution entries) ────────────────────────
+    // Client-managed from /income/retirement. Keyed by `userId`.
+
+    match /retirementForms/{doc} {
+      allow read:   if canRead(resource.data.userId);
+      allow update: if canWrite(resource.data.userId);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.userId
+                        || (isSharedUser(request.resource.data.userId)
+                            && sharedRole(request.resource.data.userId) == 'spouse'));
+      allow delete: if canDelete(resource.data.userId);
+    }
+
+    // ── Planned Bills ─────────────────────────────────────────────────────────
+    // Manually entered upcoming bills on /spending-forecast. Keyed by `uid`
+    // (note: written with the caller's own uid, not the effective owner's, so
+    // a shared user's planned bills are their own).
+
+    match /plannedBills/{doc} {
+      allow read:   if canRead(resource.data.uid);
+      allow update: if canWrite(resource.data.uid);
+      allow create: if request.auth != null
+                    && (request.auth.uid == request.resource.data.uid
+                        || (isSharedUser(request.resource.data.uid)
+                            && sharedRole(request.resource.data.uid) == 'spouse'));
+      allow delete: if canDelete(resource.data.uid);
+    }
+
     // ── Imports ───────────────────────────────────────────────────────────────
     // Accountants cannot import data.
 
@@ -233,12 +275,21 @@ service cloud.firestore {
     // Invited users may read their own invite to display invite details.
 
     match /invites/{doc} {
-      // Pending invites are readable without auth — the invite ID is a secret token.
-      // Accepted/expired invites still require the owner or invited email to read.
-      allow read: if resource.data.status == "pending"
-                  || (request.auth != null
-                      && (request.auth.uid == resource.data.ownerUid
-                          || request.auth.token.email == resource.data.email));
+      // Reads require an authenticated owner or invited address — never the
+      // invite ID alone.
+      //
+      // `allow read` authorizes list queries as well as single-document gets,
+      // and the condition is evaluated per candidate document. A rule that let
+      // pending invites through unauthenticated therefore did not just expose
+      // a doc to whoever held its ID: an anonymous client could run
+      // `where("status", "==", "pending")` and page through every outstanding
+      // invite in the database, each one carrying the invited person's email
+      // address, the owner's uid, and — as the document ID — the token that
+      // acceptInvite consumes. Treating the ID as a secret does not hold when
+      // the collection can be enumerated.
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.ownerUid
+                      || request.auth.token.email == resource.data.email);
       allow write: if false;
     }
 
