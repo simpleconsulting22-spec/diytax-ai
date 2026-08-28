@@ -1,66 +1,68 @@
-# Email delivery setup (Amazon SES)
+# Email delivery setup (Resend)
 
 Outbound transactional email for DIYTax AI — MFA verification codes and team
-invitations — is delivered by **Amazon SES v2**. The sending address is
-`noreply@diytaxai.com`.
+invitations — is delivered by **Resend**. The sending address is
+`noreply@diytaxai.com`, shown to recipients as `DIYTax AI <noreply@diytaxai.com>`.
 
 **Email will not work until every step below is complete.** Specifically:
-SES domain verification, DKIM verification, SES production access approval,
-Firebase secret configuration, and function deployment. Until all five are
-done, sign-in via MFA remains unavailable.
+domain verification in Resend, DNS records published at Namecheap, the API key
+stored in Firebase Secret Manager, and the two functions redeployed. Until all
+four are done, sign-in via MFA remains unavailable.
 
 **Inbound mail is not affected.** `diytaxai.com` continues to receive mail
 through Namecheap email forwarding. Nothing in this procedure changes the
-root-domain MX records, and Namecheap **Mail Settings must stay on
-"Email Forwarding"** throughout. If any step appears to require changing that
-setting or the root MX records, stop — that is the wrong step.
+**root-domain** MX records, and Namecheap **Mail Settings must stay on
+"Email Forwarding"** throughout. Resend does ask for an MX record, but it goes
+on a **subdomain** — see §3, which is the one step in this document where a
+mistake can break your inbound mail.
 
 ---
 
-## 1. AWS account and region
+## Why Resend and not SES
 
-1. Create an AWS account at <https://aws.amazon.com>, or sign in to an existing
-   one. Use an account you control long-term.
-2. Choose **one** SES region and use it for everything that follows — identity
-   verification, IAM, credentials, metrics, and the `AWS_SES_REGION` value.
-   **`us-east-1` (N. Virginia)** is where `diytaxai.com` is verified, and is what
-   `functions/.env` assumes. Everything else — IAM policy ARN, access keys,
-   production access, metrics — must use the same region.
+AWS denied production access for this account, which leaves SES permanently in
+the sandbox: it will only deliver to individually verified recipient addresses,
+so real users can never receive an MFA code. Rather than appeal, the provider
+was swapped. Only `src/services/emailService.ts` changed — the two call sites,
+the MFA throttle, the log-safety rules, and the failure categories are the same
+as before, which is what that module's provider-independent shape was for.
 
-   An identity verified in one region does **not** exist in another. A region
-   mismatch between your verified domain and `AWS_SES_REGION` is the most common
-   cause of `MessageRejected` after an otherwise correct setup — the console
-   shows a healthy verified domain while every send is rejected.
-
-   Region choice is otherwise a weak preference: SES pricing, deliverability,
-   and sandbox/production access are identical across US regions. Note that AWS
-   region names are unrelated to Google's — the Cloud Functions run in
-   `us-central1` (Iowa), which neither constrains nor needs to match this.
-   Changing region after verification means generating and publishing three new
-   DKIM records, so treat it as fixed.
-
-3. Pricing: use SES **à-la-carte / on-demand** pricing, currently about
-   **$0.10 per 1,000 outbound messages** plus data charges. Do **not** subscribe
-   to any monthly SES plan. On-demand requires no opt-in — it is what you get by
-   default when you simply use the API. If the console offers a paid monthly
-   tier, decline it.
+The previous SES procedure is preserved in git history if it is ever needed.
 
 ---
 
-## 2. Verify `diytaxai.com` and enable Easy DKIM
+## 1. Create the Resend account
 
-1. In the AWS console, open **Amazon SES** and confirm the region selector shows
-   the region you chose in §1.
-2. Go to **Identities** → **Create identity**.
-3. Select **Domain**, enter `diytaxai.com`.
-4. Under **Advanced DKIM settings**, choose **Easy DKIM** with **RSA_2048_BIT**,
-   and leave **DKIM signatures** enabled.
-5. Click **Create identity**.
+1. Sign up at <https://resend.com>. A personal account is fine; use an address
+   you will keep long-term and enable two-factor authentication on it.
+2. There is no approval queue and no sandbox application. New accounts can send
+   immediately, with one restriction: **until a domain is verified you may only
+   send to your own account email address.** The application classifies that
+   rejection as `sandbox_restriction`, the same category the SES sandbox
+   produced, so the logs and troubleshooting table below are unchanged.
+3. Pricing: the free tier covers roughly 3,000 messages per month with a daily
+   cap, which is far above MFA-and-invitation volume. Check the current figures
+   on their pricing page rather than trusting this line. Do not subscribe to a
+   paid plan yet — there is nothing to gain at this volume.
 
-AWS now displays **three CNAME records**. Their hostnames and values are unique
-to your account and are generated at this moment — they cannot be looked up,
-guessed, or copied from documentation, including this one. Leave the page open
-and copy them verbatim in the next step.
+---
+
+## 2. Add and verify `diytaxai.com`
+
+1. Resend → **Domains** → **Add Domain**.
+2. Enter `diytaxai.com`. Choose a sending region when prompted; any US region is
+   fine, and unlike SES the choice does not have to match anything else in this
+   stack. It is not referenced anywhere in the code.
+3. Resend displays a set of DNS records — typically a **DKIM `TXT`** record, an
+   **SPF `TXT`** record, and an **`MX`** record, the last two on a `send`
+   subdomain. Their values are generated for your account at this moment and
+   cannot be looked up, guessed, or copied from documentation, including this
+   one. Leave the page open.
+
+**These are not the SES records.** If you already added the three SES DKIM
+CNAMEs, leave them where they are for now — they are inert once SES stops being
+called, and removing them mid-migration only adds a way to break things. Clean
+them up after §7 succeeds.
 
 ---
 
@@ -68,30 +70,41 @@ and copy them verbatim in the next step.
 
 1. Namecheap → **Domain List** → **Manage** next to `diytaxai.com` →
    **Advanced DNS**.
-2. For each of the three CNAME records AWS displayed, click **Add New Record**,
-   choose **CNAME Record**, and paste the host and value.
+2. Add each record Resend displayed, matching its type exactly.
 
 ### The Namecheap host-field gotcha
 
 Namecheap appends the domain automatically. Enter only the part **before**
 `.diytaxai.com`:
 
-| AWS shows | Enter in Namecheap's Host field |
+| Resend shows | Enter in Namecheap's Host field |
 |---|---|
-| `abc123._domainkey.diytaxai.com` | `abc123._domainkey` |
+| `resend._domainkey.diytaxai.com` | `resend._domainkey` |
+| `send.diytaxai.com` | `send` |
 
 Entering the full hostname produces `…diytaxai.com.diytaxai.com` and
 verification will never pass. This is the single most common failure here.
 
-Namecheap sometimes appends a trailing dot to CNAME values. That is normal and
-does not need removing.
+### The MX record — read this before adding it
 
-### These DKIM records cannot affect inbound mail
+Resend's `MX` record goes on the **`send` subdomain**, Host field `send`. It
+handles bounce and complaint returns for mail you send.
 
-DKIM records are `CNAME` entries on `*._domainkey` subdomains. Inbound mail
-routing is determined solely by `MX` records on the root domain. Adding CNAMEs
-on unrelated subdomains does not touch, override, or reorder those MX records,
-so your Namecheap forwarding is unaffected.
+- Host field must be `send`. **Never `@`.**
+- An MX record on `send` does not affect, override, or reorder the MX records on
+  the root domain, so your Namecheap inbound forwarding is untouched.
+- If any instruction — from Resend, from a support article, or from this
+  document as you read it — appears to require an MX record on `@`, or changing
+  **Mail Settings** away from **Email Forwarding**, stop. That is the wrong
+  step, and it is the one that takes down inbound mail to `@diytaxai.com`.
+
+### The SPF record on `send`
+
+The SPF `TXT` record also goes on the `send` subdomain. Do **not** add it to the
+root. The root currently publishes
+`v=spf1 include:spf.efwd.registrar-servers.com ~all`, and two SPF records on one
+host is a permanent error that breaks authentication for **all** mail, including
+your inbound forwarding.
 
 ### Do not touch these existing records
 
@@ -100,156 +113,49 @@ exactly as they are, and leave **Mail Settings** on **Email Forwarding**.
 
 ---
 
-## 4. Custom MAIL FROM subdomain (optional — skip unless justified)
+## 4. Wait for verification
 
-SES works fully without this. It only changes the envelope-sender domain used
-for SPF alignment, which slightly improves deliverability reputation for
-high-volume senders. At MFA-and-invitations volume the benefit is marginal and
-the added DNS surface is a real risk, so **the recommendation is to skip it**.
+1. Back in Resend → **Domains** → `diytaxai.com`.
+2. Wait until the status shows **Verified**. Resend re-checks automatically and
+   you can trigger a re-check from the page.
+3. Namecheap usually propagates within minutes; allow up to a few hours.
 
-If you later decide you need it, the only safe configuration is:
-
-- Use a dedicated subdomain such as `mail.diytaxai.com`.
-- Its `MX` and SPF `TXT` records go **on that subdomain only** — Host field
-  `mail`, never `@`.
-- Never add a second SPF record to the root. The root currently publishes
-  `v=spf1 include:spf.efwd.registrar-servers.com ~all`; two SPF records on one
-  host is a permanent error that breaks authentication for **all** mail,
-  including your inbound forwarding.
-- Never switch Mail Settings away from Email Forwarding to accommodate it.
+Until this shows Verified, sends to anything other than your own account address
+fail as `sandbox_restriction`.
 
 ---
 
-## 5. Wait for verification
+## 5. Create a restricted API key
 
-1. Back in SES → **Identities** → `diytaxai.com`.
-2. Wait until **Identity status** shows `Verified` **and** **DKIM configuration**
-   shows `Successful`. Both are required.
-3. Namecheap usually propagates within minutes; AWS may take up to 72 hours.
+1. Resend → **API Keys** → **Create API Key**.
+2. Name it `diytax-ai-functions`.
+3. Permission: **Sending access** — not Full access. The application only ever
+   posts to the send endpoint; it never needs to read logs, manage domains, or
+   create further keys.
+4. Restrict it to the `diytaxai.com` domain if the option is offered.
+5. Copy the key. Resend shows it **once**. It begins `re_`.
 
----
-
-## 6. Request SES production access
-
-New SES accounts start in the **sandbox**, where you can send **only to
-verified recipient addresses**. Your users' addresses are not verified, so in
-sandbox mode real sign-ins will fail. The application classifies this failure as
-`sandbox_restriction` in its logs.
-
-1. SES → **Account dashboard** → **Request production access**.
-2. Mail type: **Transactional**.
-3. Website URL: `https://diytaxai.com`.
-4. Use case description — this is truthful for this application; do not
-   embellish it:
-
-   > DIYTax AI is a personal tax-preparation web application. We send two types
-   > of transactional email only: six-digit multi-factor authentication codes
-   > requested by a user during sign-in, and team invitations explicitly
-   > initiated by an account owner to a spouse or accountant. All recipients are
-   > opt-in: they are either the account holder's own registered address or an
-   > address the account owner entered directly. We do not send marketing email
-   > and we do not use purchased, rented, or scraped lists. Initial volume is
-   > low — under 100 messages per day. We monitor bounce and complaint rates
-   > through the SES account dashboard and will act on the account-level
-   > suppression list. Recipients who no longer wish to receive invitations are
-   > removed at the account owner's request.
-
-5. Submit. AWS typically responds within 24 hours.
+Never paste the key into a source file, a commit, a screenshot, or a chat
+message. The application redacts strings matching the `re_` key pattern from its
+logs, but that is a backstop, not a substitute.
 
 ---
 
-## 7. Create a least-privilege IAM identity
+## 6. Store the key and deploy
 
-Never use your AWS root account credentials, and never reuse a personal access
-key. Create a dedicated identity that can do nothing except send through SES.
-
-1. IAM → **Policies** → **Create policy** → **JSON** tab.
-2. Paste the policy below, replacing `REGION` and `ACCOUNT_ID` with your values:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "SendThroughDiytaxaiSes",
-      "Effect": "Allow",
-      "Action": ["ses:SendEmail"],
-      "Resource": "arn:aws:ses:REGION:ACCOUNT_ID:identity/*"
-    }
-  ]
-}
-```
-
-> **Do not narrow `Resource` to `identity/diytaxai.com`.** It looks tighter and
-> it fails. In sandbox mode every recipient must itself be a verified SES
-> identity, and IAM evaluates `ses:SendEmail` against **the recipient's**
-> identity as well as the sender's. A policy naming only the sending domain is
-> denied with:
->
-> ```
-> User `arn:aws:iam::ACCOUNT_ID:user/diytax-ai-ses' is not authorized to perform
-> `ses:SendEmail' on resource `arn:aws:ses:REGION:ACCOUNT_ID:identity/<recipient>'
-> ```
->
-> The `identity/*` wildcard covers both. It also survives the move to production
-> access, where recipients stop being verified identities. A
-> `Condition` on `ses:FromAddress` is likewise best omitted — it adds a second
-> way to get an opaque `AccessDeniedException` for no meaningful gain.
-
-   This is as narrow as SES usefully permits: one action, SES only, one account,
-   one region. It grants no ability to read metrics, alter identities, manage
-   the suppression list, or create credentials. The only widening is to
-   identities *within your own account* — which are just `diytaxai.com` and any
-   addresses you verified yourself. `ses:SendEmail` is the action used by both the SES v1
-   `SendEmail` and the SES v2 `SendEmail` API that this application calls.
-
-3. Name it `diytax-ai-ses-send` and create it.
-4. IAM → **Users** → **Create user**, name `diytax-ai-ses`.
-   Do **not** grant console access.
-5. Attach the `diytax-ai-ses-send` policy directly to the user.
-6. Open the user → **Security credentials** → **Create access key** → choose
-   **Application running outside AWS**.
-7. Copy the **Access key ID** and **Secret access key**. AWS shows the secret
-   **once**.
-
-Never paste either value into a source file, a commit, a screenshot, or a chat
-message. The application redacts strings matching the AWS key-id pattern from
-its logs, but that is a backstop, not a substitute.
-
----
-
-## 8. Store credentials and region
-
-The Firebase CLI is not currently installed in this environment. If
-`firebase --version` fails, install it first:
+The key is a secret and belongs in Firebase Secret Manager, never in
+`functions/.env` — values in that file are deployed as plain Cloud Run
+environment variables, readable by anyone with project read access.
 
 ```bash
-npm install -g firebase-tools
-firebase login
+firebase functions:secrets:set RESEND_API_KEY
 ```
 
-Store the two credentials in Secret Manager. Neither prompt echoes what you
-paste:
+The prompt does not echo what you paste. Both `sendMfaCode` and `sendInvite`
+declare `secrets: ["RESEND_API_KEY"]`, so Firebase binds it at deploy time.
 
-```bash
-firebase functions:secrets:set AWS_SES_ACCESS_KEY_ID
-firebase functions:secrets:set AWS_SES_SECRET_ACCESS_KEY
-```
-
-The region is **not** a secret and follows this repo's existing `.env`
-convention. It is already set in `functions/.env`:
-
-```
-AWS_SES_REGION=us-east-1
-```
-
-Change it if you chose a different region in §1. Both `sendMfaCode` and
-`sendInvite` declare `secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"]`,
-so Firebase binds them at deploy time.
-
----
-
-## 9. Deploy
+There is no non-secret email configuration. The sending identity is a constant
+in `functions/src/services/emailService.ts`.
 
 Deploy only the two affected functions:
 
@@ -259,21 +165,14 @@ firebase deploy --only functions:sendMfaCode,functions:sendInvite
 
 ---
 
-## 10. Smoke tests
+## 7. Smoke tests
 
 1. **MFA:** sign in to the app and request a verification code. It should
    arrive, and the code should complete sign-in.
 2. **Invitation:** from **Manage Access**, invite an address you control. It
    should arrive with a working accept link.
-3. If an invitation is created but the email fails, the UI now says so
-   explicitly and shows the accept link for manual sharing — the invite is not
-   lost.
-
-### Check SES metrics
-
-SES → **Account dashboard** shows sending volume, bounce rate, and complaint
-rate. Keep bounces under 5% and complaints under 0.1%; AWS pauses accounts that
-exceed these.
+3. If an invitation is created but the email fails, the UI says so explicitly
+   and shows the accept link for manual sharing — the invite is not lost.
 
 ### Check authentication in Gmail
 
@@ -286,34 +185,56 @@ DKIM:  PASS
 DMARC: PASS
 ```
 
-`DKIM: PASS` confirms Easy DKIM is working. If DKIM fails, re-check the three
-CNAME records for the host-field mistake in §3.
+If DKIM fails while the domain shows Verified, re-check the `resend._domainkey`
+record for the host-field mistake in §3.
+
+### Check delivery in Resend
+
+Resend → **Emails** lists every send with its status, including bounces and
+complaints. This replaces the SES account dashboard.
 
 ### Server-side diagnostics
 
 ```bash
-gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="sendmfacode"' \
-  --project diytax-ai --limit 20 --freshness=1d \
-  --format="value(timestamp,textPayload,jsonPayload.message)"
+firebase functions:log --only sendMfaCode -n 30
 ```
 
 Failures log a safe category — one of `configuration_missing`,
 `authentication_failed`, `sandbox_restriction`, `sender_not_verified`,
 `recipient_rejected`, `throttled`, `quota_exceeded`, `provider_unavailable` —
-plus the AWS exception name and request ID. Raw AWS messages, recipient
+plus the Resend error token and request id. Raw provider messages, recipient
 addresses, message bodies, MFA codes, and credentials are never logged.
 
 ---
 
-## 11. Cost controls
+## 8. Clean up AWS
 
-SES bills **per recipient**, so every send costs money and repeated requests
-cost repeatedly.
+Once §7 passes, the SES credentials are unused and should stop existing.
+
+1. Destroy the secrets so no deployed revision can bind them:
+
+   ```bash
+   firebase functions:secrets:destroy AWS_SES_ACCESS_KEY_ID
+   firebase functions:secrets:destroy AWS_SES_SECRET_ACCESS_KEY
+   ```
+
+2. AWS → IAM → Users → `diytax-ai-ses` → **Security credentials** → deactivate,
+   then delete the access key. Delete the user and the
+   `diytax-ai-ses-send` policy.
+3. Namecheap → remove the three SES DKIM CNAME records on `*._domainkey`.
+   Leave the Resend records alone.
+4. Leave the root MX records and Mail Settings exactly as they are.
+
+Do this only after Resend is confirmed working, not before.
+
+---
+
+## 9. Cost controls
 
 ### MFA issuance limits (enforced server-side)
 
-`sendMfaCode` enforces these per authenticated uid, inside a Firestore
-transaction (`functions/src/auth/mfaThrottle.ts`):
+Unchanged by the provider swap. `sendMfaCode` enforces these per authenticated
+uid, inside a Firestore transaction (`functions/src/auth/mfaThrottle.ts`):
 
 | Limit | Value |
 |---|---|
@@ -321,110 +242,88 @@ transaction (`functions/src/auth/mfaThrottle.ts`):
 | Maximum per rolling 15 minutes | 5 |
 | Maximum per rolling 24 hours | 20 |
 
-This caps a single account at **20 SES sends per day**, or about $0.002/day at
-à-la-carte pricing. The ceiling is on the server, so it holds regardless of what
-the client does — calling the callable directly, bypassing the UI, or replaying
-a stolen session all hit the same limit.
+This caps a single account at **20 sends per day**. The ceiling is on the
+server, so it holds regardless of what the client does — calling the callable
+directly, bypassing the UI, or replaying a stolen session all hit the same
+limit.
 
 Operational implications worth knowing:
 
-- **A throttled request never reaches SES**, so it costs nothing.
-- **The attempt slot is reserved before SES is contacted and is not released if
-  delivery fails.** This is deliberate: releasing it would let a caller facing a
-  persistent SES error retry without limit and hammer the provider. The
-  trade-off is that during a genuine SES outage a user burns attempts without
-  receiving mail, and must wait out the cooldown. If SES is down, expect
-  `resource-exhausted` errors to follow the `provider_unavailable` ones in the
-  logs — that is the throttle working, not a second fault.
+- **A throttled request never reaches Resend**, so it costs nothing and consumes
+  no quota.
+- **The attempt slot is reserved before the provider is contacted and is not
+  released if delivery fails.** This is deliberate: releasing it would let a
+  caller facing a persistent provider error retry without limit. The trade-off
+  is that during a genuine outage a user burns attempts without receiving mail
+  and must wait out the cooldown. Expect `resource-exhausted` errors to follow
+  `provider_unavailable` ones in the logs — that is the throttle working, not a
+  second fault.
 - **The client is told only "too many requests, try again shortly."** Which
-  limit tripped, the counters, and the timestamps stay server-side, so the
-  limits cannot be mapped from outside.
+  limit tripped, the counters, and the timestamps stay server-side.
 - Throttle events log as `[sendMfaCode] throttled` with `reason` set to
   `cooldown`, `window`, or `daily`. A spike in `daily` for one uid is worth
   investigating as credential stuffing.
-- Attempt history is stored as a bounded array of at most 20 timestamps on the
-  existing `userSecurity/{uid}` document, pruned on every write. It cannot grow
-  without limit.
+- Attempt history is a bounded array of at most 20 timestamps on the existing
+  `userSecurity/{uid}` document, pruned on every write.
 
 Support note: a user legitimately locked out (for example, our mail was landing
 in spam and they retried 20 times) can be released by clearing `mfaAttempts` on
 their `userSecurity/{uid}` document.
 
-### Set a budget alert
+### Provider-side limits
 
-1. AWS **Billing and Cost Management** → **Budgets** → **Create budget**.
-2. Choose **Cost budget**, set a monthly amount such as **$5**.
-3. Add an alert at 80% of the budget, sent to an address you actually read.
-
-This is a free AWS feature and does not subscribe you to any monthly plan.
+The free tier has a monthly and a daily cap. Exceeding the daily cap returns
+`daily_quota_exceeded`, which the application classifies as `quota_exceeded` and
+does not retry. At current volume this should never trigger; if it does, it
+means either real growth or abuse, and both are worth looking at before simply
+upgrading the plan.
 
 ---
 
-## 12. Suppression list handling
+## 10. Bounce and complaint handling
 
-SES maintains an **account-level suppression list**. Addresses that hard-bounce
-or file a complaint are added automatically, and later sends to them are
-rejected without leaving SES — you are not charged, but the user receives
-nothing. The application classifies this as `recipient_rejected`.
+Resend maintains suppression automatically and surfaces bounces and complaints
+in the **Emails** view. Sends to an address that previously hard-bounced are
+rejected; the application classifies this as `recipient_rejected`.
 
 If a legitimate user reports never receiving codes:
 
-1. SES → **Suppression list** → search for their address.
-2. If listed, confirm the underlying problem is resolved (usually a typo'd or
-   since-fixed mailbox), then remove the entry.
-3. Removing an address that genuinely bounces will re-add it and damage your
-   bounce rate. Verify before removing.
-
-Note that the least-privilege IAM policy in §7 deliberately does **not** grant
-suppression-list access — perform this in the AWS console as an administrator.
+1. Resend → **Emails**, filter by their address.
+2. If the message shows delivered, the problem is spam filtering on their side —
+   check the SPF/DKIM/DMARC results in §7 first.
+3. If it shows bounced, confirm the underlying problem is resolved (usually a
+   typo'd or since-fixed mailbox) before retrying.
 
 ### Before scaling up
 
-Enable **bounce and complaint event publishing** (SES → **Configuration sets**)
-so these events reach a destination you monitor rather than only the dashboard.
-This is not required for the current milestone and is intentionally not wired up
-here, but it should be in place before meaningful user growth — an unnoticed
-bounce-rate climb is what gets SES accounts paused.
+Wire Resend's bounce and complaint **webhooks** to a destination you monitor
+rather than checking the dashboard by hand. This is not required for the current
+milestone and is intentionally not built here, but it should be in place before
+meaningful user growth — an unnoticed bounce-rate climb is what gets sending
+accounts suspended, at any provider.
 
 ---
 
-## 13. Rollback
+## 11. Rollback
 
-Nothing is deployed yet, so rollback before first deploy is simply: do not
-deploy.
+**Rolling back the code does not restore working email.** The previous revision
+called SES, which is sandbox-only for this account, and the revision before that
+called SendGrid, whose account has zero credits. Both fail. There is no working
+provider to roll back to, which is the reason for this migration.
 
-**After deploying, if SES misbehaves:**
+If Resend misbehaves, the paths are:
 
-1. **Redeploy the previous revision.** This is the fastest route and restores
-   the exact prior behavior:
-
-   ```bash
-   gcloud run services update-traffic sendmfacode --project diytax-ai \
-     --region us-central1 --to-revisions PREVIOUS_REVISION=100
-   gcloud run services update-traffic sendinvite --project diytax-ai \
-     --region us-central1 --to-revisions PREVIOUS_REVISION=100
-   ```
-
-   List revisions with:
-
-   ```bash
-   gcloud run revisions list --service sendmfacode --project diytax-ai --region us-central1
-   ```
-
-   Note that the previous revision used SendGrid, whose account has zero
-   credits — it will fail too. Rolling back restores prior *code*, not working
-   email.
-
-2. **Revert the code** with `git revert` on the migration commit, then rebuild
-   and redeploy.
-
-3. **Rotate credentials** if you suspect key exposure: create a new access key
-   in IAM, run the two `firebase functions:secrets:set` commands again,
-   redeploy, then deactivate and delete the old key in IAM.
+1. **Fix forward.** Check the logged category against the troubleshooting table
+   below; nearly every failure here is configuration, not code.
+2. **Rotate the key** if you suspect exposure: create a new key in Resend, run
+   `firebase functions:secrets:set RESEND_API_KEY` again, redeploy, then delete
+   the old key in Resend.
+3. **Share invite links manually.** `sendInvite` preserves the invite document
+   even when delivery fails and returns `emailSent: false`, so the owner can
+   still pass the accept link along. MFA has no such fallback.
 
 There is deliberately **no dual-provider fallback**. Carrying two live providers
-doubles the credential surface and the failure modes, and the rollback paths
-above are sufficient.
+doubles the credential surface and the failure modes.
 
 ---
 
@@ -432,12 +331,13 @@ above are sufficient.
 
 | Symptom | Likely cause |
 |---|---|
-| Log shows `configuration_missing` | A secret was not set, or the function was not redeployed after setting it |
-| Log shows `authentication_failed` | Access key wrong, deactivated, or the IAM policy does not permit `ses:SendEmail` |
-| Log shows `sandbox_restriction` | Production access not yet granted — SES can only reach verified recipients |
-| Log shows `sender_not_verified` | Domain not verified, or verified in a different region than `AWS_SES_REGION` |
-| Log shows `recipient_rejected` | Address is on the account suppression list (§12) |
-| Log shows `throttled` / `quota_exceeded` | Sending rate or daily quota exceeded; the app does not retry these by design |
+| Log shows `configuration_missing` | `RESEND_API_KEY` was not set, or the functions were not redeployed after setting it |
+| Log shows `authentication_failed` | Key wrong, deleted, or created with read-only rather than sending permission |
+| Log shows `sandbox_restriction` | Domain not yet verified — Resend only allows sending to your own account address until it is |
+| Log shows `sender_not_verified` | Domain verification lapsed, or a DNS record was removed |
+| Log shows `recipient_rejected` | Address previously hard-bounced or filed a complaint (§10) |
+| Log shows `throttled` / `quota_exceeded` | Provider rate or daily cap hit; the app does not retry these by design |
+| Log shows `provider_unavailable` | Network failure, request timeout (10s), or a Resend 5xx |
 | Domain stuck unverified | Host field likely contains the full domain instead of just the subdomain part (§3) |
-| DKIM fails in Gmail but identity is Verified | One of the three CNAMEs is missing or mistyped |
-| Inbound mail to `@diytaxai.com` stopped | Root MX records or Mail Settings were changed — restore `eforward1–5.registrar-servers.com` and set Mail Settings back to Email Forwarding |
+| DKIM fails in Gmail but domain is Verified | The `resend._domainkey` record is missing or mistyped |
+| Inbound mail to `@diytaxai.com` stopped | An MX record was added to `@` instead of `send`, or Mail Settings was changed — restore `eforward1–5.registrar-servers.com` and set Mail Settings back to Email Forwarding (§3) |

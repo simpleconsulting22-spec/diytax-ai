@@ -51,8 +51,11 @@ value in `functions/.env`. That is a smaller blast radius than Git history but
 it is not nothing.
 
 Non-secret values needing no action: `PLAID_ENV`, `APP_URL`,
-`PLAID_WEBHOOK_URL`, `PLAID_REDIRECT_URI`, `SENDGRID_FROM_EMAIL`,
-`AWS_SES_REGION`.
+`PLAID_WEBHOOK_URL`, `PLAID_REDIRECT_URI`, `SENDGRID_FROM_EMAIL`.
+
+Email configuration has no non-secret component: the provider is Resend and its
+only setting, `RESEND_API_KEY`, is a Secret Manager secret. `AWS_SES_REGION` has
+been removed from `functions/.env` (see docs/EMAIL_SETUP.md).
 
 `frontend/.env` is also tracked, but its `VITE_FIREBASE_*` values are public by
 design — they ship inside the client JavaScript bundle and are meant to be
@@ -98,8 +101,8 @@ credential is deployed and verified — that is what makes it zero-downtime.
 > 7. Final deploy + audit confirming no plaintext env var remains.
 >
 > Leave `PLAID_CLIENT_ID`, `PLAID_ENV`, `PLAID_WEBHOOK_URL`,
-> `PLAID_REDIRECT_URI`, `APP_URL`, and `AWS_SES_REGION` in place. They are
-> non-sensitive configuration.
+> `PLAID_REDIRECT_URI`, and `APP_URL` in place. They are non-sensitive
+> configuration.
 
 ## Rotation order
 
@@ -211,11 +214,15 @@ firebase deploy --project diytax-ai --only \
 functions:createPlaidLinkToken,functions:exchangePublicToken,functions:fetchTransactions,functions:backfillTransactionTypes,functions:repairPlaidData,functions:setAccountSignConvention,functions:deletePlaidAccount,functions:diagnoseSignDistribution,functions:verifyAndFixPlaidData,functions:adminWipeBankData,functions:plaidWebhook,functions:scheduledPlaidSync,functions:syncAllPlaidAccounts
 ```
 
-**`AWS_SES_ACCESS_KEY_ID` / `AWS_SES_SECRET_ACCESS_KEY`** — 2 functions
+**`RESEND_API_KEY`** — 2 functions
 
 ```bash
 firebase deploy --project diytax-ai --only functions:sendMfaCode,functions:sendInvite
 ```
+
+The former `AWS_SES_ACCESS_KEY_ID` / `AWS_SES_SECRET_ACCESS_KEY` secrets are no
+longer bound by any function. Destroy them and delete the underlying IAM access
+key at AWS — see §8 of docs/EMAIL_SETUP.md.
 
 ### Final audit deploy — last, not first
 
@@ -254,12 +261,11 @@ not take for that function.
 ## Recommended follow-up: move secrets out of `.env`
 
 `functions/.env` values are deployed as plain Cloud Run environment variables,
-readable by anyone with project read access. The SES credentials added in this
-migration deliberately use Firebase Secret Manager instead:
+readable by anyone with project read access. The email credential deliberately
+uses Firebase Secret Manager instead:
 
 ```bash
-firebase functions:secrets:set AWS_SES_ACCESS_KEY_ID
-firebase functions:secrets:set AWS_SES_SECRET_ACCESS_KEY
+firebase functions:secrets:set RESEND_API_KEY
 ```
 
 Migrating `PLAID_SECRET`, `TWILIO_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` to the

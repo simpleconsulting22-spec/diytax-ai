@@ -131,7 +131,7 @@ describe("sendMfaCode", () => {
 
     it("does not release the reserved attempt when the provider fails", async () => {
       sendEmailMock.mockRejectedValue(
-        new EmailDeliveryError("throttled", { providerName: "ses" })
+        new EmailDeliveryError("throttled", { providerName: "resend" })
       );
 
       await run().catch(() => undefined);
@@ -147,8 +147,8 @@ describe("sendMfaCode", () => {
   it("throws a generic temporary-unavailable error and does not report success", async () => {
     sendEmailMock.mockRejectedValue(
       new EmailDeliveryError("sender_not_verified", {
-        providerName: "ses",
-        providerErrorName: "MailFromDomainNotVerifiedException",
+        providerName: "resend",
+        providerErrorName: "validation_error",
         requestId: "req-1",
       })
     );
@@ -160,13 +160,13 @@ describe("sendMfaCode", () => {
     expect(err.message).toBe(
       "Verification email could not be sent right now. Please try again shortly."
     );
-    // Nothing about SES state may be probed from the client.
+    // Nothing about provider state may be probed from the client.
     expect(err.message).not.toContain("sender_not_verified");
-    expect(err.message).not.toContain("MailFromDomainNotVerified");
+    expect(err.message).not.toContain("validation_error");
   });
 
   it("returns the same generic error for a configuration failure", async () => {
-    sendEmailMock.mockRejectedValue(new EmailConfigError("AWS_SES_REGION"));
+    sendEmailMock.mockRejectedValue(new EmailConfigError("RESEND_API_KEY"));
 
     const err = await rejection<HttpsError>(run());
 
@@ -175,14 +175,14 @@ describe("sendMfaCode", () => {
     expect(err.message).toBe(
       "Verification email could not be sent right now. Please try again shortly."
     );
-    expect(err.message).not.toContain("AWS_SES_REGION");
+    expect(err.message).not.toContain("RESEND_API_KEY");
   });
 
   it("logs the safe category, provider error name and request id", async () => {
     sendEmailMock.mockRejectedValue(
       new EmailDeliveryError("throttled", {
-        providerName: "ses",
-        providerErrorName: "TooManyRequestsException",
+        providerName: "resend",
+        providerErrorName: "rate_limit_exceeded",
         requestId: "req-42",
       })
     );
@@ -194,7 +194,7 @@ describe("sendMfaCode", () => {
       expect.objectContaining({
         operation: "sendMfaCode",
         category: "throttled",
-        providerErrorName: "TooManyRequestsException",
+        providerErrorName: "rate_limit_exceeded",
         requestId: "req-42",
         uid: "user-1",
       })

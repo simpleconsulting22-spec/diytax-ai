@@ -29,16 +29,13 @@ function generateCode(): string {
  * is not released if delivery fails.
  *
  * Required secrets (Firebase Secret Manager):
- *   AWS_SES_ACCESS_KEY_ID
- *   AWS_SES_SECRET_ACCESS_KEY
- * Required non-secret config (functions/.env):
- *   AWS_SES_REGION
+ *   RESEND_API_KEY
  */
 export const sendMfaCode = onCall(
   {
     cors: true,
     invoker: "public",
-    secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"],
+    secrets: ["RESEND_API_KEY"],
   },
   async (request) => {
     const uid = await requireAuth(request);
