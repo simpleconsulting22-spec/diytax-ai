@@ -31,7 +31,7 @@ vi.mock("../src/services/emailService", async (importOriginal) => {
   return { ...actual, sendEmail: sendEmailMock };
 });
 
-import { sendInvite } from "../src/invite/sendInvite";
+import { sendInvite, INVITE_TTL_MS } from "../src/invite/sendInvite";
 import { EmailDeliveryError } from "../src/services/emailService";
 
 const REQUEST = {
@@ -140,13 +140,48 @@ describe("sendInvite", () => {
   });
 
   it("reuses a pending invite instead of creating a duplicate", async () => {
-    existingGetMock.mockResolvedValue({ empty: false, docs: [{ id: "existing-1" }] });
+    const updateMock = vi.fn().mockResolvedValue(undefined);
+    existingGetMock.mockResolvedValue({
+      empty: false,
+      docs: [{ id: "existing-1", ref: { update: updateMock } }],
+    });
     sendEmailMock.mockResolvedValue({ id: "msg_1" });
 
     const result = await run();
 
     expect(result).toEqual({ inviteId: "existing-1", alreadyPending: true, emailSent: true });
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it("stamps an expiry matching the 7 days the email promises", async () => {
+    sendEmailMock.mockResolvedValue({ id: "msg_1" });
+    const before = Date.now();
+
+    await run();
+
+    const written = addMock.mock.calls[0][0] as { expiresAt: number };
+    const after = Date.now();
+
+    expect(written.expiresAt).toBeGreaterThanOrEqual(before + INVITE_TTL_MS);
+    expect(written.expiresAt).toBeLessThanOrEqual(after + INVITE_TTL_MS);
+    // The claim in the body is only true because of the field above.
+    expect(sendEmailMock.mock.calls[0][0].html).toContain("expires in 7 days");
+  });
+
+  it("extends the expiry when an existing invite is resent", async () => {
+    const updateMock = vi.fn().mockResolvedValue(undefined);
+    existingGetMock.mockResolvedValue({
+      empty: false,
+      docs: [{ id: "existing-1", ref: { update: updateMock } }],
+    });
+    sendEmailMock.mockResolvedValue({ id: "msg_1" });
+    const before = Date.now();
+
+    await run();
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const { expiresAt } = updateMock.mock.calls[0][0] as { expiresAt: number };
+    expect(expiresAt).toBeGreaterThanOrEqual(before + INVITE_TTL_MS);
   });
 
   it("masks the recipient address in logs and redacts provider secrets", async () => {

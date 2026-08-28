@@ -14,16 +14,20 @@ import { sendEmail, maskEmail, describeEmailFailure } from "../services/emailSer
  * a resolved promise means the email went out.
  *
  * Required secrets (Firebase Secret Manager):
- *   AWS_SES_ACCESS_KEY_ID
- *   AWS_SES_SECRET_ACCESS_KEY
- * Required non-secret config (functions/.env):
- *   AWS_SES_REGION
+ *   RESEND_API_KEY
  */
+/**
+ * How long an invite link stays usable. Must match the "expires in 7 days"
+ * line in the email body below — before this existed the email made that claim
+ * and nothing enforced it, so every invite ever sent stayed redeemable.
+ */
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export const sendInvite = onCall(
   {
     cors: true,
     invoker: "public",
-    secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"],
+    secrets: ["RESEND_API_KEY"],
   },
   async (request) => {
     const ownerUid = await requireAuth(request);
@@ -58,10 +62,19 @@ export const sendInvite = onCall(
     let inviteId: string;
     let alreadyPending: boolean;
 
+    // Epoch milliseconds rather than a Timestamp, matching mfaCodeExpiry: the
+    // value has to be readable back and compared inside acceptInvite, and a
+    // serverTimestamp sentinel cannot be. Time comes from the server process,
+    // never from the client.
+    const expiresAt = Date.now() + INVITE_TTL_MS;
+
     if (!existing.empty) {
-      // Reuse the existing invite doc and resend the email.
+      // Reuse the existing invite doc and resend the email. The expiry is
+      // extended to match the freshly sent link — the recipient is being told
+      // "expires in 7 days" again, so the document has to agree.
       inviteId = existing.docs[0].id;
       alreadyPending = true;
+      await existing.docs[0].ref.update({ expiresAt });
       console.log("[sendInvite] resending to existing invite", inviteId);
     } else {
       const inviteRef = await db.collection("invites").add({
@@ -71,6 +84,7 @@ export const sendInvite = onCall(
         ownerName,
         status: "pending",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt,
       });
       inviteId = inviteRef.id;
       alreadyPending = false;

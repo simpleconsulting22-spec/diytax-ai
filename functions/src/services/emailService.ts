@@ -1,23 +1,40 @@
-import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
-
 /**
  * Provider-independent transactional email service.
  *
  * Call sites depend only on {@link sendEmail}, {@link EmailConfigError} and
  * {@link EmailDeliveryError}, so swapping providers means replacing
- * {@link AmazonSesProvider} and nothing else.
+ * {@link ResendProvider} and nothing else.
  *
  * Required configuration:
- *   AWS_SES_ACCESS_KEY_ID      (Firebase Secret Manager)
- *   AWS_SES_SECRET_ACCESS_KEY  (Firebase Secret Manager)
- *   AWS_SES_REGION             (non-secret, functions/.env)
+ *   RESEND_API_KEY  (Firebase Secret Manager)
  *
  * Functions that send mail must declare:
- *   secrets: ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"]
+ *   secrets: ["RESEND_API_KEY"]
+ *
+ * Resend is called over its REST API with the runtime's built-in fetch rather
+ * than the `resend` SDK. The SDK reports failures as a returned `{ error }`
+ * object instead of throwing, which would quietly bypass the delivery-failure
+ * path every call site depends on; going direct also keeps the classification
+ * below authoritative and drops a dependency from the MFA cold-start path.
  */
 
-/** Verified SES sending identity. Inbound mail for this domain is unaffected. */
+/** Verified Resend sending identity. Inbound mail for this domain is unaffected. */
 export const FROM_ADDRESS = "noreply@diytaxai.com";
+
+/** Display name shown to recipients. */
+export const FROM_NAME = "DIYTax AI";
+
+/** RFC 5322 From header value. */
+export const FROM_HEADER = `${FROM_NAME} <${FROM_ADDRESS}>`;
+
+const RESEND_ENDPOINT = "https://api.resend.com/emails";
+
+/**
+ * Ceiling on a single send. Cloud Functions bill for wall-clock time and the
+ * MFA path is user-facing, so a hung provider connection must fail fast rather
+ * than hold the invocation open to its own timeout.
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface EmailMessage {
   to: string;
@@ -62,8 +79,8 @@ export class EmailConfigError extends Error {
 /**
  * The provider rejected the message, or acceptance could not be confirmed.
  *
- * Deliberately carries no provider message text. `providerErrorName` is an
- * AWS exception type name (e.g. `MessageRejected`), not response content.
+ * Deliberately carries no provider message text. `providerErrorName` is a
+ * Resend error type token (e.g. `validation_error`), not response content.
  */
 export class EmailDeliveryError extends Error {
   readonly category: EmailErrorCategory;
@@ -74,7 +91,7 @@ export class EmailDeliveryError extends Error {
   constructor(
     category: EmailErrorCategory,
     options: { providerName: string; providerErrorName?: string; requestId?: string } = {
-      providerName: "ses",
+      providerName: "resend",
     }
   ) {
     super(`Email delivery failed (${category}).`);
@@ -91,6 +108,12 @@ export interface EmailProvider {
   send(message: EmailMessage): Promise<EmailSendResult>;
 }
 
+/**
+ * Provider API-key shapes. Resend keys are `re_`-prefixed; the AWS pattern is
+ * retained because SES keys may still sit in the environment of a not-yet
+ * redeployed revision, and a stale credential in a log is still a leak.
+ */
+const RESEND_KEY_PATTERN = /\bre_[A-Za-z0-9_-]{8,}\b/g;
 const AWS_KEY_PATTERN = /\b(?:AKIA|ASIA|AIDA|AROA)[0-9A-Z]{16}\b/g;
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const MAX_LOG_LENGTH = 500;
@@ -108,11 +131,11 @@ export function maskEmail(email: string): string {
 }
 
 /**
- * Renders an arbitrary value into a bounded, log-safe string with AWS access
- * key ids redacted and email addresses masked.
+ * Renders an arbitrary value into a bounded, log-safe string with provider API
+ * keys redacted and email addresses masked.
  *
- * Used only for unexpected non-AWS failures (e.g. network errors). Classified
- * SES failures are logged by category and never routed through here.
+ * Used only for unexpected failures (e.g. network errors). Classified provider
+ * failures are logged by category and never routed through here.
  */
 export function sanitizeForLog(value: unknown): string {
   let text: string;
@@ -128,67 +151,70 @@ export function sanitizeForLog(value: unknown): string {
     }
   }
   return text
-    .replace(AWS_KEY_PATTERN, "[REDACTED_AWS_KEY]")
+    .replace(RESEND_KEY_PATTERN, "[REDACTED_API_KEY]")
+    .replace(AWS_KEY_PATTERN, "[REDACTED_API_KEY]")
     .replace(EMAIL_PATTERN, (match) => maskEmail(match))
     .slice(0, MAX_LOG_LENGTH);
 }
 
-interface AwsErrorShape {
+/** Error body Resend returns on a non-2xx response. */
+interface ResendErrorShape {
   name?: string;
   message?: string;
-  $metadata?: { requestId?: string; httpStatusCode?: number };
+  statusCode?: number;
 }
 
 /**
- * Maps an SES exception onto a safe category.
+ * Maps a Resend API error onto a safe category.
  *
- * The AWS exception *name* is a fixed type token and is safe to retain; the
- * `message` is inspected here only to disambiguate `MessageRejected`, and is
- * never propagated.
+ * The error `name` is a fixed type token and is safe to retain; `message` is
+ * inspected here only to disambiguate the overloaded `validation_error` and
+ * `not_found` tokens, and is never propagated.
  */
-export function classifySesError(err: unknown): EmailErrorCategory {
-  const aws = (err ?? {}) as AwsErrorShape;
-  const name = aws.name ?? "";
-  const message = aws.message ?? "";
-  const status = aws.$metadata?.httpStatusCode ?? 0;
+export function classifyResendError(err: unknown, httpStatus = 0): EmailErrorCategory {
+  const body = (err ?? {}) as ResendErrorShape;
+  const name = body.name ?? "";
+  const message = body.message ?? "";
+  const status = httpStatus || body.statusCode || 0;
 
   switch (name) {
-    case "UnrecognizedClientException":
-    case "InvalidClientTokenId":
-    case "SignatureDoesNotMatch":
-    case "IncompleteSignature":
-    case "MissingAuthenticationToken":
-    case "InvalidSignatureException":
-    case "AccessDeniedException":
-    case "AccessDenied":
+    case "missing_api_key":
+    case "invalid_api_key":
+    case "restricted_api_key":
       return "authentication_failed";
 
-    case "MailFromDomainNotVerifiedException":
+    case "invalid_from_address":
       return "sender_not_verified";
 
-    case "TooManyRequestsException":
-    case "ThrottlingException":
-    case "Throttling":
+    case "invalid_to_address":
+      return "recipient_rejected";
+
+    case "rate_limit_exceeded":
       return "throttled";
 
-    case "LimitExceededException":
-    case "SendingPausedException":
-    case "AccountSuspendedException":
+    case "daily_quota_exceeded":
       return "quota_exceeded";
 
-    case "MessageRejected": {
-      // In sandbox, SES rejects unverified *recipients* with this phrasing.
-      if (/identities failed the check/i.test(message)) {
-        // If the rejected identity is our own sender, the sender is unverified.
-        return message.includes(FROM_ADDRESS) ? "sender_not_verified" : "sandbox_restriction";
+    case "internal_server_error":
+    case "application_error":
+      return "provider_unavailable";
+
+    // Both tokens are overloaded across unrelated conditions, so the message is
+    // the only signal that separates an unverified sender from a rejected
+    // recipient. Checked in order of operational significance.
+    case "validation_error":
+    case "not_found": {
+      // Until the sending domain is verified, Resend accepts mail only to the
+      // account owner's own address — the analogue of the SES sandbox.
+      if (/only send testing emails|own email address/i.test(message)) {
+        return "sandbox_restriction";
       }
-      if (/suppress/i.test(message)) return "recipient_rejected";
-      if (/not verified/i.test(message)) return "sandbox_restriction";
+      if (/domain is not verified|not verified|domain.*not found/i.test(message)) {
+        return "sender_not_verified";
+      }
+      if (/suppress|bounce|complaint/i.test(message)) return "recipient_rejected";
       return "recipient_rejected";
     }
-
-    case "BadRequestException":
-      return "recipient_rejected";
   }
 
   if (status === 401 || status === 403) return "authentication_failed";
@@ -196,68 +222,75 @@ export function classifySesError(err: unknown): EmailErrorCategory {
   return "provider_unavailable";
 }
 
-class AmazonSesProvider implements EmailProvider {
-  readonly name = "ses";
-  private readonly region: string;
-  private readonly accessKeyId: string;
-  private readonly secretAccessKey: string;
+class ResendProvider implements EmailProvider {
+  readonly name = "resend";
+  private readonly apiKey: string;
 
-  constructor(config: { region: string; accessKeyId: string; secretAccessKey: string }) {
-    this.region = config.region;
-    this.accessKeyId = config.accessKeyId;
-    this.secretAccessKey = config.secretAccessKey;
+  constructor(config: { apiKey: string }) {
+    this.apiKey = config.apiKey;
   }
 
   async send(message: EmailMessage): Promise<EmailSendResult> {
-    // Constructed per send: secrets are only bound at invocation time.
-    const client = new SESv2Client({
-      region: this.region,
-      credentials: {
-        accessKeyId: this.accessKeyId,
-        secretAccessKey: this.secretAccessKey,
-      },
-      // The SDK retries throttling and 5xx by default. Retrying a quota,
-      // throttle, auth, sandbox or rejected-recipient failure only multiplies
-      // cost and pressure, so retries are disabled at this layer.
-      maxAttempts: 1,
-    });
-
-    const command = new SendEmailCommand({
-      FromEmailAddress: FROM_ADDRESS,
-      Destination: { ToAddresses: [message.to] },
-      Content: {
-        Simple: {
-          Subject: { Data: message.subject, Charset: "UTF-8" },
-          Body: {
-            Html: { Data: message.html, Charset: "UTF-8" },
-            ...(message.text
-              ? { Text: { Data: message.text, Charset: "UTF-8" } }
-              : {}),
-          },
-        },
-      },
-    });
-
-    let response: { MessageId?: string };
+    let response: Response;
     try {
-      response = await client.send(command);
+      // Exactly one attempt. Retrying a quota, throttle, auth, unverified-sender
+      // or rejected-recipient failure only multiplies cost and provider
+      // pressure, so no retry is layered on here.
+      response = await fetch(RESEND_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: FROM_HEADER,
+          to: [message.to],
+          subject: message.subject,
+          html: message.html,
+          ...(message.text ? { text: message.text } : {}),
+        }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
-      const aws = (err ?? {}) as AwsErrorShape;
-      throw new EmailDeliveryError(classifySesError(err), {
+      // Network failure or timeout — the request never produced a status, so
+      // nothing about acceptance is known.
+      throw new EmailDeliveryError("provider_unavailable", {
         providerName: this.name,
-        providerErrorName: aws.name,
-        requestId: aws.$metadata?.requestId,
+        providerErrorName: err instanceof Error ? err.name : "FetchFailed",
       });
     }
 
-    // Acceptance is only proven by a MessageId.
-    if (!response?.MessageId) {
+    // Resend echoes a request id header on both success and failure paths; it
+    // is an opaque correlation token, safe to log and the only handle support
+    // can act on.
+    const requestId = response.headers.get("x-request-id") ?? undefined;
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+
+    if (!response.ok) {
+      const shape = (body ?? {}) as ResendErrorShape;
+      throw new EmailDeliveryError(classifyResendError(shape, response.status), {
+        providerName: this.name,
+        providerErrorName: shape.name,
+        requestId,
+      });
+    }
+
+    // Acceptance is only proven by an id.
+    const id = (body as { id?: string } | undefined)?.id;
+    if (!id) {
       throw new EmailDeliveryError("provider_unavailable", {
         providerName: this.name,
         providerErrorName: "MissingMessageId",
+        requestId,
       });
     }
-    return { id: response.MessageId };
+    return { id };
   }
 }
 
@@ -267,25 +300,15 @@ class AmazonSesProvider implements EmailProvider {
  * @throws {EmailConfigError} when any required setting is absent or blank.
  */
 export function getEmailProvider(): EmailProvider {
-  const region = process.env.AWS_SES_REGION;
-  const accessKeyId = process.env.AWS_SES_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.AWS_SES_SECRET_ACCESS_KEY;
+  const apiKey = process.env.RESEND_API_KEY;
 
-  if (!region || !region.trim()) throw new EmailConfigError("AWS_SES_REGION");
-  if (!accessKeyId || !accessKeyId.trim()) throw new EmailConfigError("AWS_SES_ACCESS_KEY_ID");
-  if (!secretAccessKey || !secretAccessKey.trim()) {
-    throw new EmailConfigError("AWS_SES_SECRET_ACCESS_KEY");
-  }
+  if (!apiKey || !apiKey.trim()) throw new EmailConfigError("RESEND_API_KEY");
 
-  return new AmazonSesProvider({
-    region: region.trim(),
-    accessKeyId: accessKeyId.trim(),
-    secretAccessKey: secretAccessKey.trim(),
-  });
+  return new ResendProvider({ apiKey: apiKey.trim() });
 }
 
 /**
- * Sends a message and resolves only once SES returned a MessageId.
+ * Sends a message and resolves only once the provider returned a message id.
  *
  * @throws {EmailConfigError} configuration missing.
  * @throws {EmailDeliveryError} provider rejected the message.

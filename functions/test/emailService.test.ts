@@ -1,39 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// The AWS SDK is never loaded for real; no network call can occur.
-const { sendMock, clientConfigs, commandInputs } = vi.hoisted(() => ({
-  sendMock: vi.fn(),
-  clientConfigs: [] as Record<string, unknown>[],
-  commandInputs: [] as Record<string, unknown>[],
-}));
-
-vi.mock("@aws-sdk/client-sesv2", () => ({
-  SESv2Client: class {
-    send = sendMock;
-    constructor(config: Record<string, unknown>) {
-      clientConfigs.push(config);
-    }
-  },
-  SendEmailCommand: class {
-    input: Record<string, unknown>;
-    constructor(input: Record<string, unknown>) {
-      this.input = input;
-      commandInputs.push(input);
-    }
-  },
-}));
-
 import { rejection } from "./helpers";
 import {
   sendEmail,
   getEmailProvider,
   maskEmail,
   sanitizeForLog,
-  classifySesError,
+  classifyResendError,
   describeEmailFailure,
   EmailConfigError,
   EmailDeliveryError,
   FROM_ADDRESS,
+  FROM_HEADER,
 } from "../src/services/emailService";
 
 const MESSAGE = {
@@ -42,118 +20,135 @@ const MESSAGE = {
   html: "<p>body</p>",
 };
 
-/** Builds an object shaped like an AWS SDK v3 service exception. */
-function awsError(name: string, message = "", httpStatusCode = 400, requestId = "req-abc") {
-  const err = new Error(message) as Error & { $metadata: unknown };
-  err.name = name;
-  err.$metadata = { requestId, httpStatusCode };
-  return err;
+/** No network call can occur: fetch is stubbed for every test in this file. */
+const fetchMock = vi.fn();
+
+/** Builds a Response-like object for a 2xx Resend reply. */
+function accepted(body: unknown = { id: "msg_0100abc" }, requestId = "req-abc") {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ "x-request-id": requestId }),
+    json: async () => body,
+  } as unknown as Response;
+}
+
+/** Builds a Response-like object for a Resend error reply. */
+function rejected(
+  status: number,
+  name: string,
+  message = "",
+  requestId = "req-abc"
+) {
+  return {
+    ok: false,
+    status,
+    headers: new Headers({ "x-request-id": requestId }),
+    json: async () => ({ statusCode: status, name, message }),
+  } as unknown as Response;
+}
+
+/** Reads the JSON body the provider posted on the nth call. */
+function sentBody(call = 0): Record<string, unknown> {
+  return JSON.parse(fetchMock.mock.calls[call][1].body as string);
+}
+
+/** Reads the request init the provider posted on the nth call. */
+function sentInit(call = 0): RequestInit & { headers: Record<string, string> } {
+  return fetchMock.mock.calls[call][1];
 }
 
 function setValidConfig() {
-  process.env.AWS_SES_REGION = "us-east-1";
-  process.env.AWS_SES_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
-  process.env.AWS_SES_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  process.env.RESEND_API_KEY = "re_TestKey_0123456789abcdef";
 }
 
-describe("emailService (Amazon SES)", () => {
+describe("emailService (Resend)", () => {
   beforeEach(() => {
-    sendMock.mockReset();
-    clientConfigs.length = 0;
-    commandInputs.length = 0;
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
     setValidConfig();
   });
 
   afterEach(() => {
-    delete process.env.AWS_SES_REGION;
-    delete process.env.AWS_SES_ACCESS_KEY_ID;
-    delete process.env.AWS_SES_SECRET_ACCESS_KEY;
+    vi.unstubAllGlobals();
+    delete process.env.RESEND_API_KEY;
   });
 
   describe("configuration", () => {
-    it("throws configuration_missing when the region is absent", async () => {
-      delete process.env.AWS_SES_REGION;
+    it("throws configuration_missing when the api key is absent", async () => {
+      delete process.env.RESEND_API_KEY;
       const err = await rejection<EmailConfigError>(sendEmail(MESSAGE));
       expect(err).toBeInstanceOf(EmailConfigError);
       expect(err.category).toBe("configuration_missing");
-      expect(err.settingName).toBe("AWS_SES_REGION");
-      expect(sendMock).not.toHaveBeenCalled();
+      expect(err.settingName).toBe("RESEND_API_KEY");
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("throws configuration_missing when the access key id is absent", async () => {
-      delete process.env.AWS_SES_ACCESS_KEY_ID;
-      const err = await rejection<EmailConfigError>(sendEmail(MESSAGE));
-      expect(err.settingName).toBe("AWS_SES_ACCESS_KEY_ID");
-      expect(sendMock).not.toHaveBeenCalled();
-    });
-
-    it("throws configuration_missing when the secret access key is absent", async () => {
-      delete process.env.AWS_SES_SECRET_ACCESS_KEY;
-      const err = await rejection<EmailConfigError>(sendEmail(MESSAGE));
-      expect(err.settingName).toBe("AWS_SES_SECRET_ACCESS_KEY");
-      expect(sendMock).not.toHaveBeenCalled();
-    });
-
-    it("treats blank settings as missing", async () => {
-      process.env.AWS_SES_REGION = "   ";
+    it("treats a blank api key as missing", async () => {
+      process.env.RESEND_API_KEY = "   ";
       await expect(sendEmail(MESSAGE)).rejects.toBeInstanceOf(EmailConfigError);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("never puts a credential value in the configuration error", async () => {
-      delete process.env.AWS_SES_SECRET_ACCESS_KEY;
+      delete process.env.RESEND_API_KEY;
       const err = await rejection<EmailConfigError>(sendEmail(MESSAGE));
-      expect(err.message).toBe("Email configuration missing: AWS_SES_SECRET_ACCESS_KEY");
-      expect(err.message).not.toContain("EXAMPLEKEY");
+      expect(err.message).toBe("Email configuration missing: RESEND_API_KEY");
+      expect(err.message).not.toContain("re_TestKey");
     });
 
-    it("passes region and credentials to the client without retries", async () => {
-      sendMock.mockResolvedValue({ MessageId: "0100abc" });
+    it("authorizes with the configured key and posts JSON", async () => {
+      fetchMock.mockResolvedValue(accepted());
       await sendEmail(MESSAGE);
 
-      expect(clientConfigs[0]).toMatchObject({
-        region: "us-east-1",
-        credentials: {
-          accessKeyId: "AKIAIOSFODNN7EXAMPLE",
-          secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        },
-        // Requirement: no application-layer retry of quota/throttle/auth failures.
-        maxAttempts: 1,
-      });
+      expect(fetchMock.mock.calls[0][0]).toBe("https://api.resend.com/emails");
+      const init = sentInit();
+      expect(init.method).toBe("POST");
+      expect(init.headers.Authorization).toBe("Bearer re_TestKey_0123456789abcdef");
+      expect(init.headers["Content-Type"]).toBe("application/json");
+    });
+
+    it("bounds the request with an abort signal so a hung provider cannot stall the function", async () => {
+      fetchMock.mockResolvedValue(accepted());
+      await sendEmail(MESSAGE);
+      expect(sentInit().signal).toBeInstanceOf(AbortSignal);
     });
   });
 
   describe("successful delivery", () => {
-    it("resolves with the SES MessageId and sends from the verified identity", async () => {
-      sendMock.mockResolvedValue({ MessageId: "0100018f-msgid" });
+    it("resolves with the provider id and sends from the verified identity", async () => {
+      fetchMock.mockResolvedValue(accepted({ id: "msg_0100018f" }));
 
       const result = await sendEmail(MESSAGE);
 
-      expect(result).toEqual({ id: "0100018f-msgid" });
-      expect(sendMock).toHaveBeenCalledTimes(1);
-      expect(commandInputs[0]).toMatchObject({
-        FromEmailAddress: FROM_ADDRESS,
-        Destination: { ToAddresses: [MESSAGE.to] },
-      });
-      const content = commandInputs[0].Content as {
-        Simple: { Subject: { Data: string }; Body: { Html: { Data: string } } };
-      };
-      expect(content.Simple.Subject.Data).toBe(MESSAGE.subject);
-      expect(content.Simple.Body.Html.Data).toBe(MESSAGE.html);
+      expect(result).toEqual({ id: "msg_0100018f" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const body = sentBody();
+      expect(body.from).toBe(FROM_HEADER);
+      expect(body.from).toContain(FROM_ADDRESS);
+      expect(body.to).toEqual([MESSAGE.to]);
+      expect(body.subject).toBe(MESSAGE.subject);
+      expect(body.html).toBe(MESSAGE.html);
     });
 
-    it("omits the Text part when no plain-text alternative is supplied", async () => {
-      sendMock.mockResolvedValue({ MessageId: "id" });
+    it("omits the text part when no plain-text alternative is supplied", async () => {
+      fetchMock.mockResolvedValue(accepted());
       await sendEmail(MESSAGE);
-      const body = (commandInputs[0].Content as { Simple: { Body: Record<string, unknown> } })
-        .Simple.Body;
-      expect(body).not.toHaveProperty("Text");
+      expect(sentBody()).not.toHaveProperty("text");
+    });
+
+    it("includes the text part when supplied", async () => {
+      fetchMock.mockResolvedValue(accepted());
+      await sendEmail({ ...MESSAGE, text: "body" });
+      expect(sentBody().text).toBe("body");
     });
   });
 
   describe("failed delivery", () => {
-    it("does not report success when SES returns no MessageId", async () => {
+    it("does not report success when a 2xx carries no id", async () => {
       // Acceptance is unproven, so this must not resolve.
-      sendMock.mockResolvedValue({});
+      fetchMock.mockResolvedValue(accepted({}));
 
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
       expect(err).toBeInstanceOf(EmailDeliveryError);
@@ -162,21 +157,24 @@ describe("emailService (Amazon SES)", () => {
     });
 
     it("surfaces a rejection as a categorised delivery error carrying the request id", async () => {
-      sendMock.mockRejectedValue(
-        awsError("MessageRejected", "Email address is not verified.", 400, "req-xyz")
+      fetchMock.mockResolvedValue(
+        rejected(403, "validation_error", "The diytaxai.com domain is not verified.", "req-xyz")
       );
 
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
       expect(err).toBeInstanceOf(EmailDeliveryError);
-      expect(err.providerErrorName).toBe("MessageRejected");
+      expect(err.providerName).toBe("resend");
+      expect(err.providerErrorName).toBe("validation_error");
       expect(err.requestId).toBe("req-xyz");
+      expect(err.category).toBe("sender_not_verified");
     });
 
-    it("classifies a sandbox rejection of an unverified recipient", async () => {
-      sendMock.mockRejectedValue(
-        awsError(
-          "MessageRejected",
-          "Email address is not verified. The following identities failed the check in region US-EAST-1: recipient@example.com"
+    it("classifies the pre-verification restriction on unverified recipients", async () => {
+      fetchMock.mockResolvedValue(
+        rejected(
+          403,
+          "validation_error",
+          "You can only send testing emails to your own email address (owner@example.com)."
         )
       );
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
@@ -184,76 +182,115 @@ describe("emailService (Amazon SES)", () => {
     });
 
     it("classifies throttling", async () => {
-      sendMock.mockRejectedValue(awsError("TooManyRequestsException", "Maximum sending rate exceeded", 429));
+      fetchMock.mockResolvedValue(rejected(429, "rate_limit_exceeded", "Too many requests"));
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
       expect(err.category).toBe("throttled");
     });
 
     it("classifies quota exhaustion", async () => {
-      sendMock.mockRejectedValue(awsError("LimitExceededException", "Daily sending quota exceeded"));
+      fetchMock.mockResolvedValue(
+        rejected(429, "daily_quota_exceeded", "Daily sending quota exceeded")
+      );
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
       expect(err.category).toBe("quota_exceeded");
     });
 
-    it("never carries the raw AWS message on the error", async () => {
-      sendMock.mockRejectedValue(
-        awsError("MessageRejected", "rejected for recipient@example.com with key AKIAIOSFODNN7EXAMPLE")
+    it("classifies a bad api key", async () => {
+      fetchMock.mockResolvedValue(rejected(401, "invalid_api_key", "API key is invalid"));
+      const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
+      expect(err.category).toBe("authentication_failed");
+    });
+
+    it("treats a network failure as provider_unavailable without claiming acceptance", async () => {
+      fetchMock.mockRejectedValue(new Error("socket hang up"));
+      const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
+      expect(err).toBeInstanceOf(EmailDeliveryError);
+      expect(err.category).toBe("provider_unavailable");
+    });
+
+    it("treats a request timeout as provider_unavailable", async () => {
+      const abort = new Error("The operation was aborted due to timeout");
+      abort.name = "TimeoutError";
+      fetchMock.mockRejectedValue(abort);
+      const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
+      expect(err.category).toBe("provider_unavailable");
+      expect(err.providerErrorName).toBe("TimeoutError");
+    });
+
+    it("does not fail when an error response carries no JSON body", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 502,
+        headers: new Headers(),
+        json: async () => {
+          throw new Error("not json");
+        },
+      } as unknown as Response);
+
+      const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
+      expect(err.category).toBe("provider_unavailable");
+    });
+
+    it("never carries the raw provider message on the error", async () => {
+      fetchMock.mockResolvedValue(
+        rejected(
+          400,
+          "validation_error",
+          "rejected for recipient@example.com with key re_TestKey_0123456789abcdef"
+        )
       );
       const err = await rejection<EmailDeliveryError>(sendEmail(MESSAGE));
       expect(err.message).toBe("Email delivery failed (recipient_rejected).");
       expect(err.message).not.toContain("recipient@example.com");
-      expect(err.message).not.toContain("AKIA");
+      expect(err.message).not.toContain("re_TestKey");
     });
 
     it("makes exactly one send attempt on a throttling failure", async () => {
-      sendMock.mockRejectedValue(awsError("ThrottlingException", "slow down", 429));
+      fetchMock.mockResolvedValue(rejected(429, "rate_limit_exceeded", "slow down"));
       await rejection(sendEmail(MESSAGE));
-      expect(sendMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe("classifySesError", () => {
-    const cases: Array<[string, string, string]> = [
-      ["UnrecognizedClientException", "", "authentication_failed"],
-      ["SignatureDoesNotMatch", "", "authentication_failed"],
-      ["AccessDeniedException", "", "authentication_failed"],
-      ["MailFromDomainNotVerifiedException", "", "sender_not_verified"],
-      ["ThrottlingException", "", "throttled"],
-      ["TooManyRequestsException", "", "throttled"],
-      ["LimitExceededException", "", "quota_exceeded"],
-      ["SendingPausedException", "", "quota_exceeded"],
-      ["AccountSuspendedException", "", "quota_exceeded"],
-      ["BadRequestException", "", "recipient_rejected"],
-      ["MessageRejected", "Address is suppressed for this account", "recipient_rejected"],
-      ["MessageRejected", "Email address is not verified", "sandbox_restriction"],
-      ["InternalServiceErrorException", "", "provider_unavailable"],
+  describe("classifyResendError", () => {
+    const cases: Array<[string, string, number, string]> = [
+      ["missing_api_key", "", 401, "authentication_failed"],
+      ["invalid_api_key", "", 401, "authentication_failed"],
+      ["restricted_api_key", "", 403, "authentication_failed"],
+      ["invalid_from_address", "", 400, "sender_not_verified"],
+      ["invalid_to_address", "", 400, "recipient_rejected"],
+      ["rate_limit_exceeded", "", 429, "throttled"],
+      ["daily_quota_exceeded", "", 429, "quota_exceeded"],
+      ["internal_server_error", "", 500, "provider_unavailable"],
+      ["application_error", "", 500, "provider_unavailable"],
+      ["validation_error", "Address is suppressed for this account", 400, "recipient_rejected"],
+      ["validation_error", "The domain is not verified", 403, "sender_not_verified"],
+      ["not_found", "The domain was not found", 404, "sender_not_verified"],
     ];
 
-    it.each(cases)("maps %s to %s", (name, message, expected) => {
-      expect(classifySesError(awsError(name, message))).toBe(expected);
+    it.each(cases)("maps %s (%s) to %s", (name, message, status, expected) => {
+      expect(classifyResendError({ name, message, statusCode: status }, status)).toBe(expected);
     });
 
-    it("treats a sender-identity rejection as sender_not_verified", () => {
-      const err = awsError(
-        "MessageRejected",
-        `Email address is not verified. The following identities failed the check in region US-EAST-1: ${FROM_ADDRESS}`
-      );
-      expect(classifySesError(err)).toBe("sender_not_verified");
+    it("falls back to the http status for an unrecognised token", () => {
+      expect(classifyResendError({ name: "brand_new_token" }, 403)).toBe("authentication_failed");
+      expect(classifyResendError({ name: "brand_new_token" }, 429)).toBe("throttled");
+      expect(classifyResendError({ name: "brand_new_token" }, 503)).toBe("provider_unavailable");
     });
 
     it("falls back to provider_unavailable for an unknown shape", () => {
-      expect(classifySesError(undefined)).toBe("provider_unavailable");
-      expect(classifySesError({})).toBe("provider_unavailable");
+      expect(classifyResendError(undefined)).toBe("provider_unavailable");
+      expect(classifyResendError({})).toBe("provider_unavailable");
     });
   });
 
   describe("describeEmailFailure", () => {
     it("reports the missing setting name for a configuration failure", () => {
-      const record = describeEmailFailure("sendMfaCode", new EmailConfigError("AWS_SES_REGION"));
+      const record = describeEmailFailure("sendMfaCode", new EmailConfigError("RESEND_API_KEY"));
       expect(record).toEqual({
         operation: "sendMfaCode",
         category: "configuration_missing",
-        setting: "AWS_SES_REGION",
+        setting: "RESEND_API_KEY",
       });
     });
 
@@ -261,36 +298,43 @@ describe("emailService (Amazon SES)", () => {
       const record = describeEmailFailure(
         "sendInvite",
         new EmailDeliveryError("throttled", {
-          providerName: "ses",
-          providerErrorName: "ThrottlingException",
+          providerName: "resend",
+          providerErrorName: "rate_limit_exceeded",
           requestId: "req-1",
         })
       );
       expect(record).toEqual({
         operation: "sendInvite",
         category: "throttled",
-        provider: "ses",
-        providerErrorName: "ThrottlingException",
+        provider: "resend",
+        providerErrorName: "rate_limit_exceeded",
         requestId: "req-1",
       });
     });
 
-    it("sanitizes an unexpected non-AWS failure", () => {
+    it("sanitizes an unexpected failure", () => {
       const record = describeEmailFailure(
         "sendMfaCode",
-        new Error("socket failure contacting debo@gmail.com with AKIAIOSFODNN7EXAMPLE")
+        new Error("socket failure contacting debo@gmail.com with re_TestKey_0123456789abcdef")
       );
       expect(record.category).toBe("provider_unavailable");
       expect(String(record.detail)).not.toContain("debo@gmail.com");
-      expect(String(record.detail)).not.toContain("AKIAIOSFODNN7EXAMPLE");
-      expect(String(record.detail)).toContain("[REDACTED_AWS_KEY]");
+      expect(String(record.detail)).not.toContain("re_TestKey");
+      expect(String(record.detail)).toContain("[REDACTED_API_KEY]");
     });
   });
 
   describe("sanitizeForLog", () => {
-    it("redacts AWS access key ids", () => {
+    it("redacts resend api keys", () => {
+      expect(sanitizeForLog("key re_TestKey_0123456789abcdef used")).toBe(
+        "key [REDACTED_API_KEY] used"
+      );
+    });
+
+    it("still redacts a stale aws access key id", () => {
+      // A not-yet-redeployed revision can carry SES credentials in its env.
       expect(sanitizeForLog("key AKIAIOSFODNN7EXAMPLE used")).toBe(
-        "key [REDACTED_AWS_KEY] used"
+        "key [REDACTED_API_KEY] used"
       );
     });
 
@@ -325,8 +369,8 @@ describe("emailService (Amazon SES)", () => {
   });
 
   describe("getEmailProvider", () => {
-    it("identifies as the ses provider", () => {
-      expect(getEmailProvider().name).toBe("ses");
+    it("identifies as the resend provider", () => {
+      expect(getEmailProvider().name).toBe("resend");
     });
   });
 });

@@ -3,37 +3,40 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, DocumentData } from "firebase/firestore";
 import { auth, db } from "../firebase";
 
-// ─── MFA session persistence ──────────────────────────────────────────────────
-// Stores { uid, ts } in localStorage so the user isn't asked for MFA on every
-// page refresh. Verification expires after MFA_TTL_HOURS hours.
+// ─── MFA session state ────────────────────────────────────────────────────────
+//
+// Derived from the `mfaVerifiedAt` custom claim in the Firebase ID token, set
+// server-side by verifyMfaCode.
+//
+// This used to be a { uid, ts } record in localStorage. That made the modal a
+// UI formality: writing one key skipped it, and nothing outside React consulted
+// it at all, so any caller with a valid ID token read every document without
+// encountering MFA. The token claim is signed by Firebase, so the client cannot
+// mint or extend it, and firestore.rules gates owner access on the same value —
+// the modal and the data layer now agree because they read the same fact.
+//
+// Kept in step with MFA_CLAIM_TTL_MS in functions/src/auth/verifyMfaCode.ts.
+// The rules enforce the real deadline; this only decides when to re-prompt, so
+// a stale copy here costs a redundant prompt, never access.
 
-const MFA_KEY = "mfaVerifiedAt";
-const MFA_TTL_HOURS = 24;
-const MFA_TTL_MS = MFA_TTL_HOURS * 60 * 60 * 1000;
+const MFA_TTL_MS = 24 * 60 * 60 * 1000;
 
-function isMfaSessionValid(uid: string): boolean {
+/**
+ * Whether the token currently in hand carries a fresh MFA claim.
+ *
+ * `forceRefresh` re-mints the token: Firebase does not push claim changes to a
+ * live session, so immediately after verifyMfaCode the cached token still has
+ * no claim and every rule check would fail.
+ */
+async function readMfaClaim(user: User, forceRefresh = false): Promise<boolean> {
   try {
-    const raw = localStorage.getItem(MFA_KEY);
-    if (!raw) return false;
-    const { uid: storedUid, ts } = JSON.parse(raw) as { uid: string; ts: number };
-    return storedUid === uid && Date.now() - ts < MFA_TTL_MS;
+    const { claims } = await user.getIdTokenResult(forceRefresh);
+    const verifiedAt = claims.mfaVerifiedAt;
+    return typeof verifiedAt === "number" && Date.now() - verifiedAt < MFA_TTL_MS;
   } catch {
+    // Treat an unreadable token as unverified — fail closed.
     return false;
   }
-}
-
-function saveMfaSession(uid: string) {
-  try {
-    localStorage.setItem(MFA_KEY, JSON.stringify({ uid, ts: Date.now() }));
-  } catch {
-    // localStorage unavailable — not fatal, user will just be re-prompted next refresh
-  }
-}
-
-function clearMfaSession() {
-  try {
-    localStorage.removeItem(MFA_KEY);
-  } catch { /* ignore */ }
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -45,7 +48,11 @@ interface AuthContextValue {
   userDoc: DocumentData | null;
   loading: boolean;
   mfaVerified: boolean;
-  setMfaVerified: (v: boolean) => void;
+  /**
+   * Re-mints the ID token and re-reads the MFA claim. Call after a successful
+   * verifyMfaCode — the claim does not reach a live session otherwise.
+   */
+  refreshMfaClaim: () => Promise<void>;
   refreshUserDoc: () => Promise<void>;
   /** "owner" for normal users; "spouse" or "accountant" for shared users. */
   role: UserRole;
@@ -62,7 +69,7 @@ const AuthContext = createContext<AuthContextValue>({
   userDoc: null,
   loading: true,
   mfaVerified: false,
-  setMfaVerified: () => {},
+  refreshMfaClaim: async () => {},
   refreshUserDoc: async () => {},
   role: "owner",
   effectiveOwnerUid: null,
@@ -76,14 +83,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [role, setRole]                       = useState<UserRole>("owner");
   const [effectiveOwnerUid, setEffectiveOwnerUid] = useState<string | null>(null);
 
-  // Wrap setter so it also writes / clears the localStorage session.
-  function setMfaVerified(v: boolean) {
-    setMfaVerifiedState(v);
-    if (v && user) {
-      saveMfaSession(user.uid);
-    } else if (!v) {
-      clearMfaSession();
-    }
+  async function refreshMfaClaim() {
+    if (!user) return;
+    setMfaVerifiedState(await readMfaClaim(user, true));
   }
 
   async function refreshUserDoc() {
@@ -102,9 +104,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(firebaseUser);
 
       if (firebaseUser) {
-        // Restore MFA verification if it was completed recently for this user.
-        const alreadyVerified = isMfaSessionValid(firebaseUser.uid);
-        setMfaVerifiedState(alreadyVerified);
+        // Read the claim from the cached token — no forced refresh here, so a
+        // page load costs no extra round trip. A user who verified in this
+        // window already has the claim; anyone else gets the modal.
+        setMfaVerifiedState(await readMfaClaim(firebaseUser));
 
         const snap = await getDoc(doc(db, "users", firebaseUser.uid));
         const data = snap.exists() ? snap.data() : null;
@@ -122,7 +125,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setMfaVerifiedState(false);
         setRole("owner");
         setEffectiveOwnerUid(null);
-        clearMfaSession();
       }
 
       setLoading(false);
@@ -131,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userDoc, loading, mfaVerified, setMfaVerified, refreshUserDoc, role, effectiveOwnerUid }}>
+    <AuthContext.Provider value={{ user, userDoc, loading, mfaVerified, refreshMfaClaim, refreshUserDoc, role, effectiveOwnerUid }}>
       {children}
     </AuthContext.Provider>
   );

@@ -8,9 +8,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * document. That makes the concurrency assertion below meaningful rather than
  * a test of the mock.
  */
-const { store, runTransactionMock, docRefs } = vi.hoisted(() => {
+const { store, runTransactionMock, docRefs, DELETE } = vi.hoisted(() => {
   const store = new Map<string, Record<string, unknown>>();
   const docRefs = new Map<string, { path: string }>();
+  // Stand-in for FieldValue.delete(). Modelled as a real removal rather than a
+  // stored sentinel, so a test asserting "the code is gone" is asserting what
+  // Firestore would actually do.
+  const DELETE = { __delete: true };
   let chain: Promise<unknown> = Promise.resolve();
 
   const runTransactionMock = vi.fn(
@@ -26,7 +30,11 @@ const { store, runTransactionMock, docRefs } = vi.hoisted(() => {
           options?: { merge?: boolean }
         ) => {
           const prev = options?.merge ? store.get(ref.path) ?? {} : {};
-          store.set(ref.path, { ...prev, ...value });
+          const next: Record<string, unknown> = { ...prev, ...value };
+          for (const [k, v] of Object.entries(next)) {
+            if (v === DELETE) delete next[k];
+          }
+          store.set(ref.path, next);
         },
       };
       const result = chain.then(() => fn(tx));
@@ -35,11 +43,11 @@ const { store, runTransactionMock, docRefs } = vi.hoisted(() => {
     }
   );
 
-  return { store, runTransactionMock, docRefs };
+  return { store, runTransactionMock, docRefs, DELETE };
 });
 
-vi.mock("firebase-admin", () => ({
-  firestore: () => ({
+vi.mock("firebase-admin", () => {
+  const firestore = () => ({
     collection: (name: string) => ({
       doc: (id: string) => {
         const path = `${name}/${id}`;
@@ -48,8 +56,11 @@ vi.mock("firebase-admin", () => ({
       },
     }),
     runTransaction: runTransactionMock,
-  }),
-}));
+  });
+  // `admin.firestore` is used both as a factory and as a namespace.
+  firestore.FieldValue = { delete: () => DELETE };
+  return { firestore };
+});
 
 import { rejection } from "./helpers";
 import {
@@ -59,6 +70,8 @@ import {
   WINDOW_MS,
   MAX_PER_WINDOW,
   MAX_PER_DAY,
+  MAX_VERIFY_ATTEMPTS,
+  consumeVerifyAttempt,
   DAY_MS,
 } from "../src/auth/mfaThrottle";
 
@@ -219,5 +232,94 @@ describe("reserveMfaAttempt", () => {
     // A different user is unaffected by user-1's cooldown.
     await reserveMfaAttempt("user-2", PAYLOAD, NOW);
     expect(store.get("userSecurity/user-2")!.mfaAttempts).toEqual([NOW]);
+  });
+});
+
+// ─── consumeVerifyAttempt — the guessing budget ──────────────────────────────
+//
+// Issuance limits bound how many codes can be SENT; they say nothing about how
+// many guesses can be made against one that is already live. A six-digit code
+// is one of 10^6, and with unlimited attempts inside its 10-minute window the
+// only real limit was the attacker's own throughput.
+
+describe("consumeVerifyAttempt", () => {
+  const CODE = "123456";
+
+  function seedCode(extra: Record<string, unknown> = {}) {
+    store.set(PATH, { mfaCode: CODE, mfaCodeExpiry: NOW + 600_000, ...extra });
+  }
+
+  beforeEach(() => {
+    store.clear();
+    runTransactionMock.mockClear();
+  });
+
+  it("accepts the correct code", async () => {
+    seedCode();
+    expect(await consumeVerifyAttempt(UID, CODE, NOW)).toBe("ok");
+  });
+
+  it("records the verification instant for the custom claim", async () => {
+    seedCode();
+    await consumeVerifyAttempt(UID, CODE, NOW);
+    expect(store.get(PATH)).toMatchObject({ mfaVerified: true, mfaVerifiedAt: NOW });
+  });
+
+  it("consumes the code on success, so it cannot be replayed", async () => {
+    seedCode();
+    await consumeVerifyAttempt(UID, CODE, NOW);
+    expect(store.get(PATH)!.mfaCode).toBeUndefined();
+    expect(await consumeVerifyAttempt(UID, CODE, NOW)).toBe("locked");
+  });
+
+  it("rejects a wrong code and counts the attempt", async () => {
+    seedCode();
+    expect(await consumeVerifyAttempt(UID, "000000", NOW)).toBe("wrong");
+    expect(store.get(PATH)!.mfaVerifyFailures).toBe(1);
+  });
+
+  it("burns the code after MAX_VERIFY_ATTEMPTS wrong guesses", async () => {
+    seedCode();
+    for (let i = 1; i < MAX_VERIFY_ATTEMPTS; i++) {
+      expect(await consumeVerifyAttempt(UID, "000000", NOW)).toBe("wrong");
+    }
+    // The final failure locks rather than merely rejecting.
+    expect(await consumeVerifyAttempt(UID, "000000", NOW)).toBe("locked");
+    expect(store.get(PATH)!.mfaCode).toBeUndefined();
+  });
+
+  it("will not accept the correct code once the budget is spent", async () => {
+    seedCode();
+    for (let i = 0; i < MAX_VERIFY_ATTEMPTS; i++) {
+      await consumeVerifyAttempt(UID, "000000", NOW);
+    }
+    expect(await consumeVerifyAttempt(UID, CODE, NOW)).toBe("locked");
+  });
+
+  it("does not let concurrent guesses share one attempt slot", async () => {
+    // The attack shape: fire many guesses at once so each reads the same
+    // pre-increment count. Serialising the read-compare-write inside the
+    // transaction is what makes the budget hold.
+    seedCode();
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => consumeVerifyAttempt(UID, "000000", NOW))
+    );
+    expect(results.filter((r) => r === "wrong").length).toBe(MAX_VERIFY_ATTEMPTS - 1);
+    expect(store.get(PATH)!.mfaCode).toBeUndefined();
+  });
+
+  it("rejects an expired code", async () => {
+    seedCode({ mfaCodeExpiry: NOW - 1 });
+    expect(await consumeVerifyAttempt(UID, CODE, NOW)).toBe("locked");
+  });
+
+  it("rejects when no code was ever issued", async () => {
+    expect(await consumeVerifyAttempt(UID, CODE, NOW)).toBe("locked");
+  });
+
+  it("gives a freshly issued code a clean budget", async () => {
+    seedCode({ mfaVerifyFailures: 4 });
+    await reserveMfaAttempt(UID, PAYLOAD, NOW);
+    expect(store.get(PATH)!.mfaVerifyFailures).toBe(0);
   });
 });

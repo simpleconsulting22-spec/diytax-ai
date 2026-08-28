@@ -92,7 +92,12 @@ const btnSecondary: React.CSSProperties = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 interface MfaModalProps {
-  onVerified: () => void;
+  /**
+   * Awaited before the modal considers itself done: it re-mints the ID token
+   * so the new MFA claim is in hand. Returning early would dismiss the modal
+   * while every Firestore read still failed the rule check.
+   */
+  onVerified: () => void | Promise<void>;
 }
 
 type Step = "send" | "code";
@@ -131,7 +136,7 @@ export default function MfaModal({ onVerified }: MfaModalProps) {
     setError("");
     try {
       await apiClient.call("verifyMfaCode", { code: code.trim() });
-      onVerified();
+      await onVerified();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Invalid or expired code.");
       setVerifying(false);

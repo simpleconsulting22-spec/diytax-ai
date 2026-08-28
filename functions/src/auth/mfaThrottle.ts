@@ -18,6 +18,17 @@ export const MAX_PER_WINDOW = 5;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const MAX_PER_DAY = 20;
 
+/**
+ * Maximum wrong guesses against a single issued code before it is burned.
+ *
+ * Issuance limits alone do not bound guessing. A six-digit code is one of
+ * 10^6, and with unlimited attempts inside its 10-minute validity window a
+ * caller can simply enumerate: Cloud Functions scale out, so the attacker's
+ * throughput — not the code space — was the only limit. Five attempts caps the
+ * chance of hitting a given code at 5-in-a-million.
+ */
+export const MAX_VERIFY_ATTEMPTS = 5;
+
 /** Which limit tripped. Logged server-side; never returned to the client. */
 export type ThrottleReason = "cooldown" | "window" | "daily";
 
@@ -99,8 +110,81 @@ export async function reserveMfaAttempt(
         mfaCodeExpiry: payload.mfaCodeExpiry,
         mfaVerified: false,
         mfaAttempts: [...attempts, now].slice(-MAX_PER_DAY),
+        // A fresh code starts with a fresh guess budget. Issuance is itself
+        // rate limited above, so this cannot be used to buy unlimited guesses.
+        mfaVerifyFailures: 0,
       },
       { merge: true }
     );
+  });
+}
+
+/** Outcome of consuming one verification attempt. */
+export type VerifyOutcome = "ok" | "locked" | "wrong";
+
+/**
+ * Consumes one guess against the stored code, transactionally.
+ *
+ * Read-compare-write has to be atomic: concurrent requests each reading the
+ * same failure count would every one of them see a count below the limit and
+ * write back count+1, so N parallel guesses would cost a single attempt. That
+ * is precisely the shape an attacker uses, so the check runs inside the
+ * transaction that records it.
+ *
+ * A correct code clears the stored code, so it cannot be replayed.
+ * Exhausting the budget clears it too — the code is burned, not merely
+ * rejected, and the caller must request a new one.
+ */
+export async function consumeVerifyAttempt(
+  uid: string,
+  submittedCode: string,
+  now: number = Date.now()
+): Promise<VerifyOutcome> {
+  const db = admin.firestore();
+  const ref = db.collection("userSecurity").doc(uid);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() ?? {} : {};
+
+    const storedCode = data.mfaCode as string | undefined;
+    const expiry = data.mfaCodeExpiry as number | undefined;
+    if (!storedCode || !expiry || now > expiry) return "locked";
+
+    const failures =
+      typeof data.mfaVerifyFailures === "number" && Number.isFinite(data.mfaVerifyFailures)
+        ? data.mfaVerifyFailures
+        : 0;
+    if (failures >= MAX_VERIFY_ATTEMPTS) return "locked";
+
+    if (submittedCode !== storedCode) {
+      const next = failures + 1;
+      const burned = next >= MAX_VERIFY_ATTEMPTS;
+      tx.set(
+        ref,
+        burned
+          ? {
+              mfaVerifyFailures: next,
+              mfaCode: admin.firestore.FieldValue.delete(),
+              mfaCodeExpiry: admin.firestore.FieldValue.delete(),
+            }
+          : { mfaVerifyFailures: next },
+        { merge: true }
+      );
+      return burned ? "locked" : "wrong";
+    }
+
+    tx.set(
+      ref,
+      {
+        mfaVerified: true,
+        mfaVerifiedAt: now,
+        mfaVerifyFailures: 0,
+        mfaCode: admin.firestore.FieldValue.delete(),
+        mfaCodeExpiry: admin.firestore.FieldValue.delete(),
+      },
+      { merge: true }
+    );
+    return "ok";
   });
 }
