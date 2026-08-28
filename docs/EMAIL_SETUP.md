@@ -174,6 +174,25 @@ firebase deploy --only functions:sendMfaCode,functions:sendInvite
 3. If an invitation is created but the email fails, the UI says so explicitly
    and shows the accept link for manual sharing — the invite is not lost.
 
+### What a healthy MFA flow looks like
+
+Sign-in stops here and offers to send a code. The address is masked — the full
+address is never rendered to the client:
+
+![The two-factor prompt, offering to send a six-digit code to a masked address](assets/mfa-send-code.png)
+
+After **Send Verification Code** succeeds, the code-entry step appears. Reaching
+this screen means the provider *accepted* the message — `sendMfaCode` only
+resolves once Resend returns a message id, so it is never shown for a rejected
+send:
+
+![The code-entry step, with an empty six-digit field and a resend link](assets/mfa-enter-code.png)
+
+If instead you see *"Verification email could not be sent right now"*, the send
+was rejected. Check the logged category against the troubleshooting table below
+— that message is deliberately identical for every failure mode, so the logs are
+the only place the actual cause appears.
+
 ### Check authentication in Gmail
 
 Open the received message in Gmail → three-dot menu → **Show original**. You
