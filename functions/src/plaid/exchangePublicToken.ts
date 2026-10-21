@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { requireAuth } from "../middleware/auth";
 import { fetchTransactionsForAccount } from "./fetchTransactions";
+import { toPlaidApiError } from "./plaidErrors";
 
 export const exchangePublicToken = onCall(
   { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
@@ -42,6 +43,11 @@ export const exchangePublicToken = onCall(
 
   const exchangeResponse = await plaidClient.itemPublicTokenExchange({
     public_token: data.publicToken,
+  }).catch((err) => {
+    // Never let the AxiosError (its config holds PLAID-SECRET) reach the logs.
+    const safe = toPlaidApiError(err);
+    console.error(`[EXCHANGE] uid=${uid} itemPublicTokenExchange failed: ${safe.message}`);
+    throw new HttpsError("internal", safe.message);
   });
 
   const accessToken = exchangeResponse.data.access_token;

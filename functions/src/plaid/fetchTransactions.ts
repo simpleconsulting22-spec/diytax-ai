@@ -5,6 +5,7 @@ import { requireAuth } from "../middleware/auth";
 import { detectAmountSignConvention } from "./classifyTransactionType";
 import { ingestTransactionsCore } from "../ingestion/ingestTransactions";
 import { RawPlaidInput } from "../ingestion/transactionPipeline";
+import { PlaidApiError, toPlaidApiError } from "./plaidErrors";
 
 function getPlaidClient(): PlaidApi {
   const clientId = process.env.PLAID_CLIENT_ID;
@@ -138,6 +139,9 @@ export async function fetchTransactionsForAccount(
         offset,
         ...(plaidAccountId ? { account_ids: [plaidAccountId] } : {}),
       },
+    }).catch((err) => {
+      // Strip the AxiosError (its config holds PLAID-SECRET) before it can be logged.
+      throw toPlaidApiError(err);
     });
     plaidTransactions.push(...response.data.transactions);
     totalAvailable = response.data.total_transactions;
@@ -284,14 +288,23 @@ export const fetchTransactions = onCall(
     throw new HttpsError("permission-denied", "Access denied.");
   }
 
-  const imported = await fetchTransactionsForAccount(
-    uid,
-    data.accountId,
-    account.plaidAccessToken,
-    undefined,
-    data.startDate,
-    account.plaidAccountId as string | undefined,
-  );
-
-  return { imported };
+  try {
+    const imported = await fetchTransactionsForAccount(
+      uid,
+      data.accountId,
+      account.plaidAccessToken,
+      undefined,
+      data.startDate,
+      account.plaidAccountId as string | undefined,
+    );
+    return { imported };
+  } catch (err) {
+    if (!(err instanceof PlaidApiError)) throw err;
+    console.warn(`[FETCH] uid=${uid} acct=${data.accountId} plaid_error=${err.code} request_id=${err.requestId ?? "-"}: ${err.plaidMessage}`);
+    await accountSnap.ref.update({
+      lastSyncError:   err.message,
+      lastSyncErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+    }).catch(() => undefined);
+    throw new HttpsError("failed-precondition", err.message, { plaidErrorCode: err.code });
+  }
 });

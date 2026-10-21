@@ -62,6 +62,7 @@ interface ImportedAccount {
 interface RefreshState {
   loading: boolean;
   result:  string | null;
+  error?:  string | null;
 }
 
 interface PlaidMetadata {
@@ -384,8 +385,12 @@ export default function BankAccountsPage() {
       const msg = res.imported === 0 ? "Already up to date" : `${res.imported} new transaction${res.imported !== 1 ? "s" : ""} imported`;
       setRefreshStates((prev) => ({ ...prev, [accountId]: { loading: false, result: msg } }));
       setTimeout(() => setRefreshStates((prev) => ({ ...prev, [accountId]: { loading: false, result: null } })), 5000);
-    } catch {
-      setRefreshStates((prev) => ({ ...prev, [accountId]: { loading: false, result: "Refresh failed" } }));
+    } catch (err) {
+      // fetchTransactions sends a readable reason (e.g. "This bank needs you to sign in again…").
+      const message = err instanceof Error && err.message && err.message !== "internal"
+        ? err.message
+        : "Refresh failed. Please try again.";
+      setRefreshStates((prev) => ({ ...prev, [accountId]: { loading: false, result: null, error: message } }));
     }
   }
 
@@ -1181,8 +1186,8 @@ export default function BankAccountsPage() {
                                 </div>
                               )}
                               {acct.lastSyncError ? (
-                                <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "2px" }} title={acct.lastSyncError}>
-                                  ⚠ Last sync failed {formatRelativeTime(acct.lastSyncErrorAt)}
+                                <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "2px" }}>
+                                  ⚠ Last sync failed {formatRelativeTime(acct.lastSyncErrorAt)}: {acct.lastSyncError}
                                 </div>
                               ) : (
                                 <div style={{ fontSize: "11px", color: acct.lastSyncedAt ? "#16A34A" : "#9ca3af", marginTop: "2px" }}>
@@ -1191,6 +1196,9 @@ export default function BankAccountsPage() {
                               )}
                               {rs?.result && (
                                 <div style={{ fontSize: "11px", color: "#16A34A", marginTop: "2px" }}>✓ {rs.result}</div>
+                              )}
+                              {rs?.error && (
+                                <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "2px" }}>✗ {rs.error}</div>
                               )}
                               {confirmReimportId !== acct.id && !rs?.loading && (
                                 <button
