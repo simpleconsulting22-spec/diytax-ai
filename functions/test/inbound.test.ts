@@ -11,6 +11,7 @@ import {
   replyPrompt,
 } from "../src/zach/inbound";
 import { roundEmail, REPLY_HINT } from "../src/zach/rounds";
+import { normalizeReplyDomain } from "../src/zach/replyTokens";
 
 // Synthetic data only.
 const SECRET = "whsec_" + Buffer.from("synthetic-signing-key-0123456789").toString("base64");
@@ -49,6 +50,14 @@ describe("reply address", () => {
   it("finds the token in plain and display-name forms, case-insensitively", () => {
     expect(tokenFromRecipients([`zach+${tok}@reply.diytaxai.com`])).toBe(tok);
     expect(tokenFromRecipients([`other@x.test`, `Zach <ZACH+${tok.toUpperCase()}@Reply.DIYTaxAI.com>`])).toBe(tok);
+  });
+  it("uses a Resend-hosted domain when configured, and only that domain", () => {
+    expect(tokenFromRecipients([`zach+${tok}@abc123.resend.app`], "abc123.resend.app")).toBe(tok);
+    expect(tokenFromRecipients([`zach+${tok}@reply.diytaxai.com`], "abc123.resend.app")).toBeNull();
+    expect(tokenFromRecipients([`zach+${tok}@other.resend.app`], "abc123.resend.app")).toBeNull();
+    expect(normalizeReplyDomain("ABC123.resend.app")).toBe("abc123.resend.app");
+    expect(normalizeReplyDomain("evil.test")).toBe("reply.diytaxai.com");
+    expect(normalizeReplyDomain("x.resend.app.evil.test")).toBe("reply.diytaxai.com");
   });
   it("ignores other domains and malformed tokens", () => {
     expect(tokenFromRecipients([`zach+${tok}@reply.evil.test`])).toBeNull();

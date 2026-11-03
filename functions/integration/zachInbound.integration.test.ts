@@ -10,6 +10,7 @@ import type { EmailMessage } from "../src/services/emailService";
 const OWNER = "zi_owner", SPOUSE = "zi_spouse";
 const EMAILS: Record<string, string> = { [OWNER]: "ziowner@synthetic.test", [SPOUSE]: "zispouse@synthetic.test" };
 const PASS = { spf: "pass", dkim: "pass", dmarc: "pass" };
+const DOMAIN = "synthetic123.resend.app";
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
 
 let outbox: EmailMessage[] = [];
@@ -26,6 +27,7 @@ const roundDeps = (): RoundDeps => ({
   emailOf: async (u) => EMAILS[u] ?? null,
   now: () => new Date(clock),
   inboundEnabled: async () => true,
+  replyDomain: async () => DOMAIN,
 });
 const inDeps = (): InboundDeps => ({
   db: db(),
@@ -84,7 +86,7 @@ describe("answering by reply", () => {
   it("round emails carry a private Reply-To per person", async () => {
     await seed("t1", "TARGET 123", -50);
     const r = await roundReplyTo();
-    expect(r[EMAILS[SPOUSE]]).toMatch(/^zach\+[a-f0-9]{40}@reply\.diytaxai\.com$/);
+    expect(r[EMAILS[SPOUSE]]).toMatch(/^zach\+[a-f0-9]{40}@synthetic123\.resend\.app$/);
     const tokens = await db().collection("zachReplyTokens").get();
     expect(tokens.size).toBe(1);
     // Only the hash is stored.
@@ -99,7 +101,7 @@ describe("answering by reply", () => {
       { index: 0, category: "Repairs & Maintenance", quote: "home depot was for the rental" },
       { index: 1, category: "Other Personal", quote: "target was personal" },
     ];
-    const res = await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true);
+    const res = await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true, DOMAIN);
     expect(res).toMatchObject({ status: "processed", answers: 2 });
 
     const depot = (await db().collection("transactions").doc("t1").get()).data()!;
@@ -129,8 +131,8 @@ describe("answering by reply", () => {
     const r = await roundReplyTo();
     answers = [{ index: 0, category: "Other Personal", quote: "target was personal" }];
     const e = event(r[EMAILS[SPOUSE]]);
-    expect((await processInbound(inDeps(), e, true)).status).toBe("processed");
-    expect(await processInbound(inDeps(), e, true)).toMatchObject({ status: "duplicate" });
+    expect((await processInbound(inDeps(), e, true, DOMAIN)).status).toBe("processed");
+    expect(await processInbound(inDeps(), e, true, DOMAIN)).toMatchObject({ status: "duplicate" });
   });
 
   it("ignores spoofed senders, failed authentication, unknown tokens and replies when off — silently", async () => {
@@ -140,17 +142,17 @@ describe("answering by reply", () => {
     const to = r[EMAILS[SPOUSE]];
 
     emailFixture = { ...emailFixture, from: "attacker@evil.test" };
-    expect(await processInbound(inDeps(), event(to), true)).toMatchObject({ status: "ignored", reason: "sender_mismatch" });
+    expect(await processInbound(inDeps(), event(to), true, DOMAIN)).toMatchObject({ status: "ignored", reason: "sender_mismatch" });
     emailFixture = { ...emailFixture, from: EMAILS[SPOUSE], authentication: { spf: "fail", dkim: "fail", dmarc: "fail" } };
-    expect(await processInbound(inDeps(), event(to), true)).toMatchObject({ status: "ignored", reason: "auth_failed" });
+    expect(await processInbound(inDeps(), event(to), true, DOMAIN)).toMatchObject({ status: "ignored", reason: "auth_failed" });
     emailFixture = { ...emailFixture, authentication: { spf: "pass", dkim: "pass", dmarc: "fail" } };
-    expect(await processInbound(inDeps(), event(to), true)).toMatchObject({ status: "ignored", reason: "auth_failed" });
+    expect(await processInbound(inDeps(), event(to), true, DOMAIN)).toMatchObject({ status: "ignored", reason: "auth_failed" });
     emailFixture = { ...emailFixture, authentication: PASS };
-    expect(await processInbound(inDeps(), event(`zach+${"0".repeat(40)}@reply.diytaxai.com`), true)).toMatchObject({ reason: "bad_token" });
-    expect(await processInbound(inDeps(), event(to), false)).toMatchObject({ reason: "inbound_off" });
+    expect(await processInbound(inDeps(), event(`zach+${"0".repeat(40)}@${DOMAIN}`), true, DOMAIN)).toMatchObject({ reason: "bad_token" });
+    expect(await processInbound(inDeps(), event(to), false, DOMAIN)).toMatchObject({ reason: "inbound_off" });
     // The owner can't use the spouse's address either.
     emailFixture = { ...emailFixture, from: EMAILS[OWNER] };
-    expect(await processInbound(inDeps(), event(to), true)).toMatchObject({ reason: "sender_mismatch" });
+    expect(await processInbound(inDeps(), event(to), true, DOMAIN)).toMatchObject({ reason: "sender_mismatch" });
 
     expect(outbox).toHaveLength(0);
     expect((await db().collection("transactions").doc("t2").get()).data()!.status).toBe("needs_review");
@@ -161,12 +163,12 @@ describe("answering by reply", () => {
     const r = await roundReplyTo();
     answers = [{ index: 0, category: "Other Personal", quote: "target was personal" }];
     clock += 31 * 86_400_000;
-    expect(await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true)).toMatchObject({ reason: "bad_token" });
+    expect(await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true, DOMAIN)).toMatchObject({ reason: "bad_token" });
 
     clock = Date.parse("2026-11-02T15:00:00Z");
     const r2 = await roundReplyTo();
     await db().collection("users").doc(OWNER).set({ sharedUids: [], sharedRoles: {} });
-    expect(await processInbound(inDeps(), event(r2[EMAILS[SPOUSE]]), true)).toMatchObject({ reason: "not_member" });
+    expect(await processInbound(inDeps(), event(r2[EMAILS[SPOUSE]]), true, DOMAIN)).toMatchObject({ reason: "not_member" });
     await db().collection("users").doc(OWNER).set({ sharedUids: [SPOUSE], sharedRoles: { [SPOUSE]: "spouse" } });
   });
 
@@ -175,7 +177,7 @@ describe("answering by reply", () => {
     const r = await roundReplyTo();
     await db().collection("transactions").doc("t2").update({ status: "categorized", category: "Groceries" });
     answers = [{ index: 0, category: "Other Personal", quote: "target was personal" }];
-    await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true);
+    await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true, DOMAIN);
     expect((await db().collection("transactions").doc("t2").get()).data()!.category).toBe("Groceries");
   });
 });
@@ -192,7 +194,7 @@ describe("receipts by reply", () => {
     ];
     receiptRead = { merchant: "Home Depot", amount: 240.5, date: "2026-10-20", confidence: "high" };
     emailFixture = { ...emailFixture, text: "receipt attached" };
-    const res = await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true);
+    const res = await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true, DOMAIN);
     expect(res).toMatchObject({ status: "processed", receipts: 1 });
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatch(new RegExp(`^receipts/${OWNER}/email/em-\\d+-synthetic/1\\.jpg$`));
@@ -206,7 +208,7 @@ describe("receipts by reply", () => {
     const r = await roundReplyTo();
     attachments = [{ id: "a1", filename: "r.jpg", size: 100_000, content_type: "image/jpeg", content_disposition: "attachment", download_url: "https://x.test/a1" }];
     receiptRead = { merchant: "Shell", amount: 61.2, date: "2026-10-20", confidence: "high" };
-    await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true);
+    await processInbound(inDeps(), event(r[EMAILS[SPOUSE]]), true, DOMAIN);
     expect((await db().collection("transactions").doc("t2").get()).data()!.receiptStoragePath).toBeUndefined();
     const inbox = await db().collection("zachReceiptInbox").get();
     expect(inbox.size).toBe(1);

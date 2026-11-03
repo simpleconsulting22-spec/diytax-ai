@@ -204,6 +204,8 @@ export interface RoundDeps {
   now: () => Date;
   /** True when replies to round emails are being received (config/zach.inboundEmail). */
   inboundEnabled?: () => Promise<boolean>;
+  /** Domain for Reply-To addresses (config/zach.replyDomain). */
+  replyDomain?: () => Promise<string>;
 }
 
 export const defaultDeps = (): RoundDeps => ({
@@ -219,6 +221,7 @@ export const defaultDeps = (): RoundDeps => ({
   },
   now: () => new Date(),
   inboundEnabled: async () => (await loadZachConfig(admin.firestore(), Date.now())).inboundEmail,
+  replyDomain: async () => (await loadZachConfig(admin.firestore(), Date.now())).replyDomain,
 });
 
 /** Reply-To for one person's questions, when replies are on. Never blocks the round. */
@@ -228,7 +231,8 @@ async function replyAddressFor(deps: RoundDeps, ownerUid: string, uid: string, e
     return await createReplyAddress(
       deps.db,
       { ownerUid, respondentUid: uid, email, roundId, groups: groups.map(({ key, vendor, count, total, guess, txnIds }) => ({ key, vendor, count, total, guess: guess ?? null, txnIds })) },
-      deps.now().getTime()
+      deps.now().getTime(),
+      deps.replyDomain ? await deps.replyDomain() : undefined
     );
   } catch (err) {
     console.error("[zachRounds] reply address failed", err instanceof Error ? err.message.slice(0, 120) : "unknown");
