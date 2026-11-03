@@ -394,3 +394,58 @@ describe("privacy: the context sent to the AI is minimized", () => {
     expect(ZACH_SYSTEM_PROMPT).not.toMatch(/\$\d/);
   });
 });
+
+describe("possible deductions and credits (opportunities)", () => {
+  const ids = (c: ReturnType<typeof assembleContext>) => c.findings.map((f) => f.id);
+
+  it("self-employment profit suggests SE health insurance and retirement plans, with sources", () => {
+    const ctx = assembleContext(base({ transactions: [t("Business Income", 50000, "income"), t("Office Supplies", 1000, "expense")] }));
+    expect(ids(ctx)).toEqual(expect.arrayContaining(["opp_se_health_insurance", "opp_se_retirement", "opp_home_office"]));
+    expect(ctx.findings.find((f) => f.id === "opp_se_health_insurance")!.sourceId).toBe("f7206");
+  });
+
+  it("no retirement suggestion when IRA contributions are recorded", () => {
+    const ctx = assembleContext(base({ profile: { filingStatus: "single", iraContributions: 6000 }, transactions: [t("Business Income", 50000, "income")] }));
+    expect(ids(ctx)).not.toContain("opp_se_retirement");
+  });
+
+  it("no business suggestions for a W-2-only filer", () => {
+    const ctx = assembleContext(base({ transactions: [t("Wages & Salaries", 60000, "income")] }));
+    expect(ids(ctx).filter((i) => i.startsWith("opp_"))).toEqual([]);
+  });
+
+  it("charity under the standard deduction is explained, not promised", () => {
+    const ctx = assembleContext(base({ transactions: [t("Wages & Salaries", 60000, "income"), t("Charitable Contribution", 500, "expense")] }));
+    const f = ctx.findings.find((x) => x.id === "opp_charity_standard")!;
+    expect(f.severity).toBe("info");
+    expect(f.message).not.toMatch(/\$\d/);
+  });
+
+  it("head of household prompts a dependent-credit check without claiming eligibility", () => {
+    const ctx = assembleContext(base({ profile: { filingStatus: "head_of_household" }, transactions: [t("Wages & Salaries", 40000, "income")] }));
+    const f = ctx.findings.find((x) => x.id === "opp_dependent_credits")!;
+    expect(f.message).toMatch(/may apply/);
+    expect(f.sourceId).toBe("sch8812");
+  });
+
+  it("every opportunity cites an allowlisted IRS source and states no dollar savings", async () => {
+    const { SOURCE_CATALOG } = await import("../src/zach/zachKnowledge");
+    const ctx = assembleContext(
+      base({
+        profile: { filingStatus: "married_jointly" },
+        transactions: [
+          t("Business Income", 80000, "income"),
+          t("Auto & Vehicle", 3000, "expense"),
+          t("Education & Training", 900, "expense"),
+          t("Medical Expense", 700, "expense"),
+        ],
+      })
+    );
+    const opps = ctx.findings.filter((f) => f.id.startsWith("opp_"));
+    expect(opps.length).toBeGreaterThanOrEqual(5);
+    for (const o of opps) {
+      expect(o.sourceId && SOURCE_CATALOG[o.sourceId]).toBeTruthy();
+      expect(o.message).not.toMatch(/\$\d/);
+    }
+  });
+});

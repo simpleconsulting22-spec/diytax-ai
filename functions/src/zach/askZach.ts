@@ -33,7 +33,7 @@ import {
   requestSchema,
   sanitizeHistory,
 } from "./zachGuard";
-import { NOT_CALCULATED_BY_APP, yearFacts } from "./zachKnowledge";
+import { NOT_CALCULATED_BY_APP, SOURCE_CATALOG, yearFacts } from "./zachKnowledge";
 import { ZACH_SYSTEM_PROMPT, buildUserTurn, chooseModelTier } from "./zachPrompt";
 import { ZACH_ROUTES, sectionForPath } from "./zachRoutes";
 import {
@@ -68,7 +68,10 @@ export interface ZachDeps {
   alert?: (crossed: Array<"target" | "alert" | "limit">, spendUsd: number, cfg: ZachConfig) => Promise<void>;
 }
 
-export type FindingOut = ZachContext["findings"][number] & { path?: string };
+export type FindingOut = ZachContext["findings"][number] & {
+  path?: string;
+  source?: { title: string; url: string };
+};
 
 export interface ZachResponse extends ZachAnswer {
   taxYear: number;
@@ -105,7 +108,11 @@ export function anthropicCaller(apiKey: string): ModelCaller {
 }
 
 function withPaths(findings: ZachContext["findings"]): FindingOut[] {
-  return findings.map((f) => ({ ...f, path: f.route ? ZACH_ROUTES[f.route].path : undefined }));
+  return findings.map((f) => ({
+    ...f,
+    path: f.route ? ZACH_ROUTES[f.route].path : undefined,
+    source: f.sourceId ? { ...SOURCE_CATALOG[f.sourceId] } : undefined,
+  }));
 }
 
 function statusFromLabel(label: string | null) {

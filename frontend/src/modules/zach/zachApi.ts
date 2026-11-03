@@ -1,6 +1,6 @@
 import { apiClient } from "../../services/apiClient";
 
-export type FindingSeverity = "action" | "check" | "info";
+export type FindingSeverity = "action" | "check" | "opportunity" | "info";
 
 export interface ZachFinding {
   id: string;
@@ -8,6 +8,7 @@ export interface ZachFinding {
   message: string;
   evidence: string;
   path?: string;
+  source?: { title: string; url: string };
 }
 
 export interface ZachAnswer {
