@@ -50,3 +50,4 @@ export { getZachAdminSummary, setZachConfig } from "./zach/zachAdmin";
 
 // Zach question rounds (email)
 export { getZachRoundSettings, saveZachRoundSettings, previewZachRound, sendZachRoundNow, getMyZachRound, zachRoundScheduler } from "./zach/rounds";
+export { zachInboundEmail } from "./zach/inbound";
