@@ -3,7 +3,7 @@ import * as admin from "firebase-admin";
 // Modular FieldValue: the namespace form breaks under the Functions emulator
 // (see getTaxForecast.ts).
 import { FieldValue } from "firebase-admin/firestore";
-import { resolveEffectiveOwner } from "../middleware/auth";
+import { requireFreshMfa, resolveEffectiveOwner } from "../middleware/auth";
 import {
   categorizeTransactionsBatch,
   loadUserRules,
@@ -320,16 +320,20 @@ export async function categorizeSpecificTransactions(
 // ─── Cloud Functions ──────────────────────────────────────────────────────────
 
 export const categorizeBatch = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540 },
+  { cors: true, invoker: "public", timeoutSeconds: 540, secrets: ["ANTHROPIC_API_KEY"] },
   async (request) => {
+    // Can spend AI budget: require a fresh second factor.
+    requireFreshMfa(request);
     const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
     return categorizeUserTransactions(effectiveOwnerUid, callerUid, role);
   }
 );
 
 export const categorizeSelected = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540 },
+  { cors: true, invoker: "public", timeoutSeconds: 540, secrets: ["ANTHROPIC_API_KEY"] },
   async (request) => {
+    // Can spend AI budget: require a fresh second factor.
+    requireFreshMfa(request);
     const { callerUid, effectiveOwnerUid, role } = await resolveEffectiveOwner(request);
     const { transactionIds, force } = request.data as { transactionIds?: string[]; force?: boolean };
     if (!Array.isArray(transactionIds) || transactionIds.length === 0) {

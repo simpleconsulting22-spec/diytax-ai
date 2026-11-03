@@ -1,5 +1,5 @@
 import * as admin from "firebase-admin";
-import OpenAI from "openai";
+import { maskDigits, requestAIItems } from "./aiCategorizer";
 import {
   buildAIPromptCategoryList,
   fallbackCategoryForType,
@@ -75,14 +75,14 @@ const KEYWORD_RULES: KeywordRule[] = [
   },
   {
     keywords: ["uber", "lyft", "airlines", "united air", "delta air", "southwest", "american air", "hotel", "marriott", "hilton", "airbnb", "expedia"],
-    category: "Travel",
-    taxCategory: "Business Expense",
+    category: "Business Travel",
+    taxCategory: "Business Travel",
     taxSchedule: "Schedule C",
   },
   {
     keywords: ["restaurant", "doordash", "grubhub", "ubereats", "uber eats", "instacart", "starbucks", "chipotle", "mcdonalds", "subway", "chick-fil-a"],
-    category: "Meals & Entertainment",
-    taxCategory: "Business Expense",
+    category: "Business Meals",
+    taxCategory: "Business Meals",
     taxSchedule: "Schedule C",
   },
   {
@@ -93,7 +93,7 @@ const KEYWORD_RULES: KeywordRule[] = [
   },
   {
     keywords: ["ssa", "social security"],
-    category: "Income",
+    category: "Other Income",
     taxCategory: "Social Security Income",
     taxSchedule: "Form 1040",
   },
@@ -105,16 +105,16 @@ const KEYWORD_RULES: KeywordRule[] = [
   },
   {
     keywords: ["github", "aws", "amazon web services", "digitalocean", "heroku", "netlify", "vercel", "stripe", "twilio", "sendgrid"],
-    category: "Software & Subscriptions",
-    taxCategory: "Business Expense",
+    category: "Computer & Software",
+    taxCategory: "Computer & Software",
     taxSchedule: "Schedule C",
   },
   {
     // Business software only. Consumer streaming used to be in this list,
     // which booked every Netflix/Spotify charge to Schedule C.
     keywords: ["adobe", "microsoft", "google workspace", "dropbox", "notion", "slack", "zoom", "figma", "shopify", "quickbooks"],
-    category: "Software & Subscriptions",
-    taxCategory: "Business Expense",
+    category: "Computer & Software",
+    taxCategory: "Computer & Software",
     taxSchedule: "Schedule C",
   },
   {
@@ -127,8 +127,8 @@ const KEYWORD_RULES: KeywordRule[] = [
   },
   {
     keywords: ["shell", "chevron", "exxon", "mobil", "bp ", "sunoco", "speedway", "circle k", "gas station"],
-    category: "Vehicle & Mileage",
-    taxCategory: "Business Expense",
+    category: "Auto & Vehicle",
+    taxCategory: "Auto & Vehicle",
     taxSchedule: "Schedule C",
   },
 ];
@@ -235,7 +235,9 @@ export function matchUserRule(
 
 // ─── Batch AI categorization (up to AI_BATCH_SIZE transactions per call) ──────
 
-const AI_BATCH_SIZE = 10;
+const AI_BATCH_SIZE = 25;
+/** Most rows sent to AI in one categorization run. */
+export const MAX_AI_ROWS_PER_RUN = 2000;
 
 interface AIBatchItem {
   index: number;
@@ -256,11 +258,6 @@ async function callAIBatch(
   const results = new Map<number, CategorizationResult>();
   if (transactions.length === 0) return results;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn("[CategorizationService] OPENAI_API_KEY not set — skipping AI.");
-    return results;
-  }
 
   const entityLines = entities.map((e) =>
     `  - "${e.name}" (${e.type === "business" ? "Schedule C" : "Schedule E"})`
@@ -284,7 +281,7 @@ async function callAIBatch(
       : "";
 
   const txnLines = transactions.map(({ idx, txn }) =>
-    `[${idx}] vendor="${txn.vendor ?? ""}" desc="${txn.description}" amount=$${Math.abs(txn.amount).toFixed(2)} type=${txn.type}`
+    `[${idx}] vendor="${maskDigits(txn.vendor ?? "")}" desc="${maskDigits(txn.description)}" amount=$${Math.abs(txn.amount).toFixed(2)} type=${txn.type}`
   );
 
   const prompt =
@@ -304,17 +301,8 @@ async function callAIBatch(
     `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer|refund>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
 
   try {
-    const openai = new OpenAI({ apiKey });
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 300 * transactions.length,
-      temperature: 0,
-    });
-
-    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-    const jsonText = raw.replace(/^```json?\s*/i, "").replace(/\s*```$/, "").trim();
-    const parsed = JSON.parse(jsonText) as AIBatchItem[];
+    const parsed = await requestAIItems(prompt, transactions.length);
+    if (!parsed) return results;
 
     const validEntityNames = new Set([...entities.map((e) => e.name), "Personal"]);
 
@@ -384,7 +372,7 @@ async function callAIBatch(
 /**
  * Categorize an array of transactions using pre-loaded rules and entities.
  * Runs keyword rules + user rules synchronously, then batches remaining
- * transactions to AI in groups of AI_BATCH_SIZE (one OpenAI call per group).
+ * transactions to AI in groups of AI_BATCH_SIZE (one AI call per group).
  *
  * `options.bypassUserRules` — skip the user-vendor-rule matcher. Used when
  * force-recategorizing a batch where the existing user rules are known to be
@@ -489,9 +477,15 @@ export async function categorizeTransactionsBatch(
     stillUnmatched.push({ idx, txn });
   }
 
-  // Phase 2: batch AI for remaining transactions
-  for (let i = 0; i < stillUnmatched.length; i += AI_BATCH_SIZE) {
-    const chunk = stillUnmatched.slice(i, i + AI_BATCH_SIZE);
+  // Phase 2: batch AI for remaining transactions, capped per run so one large
+  // import (e.g. a first 24-month bank sync) can't run up the AI bill. Rows
+  // past the cap stay unmatched and land in Needs review.
+  const aiRows = stillUnmatched.slice(0, MAX_AI_ROWS_PER_RUN);
+  if (stillUnmatched.length > aiRows.length) {
+    console.warn(`[CategorizationService] AI cap: ${stillUnmatched.length - aiRows.length} rows left for review`);
+  }
+  for (let i = 0; i < aiRows.length; i += AI_BATCH_SIZE) {
+    const chunk = aiRows.slice(i, i + AI_BATCH_SIZE);
     const aiResults = await callAIBatch(chunk, entities, userRules);
     for (const [idx, result] of aiResults) {
       results.set(idx, result);

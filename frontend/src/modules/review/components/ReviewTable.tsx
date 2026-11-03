@@ -126,33 +126,67 @@ function TypeBadge({
   );
 }
 
-function ConfidenceCell({
-  confidence,
-  explanation,
+const DEDUCTIBLE_SCHEDULES = new Set(["Schedule C", "Schedule E", "Schedule A"]);
+
+/** Plain-English reasons for Zach's review triggers. Prompts, not tax rules. */
+export const TRIGGER_TEXT: Record<string, string> = {
+  needs_purpose_confirmation: "Confirm the business, rental or itemized purpose before this counts as deductible.",
+  lodging: "Lodging is often mixed personal and business. Please confirm.",
+  meals_travel_75: "Business meal or travel of $75 or more: keep the receipt and note the purpose.",
+  charity_250: "Gift to charity of $250 or more: keep the written acknowledgment.",
+  mixed_use_merchant: "This store sells both personal and business items. Please confirm.",
+};
+
+const TIER_STYLE = {
+  sure: { label: "Sure", bg: "#dcfce7", fg: "#166534", help: "You set this, or a rule you approved matched." },
+  likely: { label: "Likely", bg: "#dbeafe", fg: "#1e40af", help: "A confident automatic guess. Change it if it's wrong." },
+  ask: { label: "Ask", bg: "#fef3c7", fg: "#92400e", help: "Zach needs you to confirm this one." },
+} as const;
+
+function ZachDecisionCell({
+  txn,
+  onUndo,
 }: {
-  confidence: number | null;
-  explanation: string | null;
+  txn: ReviewTransaction;
+  onUndo?: (id: string) => Promise<string | null>;
 }) {
-  if (confidence === null || confidence === undefined) {
-    return <span style={{ color: "#d1d5db", fontSize: "12px" }}>—</span>;
-  }
-  const pct = Math.round(confidence * 100);
-  const isHigh = confidence >= 0.8;
+  const [undoError, setUndoError] = React.useState<string | null>(null);
+  const tier =
+    txn.zachTier ??
+    (txn.source === "user_rule" && txn.status === "categorized" ? "sure" : txn.status === "needs_review" ? "ask" : null);
+  const reasons = (txn.reviewTriggers ?? []).map((t) => TRIGGER_TEXT[t]).filter(Boolean);
+  const explanation = [txn.categorizationExplanation, ...reasons].filter(Boolean).join(" ");
+  const st = tier ? TIER_STYLE[tier] : null;
+  const last = txn.lastChange;
   return (
-    <span
-      title={explanation ?? undefined}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "3px",
-        fontSize: "12px",
-        fontWeight: 600,
-        color: isHigh ? "#16A34A" : "#d97706",
-        cursor: explanation ? "help" : "default",
-      }}
-    >
-      {isHigh ? "✓" : "⚠"} {pct}%
-    </span>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", maxWidth: "190px" }}>
+      {st ? (
+        <span
+          title={`${st.help}${explanation ? " " + explanation : ""}`}
+          aria-label={`Zach: ${st.label}. ${st.help} ${explanation}`}
+          style={{ fontSize: "11px", fontWeight: 700, backgroundColor: st.bg, color: st.fg, borderRadius: "10px", padding: "2px 8px", cursor: "help", whiteSpace: "nowrap" }}
+        >
+          {st.label}
+          {txn.categorizationConfidence !== null && txn.source === "ai" ? ` · ${Math.round(txn.categorizationConfidence * 100)}%` : ""}
+        </span>
+      ) : (
+        <span style={{ color: "#d1d5db", fontSize: "12px" }}>—</span>
+      )}
+      {tier === "ask" && reasons[0] && (
+        <span style={{ fontSize: "10.5px", color: "#92400e", lineHeight: 1.3, textAlign: "center" }}>{reasons[0]}</span>
+      )}
+      {last && onUndo && (
+        <button
+          onClick={async () => setUndoError(await onUndo(txn.id))}
+          title={`Undo the last change. Restores: ${last.before.category || "no category"} (${last.before.status === "categorized" ? "confirmed" : "needs review"}).`}
+          aria-label={`Undo last change, restoring ${last.before.category || "no category"}`}
+          style={{ fontSize: "11px", color: "#2563eb", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+        >
+          Undo
+        </button>
+      )}
+      {undoError && <span role="alert" style={{ fontSize: "10.5px", color: "#b91c1c", textAlign: "center" }}>{undoError}</span>}
+    </div>
   );
 }
 
@@ -265,6 +299,8 @@ interface PendingCategoryPromptForUI {
 }
 
 interface ReviewTableProps {
+  /** Undo the last recorded change on a row. Resolves to an error message or null. */
+  onUndo?: (id: string) => Promise<string | null>;
   transactions: ReviewTransaction[];
   entities: UserEntity[];
   customCategories: string[];
@@ -333,10 +369,13 @@ export default function ReviewTable({
   onConfirm,
   onCustomCategoryAdded,
   pendingCategoryPrompt,
+  onUndo,
   onAcceptCategoryPrompt,
   onDismissCategoryPrompt,
 }: ReviewTableProps) {
   const [sortCol, setSortCol] = useState<SortCol>(null);
+  // Row whose deductible confirmation is waiting for a second click.
+  const [confirmArmed, setConfirmArmed] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   // Three-state sort: first click ASC, second DESC, third resets
@@ -612,16 +651,38 @@ export default function ReviewTable({
 
                 {/* Confidence — hover for explanation tooltip */}
                 <td style={{ ...TD, textAlign: "center" }}>
-                  <ConfidenceCell
-                    confidence={txn.categorizationConfidence}
-                    explanation={txn.categorizationExplanation}
-                  />
+                  <ZachDecisionCell txn={txn} onUndo={onUndo} />
                 </td>
 
                 {/* Confirm */}
                 <td style={{ ...TD, textAlign: "center" }}>
+                  {(() => {
+                    const deductible =
+                      txn.status === "needs_review" && DEDUCTIBLE_SCHEDULES.has(txn.taxSchedule ?? "");
+                    const armed = confirmArmed === txn.id;
+                    return deductible && armed ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "center" }}>
+                        <span style={{ fontSize: "10.5px", color: "#92400e", maxWidth: "140px", textAlign: "center" }}>
+                          Counts toward {txn.taxSchedule}. Confirm the {txn.taxSchedule === "Schedule A" ? "itemized" : txn.taxSchedule === "Schedule E" ? "rental" : "business"} purpose?
+                        </span>
+                        <div style={{ display: "flex", gap: "4px" }}>
+                          <button
+                            onClick={() => { setConfirmArmed(null); onConfirm(txn.id); }}
+                            style={{ padding: "4px 10px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                          >
+                            Yes, confirm
+                          </button>
+                          <button
+                            onClick={() => setConfirmArmed(null)}
+                            style={{ padding: "4px 8px", backgroundColor: "#fff", color: "#374151", border: "1px solid #d1d5db", borderRadius: "6px", fontSize: "11px", cursor: "pointer" }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
                   <button
-                    onClick={() => onConfirm(txn.id)}
+                    onClick={() => (deductible ? setConfirmArmed(txn.id) : onConfirm(txn.id))}
                     disabled={isUpdating}
                     style={{
                       padding: "5px 14px",
@@ -638,6 +699,8 @@ export default function ReviewTable({
                   >
                     ✓ Done
                   </button>
+                    );
+                  })()}
                 </td>
               </tr>
               {showInlinePrompt && pendingCategoryPrompt && (

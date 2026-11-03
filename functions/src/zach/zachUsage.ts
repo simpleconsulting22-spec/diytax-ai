@@ -296,3 +296,33 @@ export async function checkFindingsLimit(
     tx.set(ref, { uid, day, findingsCount: n + 1 }, { merge: true });
   });
 }
+
+/**
+ * Settle a categorization call: actual cost replaces the reservation and is
+ * counted in the same monthly total as Zach's answers (by model "categorize").
+ * Not tied to a user's question count or conversation.
+ */
+export async function settleCategorizationUsage(
+  db: admin.firestore.Firestore,
+  now: Date,
+  cfg: ZachConfig,
+  r: BudgetReservation,
+  inputTokens: number,
+  outputTokens: number
+): Promise<number> {
+  const { day } = periodKeys(now);
+  const cost = costUsd(cfg.models.fast, inputTokens, outputTokens);
+  const inc = FieldValue.increment;
+  await Promise.all([
+    db.collection("zachUsage").doc(r.monthId).set(
+      {
+        costUsd: inc(cost),
+        reservedUsd: inc(-r.reservedUsd),
+        byModel: { categorize: { requests: inc(1), costUsd: inc(cost), inputTokens: inc(inputTokens), outputTokens: inc(outputTokens) } },
+      },
+      { merge: true }
+    ),
+    db.collection("zachUsage").doc(ids.day(day)).set({ day, costUsd: inc(cost) }, { merge: true }),
+  ]);
+  return cost;
+}

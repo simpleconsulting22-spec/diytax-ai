@@ -12,6 +12,7 @@ import {
   serverTimestamp,
   limit,
   increment,
+  arrayUnion,
 } from "firebase/firestore";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
@@ -49,6 +50,12 @@ export interface ReviewTransaction {
   entityAutoAssigned?: boolean;           // true when entity was predicted (not user-set)
   entityAssignmentSource?: "rule" | "user_rule" | "ai" | null; // how entity was assigned
   possibleDuplicate?: boolean;    // true when fuzzy cross-batch match detected
+  /** Zach tier: sure / likely / ask (absent on rows categorized before M0). */
+  zachTier?: "sure" | "likely" | "ask" | null;
+  /** Internal reasons Zach asks about this row (not tax rules). */
+  reviewTriggers?: string[];
+  /** The most recent change, if any — what Undo would restore. */
+  lastChange?: { source: string; before: { category: string; status: string } } | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -319,6 +326,11 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
           entityAutoAssigned: data.entityAutoAssigned === true,
           entityAssignmentSource: (data.entityAssignmentSource as ReviewTransaction["entityAssignmentSource"]) ?? null,
           possibleDuplicate: data.possibleDuplicate === true,
+          zachTier: (data.zachTier as ReviewTransaction["zachTier"]) ?? null,
+          reviewTriggers: Array.isArray(data.reviewTriggers) ? (data.reviewTriggers as string[]) : [],
+          lastChange: Array.isArray(data.history) && data.history.length > 0
+            ? (data.history[data.history.length - 1] as ReviewTransaction["lastChange"])
+            : null,
         };
       });
 
@@ -528,6 +540,48 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     }
   }
 
+  // ── Audit history for client-side category writes ──────────────────────────
+  // Mirrors the server's history entries (decisionPolicy.ts) so every change
+  // made from this page can be traced and undone.
+  function auditFields(
+    id: string,
+    after: { category?: string | null; taxCategory?: string | null; taxSchedule?: string | null; status?: string },
+    source: string,
+  ): Record<string, unknown> {
+    const t = state.transactions.find((x) => x.id === id);
+    const before = {
+      category: t?.category ?? "",
+      taxCategory: t?.taxCategory ?? "",
+      taxSchedule: t?.taxSchedule ?? "",
+      status: t?.status ?? "",
+    };
+    const next = {
+      category: after.category ?? before.category,
+      taxCategory: after.taxCategory ?? before.taxCategory,
+      taxSchedule: after.taxSchedule ?? before.taxSchedule,
+      status: after.status ?? before.status,
+    };
+    return {
+      history: arrayUnion({ at: Date.now(), by: user?.uid ?? "", source, before, after: next }),
+      zachTier: "sure",
+      reviewTriggers: [],
+    };
+  }
+
+  // ── Undo the last change on one transaction (server-side, guarded) ────────
+  async function handleUndo(id: string): Promise<string | null> {
+    setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
+    try {
+      await apiClient.call("undoCategoryChange", { transactionId: id });
+      await loadTransactions();
+      return null;
+    } catch (e) {
+      return (e as { message?: string }).message ?? "Undo failed.";
+    } finally {
+      setState((prev) => ({ ...prev, updating: new Set([...prev.updating].filter((i) => i !== id)) }));
+    }
+  }
+
   // ── Pending category-prompt handlers ───────────────────────────────────────
 
   async function acceptCategoryPrompt() {
@@ -568,7 +622,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       for (let i = 0; i < ids.length; i += 499) {
         const batch = writeBatch(db);
         for (const docId of ids.slice(i, i + 499)) {
-          batch.update(doc(db, "transactions", docId), docUpdate);
+          batch.update(doc(db, "transactions", docId), hasCategory
+            ? { ...docUpdate, ...auditFields(docId, { category: prompt.category, taxCategory: prompt.taxCategory, taxSchedule: prompt.taxSchedule }, "user:apply_similar") }
+            : docUpdate);
         }
         await batch.commit();
       }
@@ -633,6 +689,8 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     setState((prev) => ({ ...prev, updating: new Set([...prev.updating, id]) }));
     try {
       await updateDoc(doc(db, "transactions", id), {
+        ...auditFields(id, { status: "categorized" }, "user:confirm"),
+        isUserModified: true,
         status:        "categorized",
         updatedBy:     user?.uid ?? "",
         updatedByRole: role,
@@ -663,6 +721,8 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
       const batch = writeBatch(db);
       for (const id of ids) {
         batch.update(doc(db, "transactions", id), {
+          ...auditFields(id, { status: "categorized" }, "user:bulk_confirm"),
+          isUserModified: true,
           status:        "categorized",
           updatedBy:     user?.uid ?? "",
           updatedByRole: role,
@@ -710,6 +770,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         const batch = writeBatch(db);
         for (const id of writableIds.slice(i, i + 499)) {
           batch.update(doc(db, "transactions", id), {
+            ...auditFields(id, { category }, "user:bulk_category"),
             category,
             categorizationSource: "user_rule",
             isUserModified:       true,
@@ -997,6 +1058,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         const batch = writeBatch(db);
         for (const id of ids.slice(i, i + 499)) {
           batch.update(doc(db, "transactions", id), {
+            ...auditFields(id, { category }, "user:apply_similar"),
             category,
             categorizationSource: "user_rule",
             isUserModified:       true,
@@ -1086,5 +1148,6 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
     acceptCategoryPrompt,
     dismissCategoryPrompt,
     reload: loadTransactions,
+    handleUndo,
   };
 }

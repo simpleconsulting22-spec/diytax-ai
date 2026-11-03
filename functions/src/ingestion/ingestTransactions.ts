@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import { requireAuth } from "../middleware/auth";
+import { requireFreshMfa } from "../middleware/auth";
 import {
   Source,
   RawCsvInput,
@@ -302,9 +302,9 @@ async function fetchExistingDedupeHashes(
 // ─── HTTPS callable wrapper ──────────────────────────────────────────────────
 
 export const ingestTransactions = onCall(
-  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB", secrets: ["ANTHROPIC_API_KEY"] },
   async (request): Promise<IngestReport> => {
-    const uid = await requireAuth(request);
+    const uid = requireFreshMfa(request);
     return ingestTransactionsCore(uid, request.data as IngestRequest);
   },
 );
