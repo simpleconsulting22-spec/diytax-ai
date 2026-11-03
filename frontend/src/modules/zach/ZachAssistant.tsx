@@ -43,6 +43,7 @@ const DEFAULT_SUGGESTIONS = ["What information do I need next?", "What deduction
 const SEVERITY_STYLE: Record<FindingSeverity, { label: string; bg: string; fg: string }> = {
   action: { label: "To do", bg: "#fef2f2", fg: "#b91c1c" },
   check: { label: "Check", bg: "#fffbeb", fg: "#b45309" },
+  opportunity: { label: "Possible savings", bg: "#f0fdf4", fg: "#15803d" },
   info: { label: "FYI", bg: "#eff6ff", fg: "#1d4ed8" },
 };
 
@@ -314,6 +315,11 @@ export default function ZachAssistant() {
                       <span style={{ fontSize: "11px", fontWeight: 700, backgroundColor: s.bg, color: s.fg, borderRadius: "6px", padding: "2px 8px" }}>{s.label}</span>
                       <div style={{ fontSize: "14px", margin: "8px 0 4px" }}>{f.message}</div>
                       <div style={{ fontSize: "12px", color: MUTED }}>{f.evidence}</div>
+                      {f.source && (
+                        <a href={f.source.url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "#2563eb", textDecoration: "none", marginTop: "4px" }}>
+                          <ExternalLink size={12} /> {f.source.title}
+                        </a>
+                      )}
                       {f.path && (
                         <button onClick={() => go(f.path!)} style={{ marginTop: "8px", display: "inline-flex", alignItems: "center", gap: "4px", background: "none", border: "none", color: GREEN, fontWeight: 600, fontSize: "13px", cursor: "pointer", padding: 0, fontFamily: font }}>
                           Go there <ArrowRight size={14} />

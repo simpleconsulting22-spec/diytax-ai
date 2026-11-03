@@ -63,6 +63,8 @@ export const SOURCE_CATALOG = {
   pub596: { title: "IRS Publication 596, Earned Income Credit", url: "https://www.irs.gov/publications/p596" },
   pub970: { title: "IRS Publication 970, Tax Benefits for Education", url: "https://www.irs.gov/publications/p970" },
   pub503: { title: "IRS Publication 503, Child and Dependent Care Expenses", url: "https://www.irs.gov/publications/p503" },
+  f7206: { title: "About Form 7206, Self-Employed Health Insurance Deduction", url: "https://www.irs.gov/forms-pubs/about-form-7206" },
+  pub560: { title: "IRS Publication 560, Retirement Plans for Small Business", url: "https://www.irs.gov/publications/p560" },
   choosePro: { title: "IRS: Choosing a tax professional", url: "https://www.irs.gov/tax-professionals/choosing-a-tax-professional" },
 } as const satisfies Record<string, TaxSource>;
 

@@ -27,6 +27,7 @@ import {
   summarizeTransactions,
 } from "../tax/summarizeTransactions";
 import { ZachRouteId } from "./zachRoutes";
+import { SourceId } from "./zachKnowledge";
 
 export interface ProfileInput {
   filingStatus?: unknown;
@@ -47,7 +48,9 @@ export interface ContextInputs {
   retirementForms: Array<{ totalDistribution?: unknown; taxableAmount?: unknown }>;
 }
 
-export type FindingSeverity = "action" | "check" | "info";
+/** "opportunity" = a possible deduction or credit to look into. It is never a
+ *  determination: each depends on facts the app doesn't have. */
+export type FindingSeverity = "action" | "check" | "opportunity" | "info";
 
 export interface ReviewFinding {
   id: string;
@@ -56,6 +59,8 @@ export interface ReviewFinding {
   /** The specific numbers the finding rests on. */
   evidence: string;
   route?: ZachRouteId;
+  /** IRS source that explains the rule. */
+  sourceId?: SourceId;
 }
 
 export interface ZachContext {
@@ -208,7 +213,7 @@ export function assembleContext(inputs: ContextInputs): ZachContext {
     nextEstimatedPaymentDue: next ? `${next.label}: ${next.dueDate}` : null,
     findings: [],
   };
-  ctx.findings = reviewFindings(ctx, profileW2, ytd.w2Wages);
+  ctx.findings = [...reviewFindings(ctx, profileW2, ytd.w2Wages), ...opportunityFindings(ctx, ira)];
   return ctx;
 }
 
@@ -353,6 +358,100 @@ export function reviewFindings(
       message: `You have self-employment profit. The next quarterly estimated payment date is ${ctx.nextEstimatedPaymentDue}.`,
       evidence: `Schedule C net ${money(t.scheduleCNet)}.`,
       route: "taxEstimate",
+    });
+  }
+  return f;
+}
+
+/**
+ * Possible deductions and credits worth checking, each triggered by the
+ * taxpayer's own data. Wording is deliberately conditional: eligibility
+ * depends on facts DIYTax AI doesn't collect. No amounts are estimated.
+ */
+export function opportunityFindings(ctx: ZachContext, iraContributions: number): ReviewFinding[] {
+  const f: ReviewFinding[] = [];
+  const t = ctx.totals;
+  const cats = new Map(ctx.topCategories.map((c) => [c.category, Math.abs(c.total)]));
+  const has = (c: string) => (cats.get(c) ?? 0) > 0;
+  const e = ctx.estimate;
+
+  if (t.scheduleCNet > 0) {
+    f.push({
+      id: "opp_se_health_insurance",
+      severity: "opportunity",
+      message: "If you paid your own health insurance premiums, the self-employed health insurance deduction may apply.",
+      evidence: `You have self-employment profit of ${money(t.scheduleCNet)}.`,
+      route: "deductions",
+      sourceId: "f7206",
+    });
+    if (iraContributions === 0) {
+      f.push({
+        id: "opp_se_retirement",
+        severity: "opportunity",
+        message: "Contributions to a SEP-IRA, SIMPLE IRA or solo 401(k) can reduce taxable income for self-employed people.",
+        evidence: `Self-employment profit ${money(t.scheduleCNet)}; no retirement contributions recorded.`,
+        route: "taxProfile",
+        sourceId: "pub560",
+      });
+    }
+  }
+  if (t.scheduleCIncome > 0 && !has("Home Office")) {
+    f.push({
+      id: "opp_home_office",
+      severity: "opportunity",
+      message: "If you use part of your home regularly and exclusively for your business, a home office deduction may apply.",
+      evidence: "Business income recorded; no home office expenses recorded.",
+      route: "scheduleC",
+      sourceId: "pub587",
+    });
+  }
+  if (has("Auto & Vehicle") && t.scheduleCIncome > 0) {
+    f.push({
+      id: "opp_vehicle_records",
+      severity: "opportunity",
+      message: "For business driving you can generally use the standard mileage rate or actual costs. Either way, a mileage log supports the deduction.",
+      evidence: `Vehicle expenses recorded: ${money(cats.get("Auto & Vehicle") ?? 0)}.`,
+      route: "scheduleC",
+      sourceId: "mileage",
+    });
+  }
+  if (has("Education & Training")) {
+    f.push({
+      id: "opp_education",
+      severity: "opportunity",
+      message: "Education costs may qualify for an education credit, or as a business expense if they maintain skills for your current work.",
+      evidence: `Education expenses recorded: ${money(cats.get("Education & Training") ?? 0)}.`,
+      route: "transactions",
+      sourceId: "pub970",
+    });
+  }
+  if (e && !e.usingItemized && has("Charitable Contribution")) {
+    f.push({
+      id: "opp_charity_standard",
+      severity: "info",
+      message: "Your charitable gifts aren't lowering the estimate because it uses the standard deduction. Check whether a rule for non-itemizers applies for this year.",
+      evidence: `Charitable gifts ${money(cats.get("Charitable Contribution") ?? 0)}; standard deduction ${money(e.standardDeduction)} is larger than itemized ${money(e.itemizedDeduction)}.`,
+      route: "scheduleA",
+      sourceId: "pub526",
+    });
+  }
+  if (e && !e.usingItemized && (has("Medical Expense") || has("Dental Expense") || has("Healthcare"))) {
+    f.push({
+      id: "opp_medical",
+      severity: "info",
+      message: "Medical expenses count only if you itemize and they pass an income-based floor, so they aren't lowering your estimate now.",
+      evidence: "Medical or dental expenses recorded; the estimate uses the standard deduction.",
+      route: "scheduleA",
+      sourceId: "pub502",
+    });
+  }
+  if (ctx.filingStatus === "Head of Household" || ctx.filingStatus === "Married Filing Jointly") {
+    f.push({
+      id: "opp_dependent_credits",
+      severity: "opportunity",
+      message: "If you have children or other dependents, credits such as the child tax credit or the dependent care credit may apply. DIYTax AI doesn't calculate credits yet; ask Zach to walk you through the tests.",
+      evidence: `Filing status: ${ctx.filingStatus}. No dependent information is recorded in DIYTax AI.`,
+      sourceId: "sch8812",
     });
   }
   return f;
