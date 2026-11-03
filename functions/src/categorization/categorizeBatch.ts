@@ -63,6 +63,7 @@ export async function applyResultToDoc(
   // and confident AI are Likely, risky or uncertain items are Ask.
   const decision = decide(result, {
     amount: txn.amount,
+    type: txn.type,
     description: txn.description,
     normalizedDescription: txn.normalizedDescription,
   });
@@ -74,7 +75,7 @@ export async function applyResultToDoc(
     : { category: result.category ?? "", taxCategory: result.taxCategory ?? "", taxSchedule: result.taxSchedule ?? "", status: newStatus };
 
   const update: Record<string, unknown> = {
-    ...(!keepExistingCategory && !isAITransfer ? { zachTier: decision.tier, riskFlags: decision.riskFlags } : {}),
+    ...(!keepExistingCategory && !isAITransfer ? { zachTier: decision.tier, reviewTriggers: decision.reviewTriggers } : {}),
     ...(changed(before, after)
       ? {
           history: appendHistory((txn as unknown as Record<string, unknown>).history, {

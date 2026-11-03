@@ -90,6 +90,7 @@ describe("ingest uses the shared categorizer and decision policy", () => {
     const acme = rows.find((t) => String(t.description).startsWith("ACME"))!;
     const netflix = rows.find((t) => String(t.description).startsWith("NETFLIX"))!;
     expect(acme).toMatchObject({ category: "Office Supplies", status: "categorized", zachTier: "sure" });
+    expect(netflix.categorizationExplanation).toMatch(/business purpose/);
     expect(netflix).toMatchObject({ category: "Personal Subscriptions", taxSchedule: "Personal", zachTier: "likely" });
     expect(netflix.taxSchedule).not.toBe("Schedule C");
     expect(acme.history).toHaveLength(1);

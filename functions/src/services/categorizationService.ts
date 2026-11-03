@@ -62,6 +62,8 @@ interface KeywordRule {
   category: string;
   taxCategory: string;
   taxSchedule: string;
+  /** Shown to the user in place of the generic keyword explanation. */
+  explanation?: string;
 }
 
 const KEYWORD_RULES: KeywordRule[] = [
@@ -120,6 +122,8 @@ const KEYWORD_RULES: KeywordRule[] = [
     category: "Personal Subscriptions",
     taxCategory: "Personal Subscriptions",
     taxSchedule: "Personal",
+    explanation:
+      "Streaming services default to personal. If this one is used for business, change the category and note the business purpose.",
   },
   {
     keywords: ["shell", "chevron", "exxon", "mobil", "bp ", "sunoco", "speedway", "circle k", "gas station"],
@@ -144,7 +148,7 @@ function applyKeywordRules(
         entityId: null,
         entityName: null,
         entityType: undefined,
-        categorizationExplanation: `Matched built-in keyword rule for "${matched}"`,
+        categorizationExplanation: rule.explanation ?? `Matched built-in keyword rule for "${matched}"`,
       };
     }
   }

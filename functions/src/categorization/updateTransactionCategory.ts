@@ -59,7 +59,7 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
     isUserModified:            true,
     status:                    "categorized",
     zachTier:                  "sure",
-    riskFlags:                 [],
+    reviewTriggers:            [],
     history:                   appendHistory(txn.history, { at: Date.now(), by: uid, source: "user", before, after }),
     updatedAt:                 FieldValue.serverTimestamp(),
   };
