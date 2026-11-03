@@ -6,7 +6,7 @@ import {
   orderBy,
   getDocs,
 } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { db } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { useTaxYear } from "../contexts/TaxYearContext";
@@ -22,14 +22,14 @@ interface TxnRow {
   date: string;
   description: string;
   amount: number;
-  type: "income" | "expense" | "transfer";
+  type: "income" | "expense" | "transfer" | "refund";
   category: string | null;
   entityName: string | null;
   accountName: string | null;
   status: "categorized" | "needs_review" | "transfer";
 }
 
-type TypeFilter   = "all" | "income" | "expense" | "transfer";
+type TypeFilter   = "all" | "income" | "expense" | "transfer" | "refund";
 type StatusFilter = "all" | "categorized" | "needs_review";
 type SortCol      = "date" | "description" | "amount" | "category" | null;
 type SortDir      = "asc" | "desc";
@@ -74,14 +74,17 @@ function StatusBadge({ status }: { status: TxnRow["status"] }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TransactionHistoryPage() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isMobile = useIsMobile();
   const { selectedYear } = useTaxYear();
 
   const [rows, setRows]           = useState<TxnRow[]>([]);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState("");
+  const [categoryPin, setCategoryPin] = useState<string | null>(searchParams.get("category"));
   const [typeFilter, setTypeFilter]     = useState<TypeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [accountFilter, setAccountFilter] = useState("all");
@@ -98,18 +101,22 @@ export default function TransactionHistoryPage() {
       getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("date", ">=", `${selectedYear}-01-01`),
           where("date", "<=", `${selectedYear}-12-31`),
           orderBy("date", "desc")
         )
       ),
-      getDocs(query(collection(db, "accounts"), where("uid", "==", user.uid))),
+      getDocs(query(collection(db, "accounts"), where("uid", "==", ownerUid))),
     ]).then(([snap, accountSnap]) => {
       const accountMap = new Map<string, string>();
-      accountSnap.docs.forEach((d) =>
-        accountMap.set(d.id, (d.data().name as string) ?? d.id)
-      );
+      accountSnap.docs.forEach((d) => {
+        const data = d.data();
+        const display = (data.name as string)
+          ?? (data.accountName as string)
+          ?? d.id;
+        accountMap.set(d.id, display);
+      });
 
       const data: TxnRow[] = snap.docs.map((d) => {
         const txn = d.data();
@@ -159,6 +166,9 @@ export default function TransactionHistoryPage() {
   const filtered = useMemo(() => {
     let list = rows;
 
+    if (categoryPin)
+      list = list.filter((r) => r.category === categoryPin);
+
     if (typeFilter !== "all")
       list = list.filter((r) => r.type === typeFilter);
 
@@ -200,6 +210,7 @@ export default function TransactionHistoryPage() {
     rows.forEach((r) => {
       if (r.type === "income")  income   += r.amount;
       if (r.type === "expense") expenses += Math.abs(r.amount);
+      if (r.type === "refund")  expenses -= Math.abs(r.amount);
       if (r.status === "needs_review") needsReview++;
     });
     return { income, expenses, net: income - expenses, needsReview };
@@ -328,6 +339,7 @@ export default function TransactionHistoryPage() {
                 { key: "all",      label: "All" },
                 { key: "income",   label: "Income" },
                 { key: "expense",  label: "Expenses" },
+                { key: "refund",   label: "Refunds" },
                 { key: "transfer", label: "Transfers" },
               ] as const).map(({ key, label }) => (
                 <button key={key} style={pillBtn(typeFilter === key)} onClick={() => setTypeFilter(key)}>
@@ -400,6 +412,27 @@ export default function TransactionHistoryPage() {
           </div>
         )}
 
+        {/* Category pin banner */}
+        {categoryPin && !loading && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: "6px",
+              padding: "5px 12px", backgroundColor: "#f0fdf4",
+              border: "1px solid #bbf7d0", borderRadius: "999px",
+              fontSize: "13px", fontWeight: 600, color: "#15803d",
+            }}>
+              Category: {categoryPin}
+              <button
+                onClick={() => setCategoryPin(null)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: "14px", padding: 0, lineHeight: 1 }}
+                title="Clear category filter"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
+
         {/* Result count */}
         {!loading && rows.length > 0 && (
           <div style={{ fontSize: "12px", color: "#9ca3af", marginBottom: "8px" }}>
@@ -430,7 +463,7 @@ export default function TransactionHistoryPage() {
           <div style={{ padding: "48px 24px", textAlign: "center", backgroundColor: "#fff", borderRadius: "12px", color: "#6b7280", fontSize: "14px" }}>
             No transactions match your filters.{" "}
             <button
-              onClick={() => { setTypeFilter("all"); setStatusFilter("all"); setAccountFilter("all"); setSearch(""); }}
+              onClick={() => { setTypeFilter("all"); setStatusFilter("all"); setAccountFilter("all"); setSearch(""); setCategoryPin(null); }}
               style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, cursor: "pointer", fontFamily: font, fontSize: "14px" }}
             >
               Clear filters
@@ -475,9 +508,9 @@ export default function TransactionHistoryPage() {
                       fontVariantNumeric: "tabular-nums",
                       fontWeight: 600,
                       whiteSpace: "nowrap",
-                      color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#9ca3af" : "#dc2626",
+                      color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#9ca3af" : row.type === "refund" ? "#7c3aed" : "#dc2626",
                     }}>
-                      {row.type === "income" ? "+" : row.type === "expense" ? "−" : ""}
+                      {row.type === "income" ? "+" : row.type === "refund" ? "+" : row.type === "expense" ? "−" : ""}
                       {fmtMoney(row.amount)}
                     </td>
 
@@ -489,8 +522,8 @@ export default function TransactionHistoryPage() {
                         borderRadius: "999px",
                         fontSize: "11px",
                         fontWeight: 600,
-                        backgroundColor: row.type === "income" ? "#f0fdf4" : row.type === "transfer" ? "#f3f4f6" : "#fef2f2",
-                        color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#6b7280" : "#dc2626",
+                        backgroundColor: row.type === "income" ? "#f0fdf4" : row.type === "transfer" ? "#f3f4f6" : row.type === "refund" ? "#f5f3ff" : "#fef2f2",
+                        color: row.type === "income" ? "#15803d" : row.type === "transfer" ? "#6b7280" : row.type === "refund" ? "#7c3aed" : "#dc2626",
                       }}>
                         {row.type}
                       </span>

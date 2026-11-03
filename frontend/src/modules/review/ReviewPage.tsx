@@ -1,12 +1,15 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { X } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
-import { useReviewTransactions } from "./hooks/useReviewTransactions";
+import { detectClassificationMismatch } from "../../shared/taxMap";
+import { useReviewTransactions, truncateForPrompt } from "./hooks/useReviewTransactions";
 import AppNav from "../../components/AppNav";
 import { normalizeCategoryName } from "../../utils/normalizeCategory";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { apiClient } from "../../services/apiClient";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
@@ -190,6 +193,9 @@ function BulkCategoryPicker({ categoryPool, onSelect, onCustomCategoryAdded }: B
 export default function ReviewPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+
+  const [statusFilter, setStatusFilter] = useState<"needs_review" | "categorized">("needs_review");
+
   const {
     state,
     allSelected,
@@ -200,39 +206,130 @@ export default function ReviewPage() {
     handleBulkConfirm,
     handleBulkCategoryAssign,
     handleBulkEntityAssign,
+    handleBulkAccountAssign,
     handleAutoCategorizeBatch,
+    handleApplySimilar,
     handleCustomCategoryAdded,
     clearSelection,
     toggleSelect,
     toggleSelectAll,
+    acceptCategoryPrompt,
+    dismissCategoryPrompt,
     reload,
-  } = useReviewTransactions();
+  } = useReviewTransactions(statusFilter);
 
-  const { transactions, entities, customCategories, loading, error, selectedIds, updating } = state;
+  const { transactions, entities, customCategories, loading, error, selectedIds, updating, pendingCategoryPrompt } = state;
 
   const isMobile = useIsMobile();
+  const isCategorizedView = statusFilter === "categorized";
 
   const [bulkEntityKey, setBulkEntityKey] = useState(0);
+  const [bulkAccountName, setBulkAccountName] = useState("");
   const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense" | "transfer" | "refund">("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [entityFilter, setEntityFilter] = useState<string>("all");
+  const [mismatchOnly, setMismatchOnly] = useState<boolean>(false);
+  const [filterAccountInput, setFilterAccountInput] = useState("");
+  const [applyingFilterAccount, setApplyingFilterAccount] = useState(false);
   const [autoProgress, setAutoProgress] = useState<{ processed: number; total: number } | null>(null);
+
+  // Transfer-cleanup state. Surfaced as a small button on the header.
+  const [transferCleanup, setTransferCleanup] = useState<
+    { running: true } | { running: false; lastResult?: string } | null
+  >(null);
+
+  const handleCleanupTransfers = useCallback(async () => {
+    setTransferCleanup({ running: true });
+    try {
+      const res = await apiClient.call<{ scanned: number; updated: number }>(
+        "cleanupTransferCategorization",
+      );
+      setTransferCleanup({
+        running: false,
+        lastResult: res.updated > 0
+          ? `Cleared ${res.updated} transfer row${res.updated !== 1 ? "s" : ""}.`
+          : "Already clean — no transfers to update.",
+      });
+      await reload();
+    } catch (e) {
+      setTransferCleanup({
+        running: false,
+        lastResult: e instanceof Error ? `Failed: ${e.message}` : "Failed.",
+      });
+    }
+  }, [reload]);
+  const [autoToast, setAutoToast] = useState<{ message: string; isError: boolean } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showToast(message: string, isError = false) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setAutoToast({ message, isError });
+    toastTimerRef.current = setTimeout(() => setAutoToast(null), 6000);
+  }
+
+  // Pre-fill the account name input when the filter changes to a named account
+  useEffect(() => {
+    if (accountFilter !== "all" && accountFilter !== "__blank__") {
+      setFilterAccountInput(accountFilter);
+    } else {
+      setFilterAccountInput("");
+    }
+  }, [accountFilter]);
 
   const handleAutoAll = useCallback(async () => {
     setAutoProgress({ processed: 0, total: transactions.length });
-    await handleAutoCategorizeBatch("all", (processed, total) =>
+    const result = await handleAutoCategorizeBatch("all", (processed, total) =>
       setAutoProgress({ processed, total })
     );
     setAutoProgress(null);
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else if (result.categorized === 0 && result.skipped === 0) {
+      showToast("No transactions to categorize.");
+    } else {
+      showToast(`Categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}. ${result.skipped > 0 ? `${result.skipped} skipped.` : ""}`);
+    }
   }, [handleAutoCategorizeBatch, transactions.length]);
 
   const handleAutoSelected = useCallback(async () => {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     setAutoProgress({ processed: 0, total: ids.length });
-    await handleAutoCategorizeBatch(ids, (processed, total) =>
+    const result = await handleAutoCategorizeBatch(ids, (processed, total) =>
       setAutoProgress({ processed, total })
     );
     setAutoProgress(null);
     clearSelection();
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else {
+      showToast(`Categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}. ${result.skipped > 0 ? `${result.skipped} skipped.` : ""}`);
+    }
+  }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
+
+  const handleForceRecategorize = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const n = selectedIds.size;
+    if (!window.confirm(
+      `Re-categorize ${n} selected transaction${n !== 1 ? "s" : ""}? ` +
+      `This will overwrite the current category and entity assignment with AI-suggested values. ` +
+      `Use this to fix a batch where the wrong category was applied (e.g. all rows tagged "Laundry").`
+    )) return;
+    const ids = [...selectedIds];
+    setAutoProgress({ processed: 0, total: ids.length });
+    const result = await handleAutoCategorizeBatch(
+      ids,
+      (processed, total) => setAutoProgress({ processed, total }),
+      { force: true },
+    );
+    setAutoProgress(null);
+    clearSelection();
+    if (result.error) {
+      showToast(`Error: ${result.error}`, true);
+    } else {
+      showToast(`Re-categorized ${result.categorized} transaction${result.categorized !== 1 ? "s" : ""}.`);
+    }
   }, [handleAutoCategorizeBatch, selectedIds, clearSelection]);
 
   const hasSelection = selectedIds.size > 0;
@@ -241,10 +338,39 @@ export default function ReviewPage() {
     new Set(transactions.map((t) => t.accountName).filter((n): n is string => !!n))
   ).sort();
 
-  const filteredTransactions =
-    accountFilter === "all"
-      ? transactions
-      : transactions.filter((t) => t.accountName === accountFilter);
+  const hasBlankAccounts = transactions.some((t) => !t.accountName?.trim());
+
+  const categoryOptions = Array.from(
+    new Set(transactions.map((t) => t.category).filter((c): c is string => !!c))
+  ).sort();
+
+  const hasUncategorized = transactions.some((t) => !t.category);
+
+  const filteredTransactions = transactions.filter((t) => {
+    if (accountFilter === "__blank__") {
+      if (t.accountName?.trim()) return false;
+    } else if (accountFilter !== "all") {
+      if (t.accountName !== accountFilter) return false;
+    }
+    if (typeFilter !== "all" && t.type !== typeFilter) return false;
+    if (categoryFilter === "__blank__") {
+      if (t.category) return false;
+    } else if (categoryFilter !== "all") {
+      if (t.category !== categoryFilter) return false;
+    }
+    if (entityFilter === "__personal__") {
+      if (t.entityId) return false;
+    } else if (entityFilter !== "all") {
+      if (t.entityId !== entityFilter) return false;
+    }
+    if (mismatchOnly && !detectClassificationMismatch(t)) return false;
+    return true;
+  });
+
+  const mismatchCount = useMemo(
+    () => transactions.filter((t) => detectClassificationMismatch(t) !== null).length,
+    [transactions]
+  );
 
   // allSelected and toggleSelectAll must reflect the filtered view only.
   const filteredAllSelected = useMemo(
@@ -257,6 +383,14 @@ export default function ReviewPage() {
     toggleSelectAll(filteredTransactions.map((t) => t.id));
   }, [toggleSelectAll, filteredTransactions]);
 
+  const handleApplyFilterAccount = useCallback(async () => {
+    const name = filterAccountInput.trim();
+    if (!name || filteredTransactions.length === 0) return;
+    setApplyingFilterAccount(true);
+    await handleBulkAccountAssign(filteredTransactions.map((t) => t.id), name);
+    setApplyingFilterAccount(false);
+  }, [filterAccountInput, filteredTransactions, handleBulkAccountAssign]);
+
   // Full category pool for the bulk toolbar (no entity-type filtering —
   // bulk assign applies to mixed transactions).
   const bulkCategoryPool = useMemo(() => {
@@ -266,6 +400,78 @@ export default function ReviewPage() {
     );
     return [...TAX_CATEGORIES, ...extras];
   }, [customCategories]);
+
+  // Compute vendor groups for "Apply to Similar" panel.
+  // Shows groups with 2+ transactions where a majority share the same category suggestion.
+  const similarGroups = useMemo(() => {
+    if (loading) return [];
+
+    const groups = new Map<string, typeof filteredTransactions>();
+    for (const txn of filteredTransactions) {
+      const key = txn.vendor?.trim().toLowerCase();
+      if (!key || key.length < 2) continue;
+      const arr = groups.get(key) ?? [];
+      arr.push(txn);
+      groups.set(key, arr);
+    }
+
+    const result: Array<{
+      vendor: string;
+      ids: string[];
+      suggestedCategory: string;
+      suggestedEntityId: string | null;
+      suggestedEntityType: "business" | "rental" | "personal";
+      suggestedEntityName: string | undefined;
+      totalCount: number;
+    }> = [];
+
+    for (const [vendor, txns] of groups) {
+      if (txns.length < 2) continue;
+
+      // Derive suggestion from transactions that already have a category
+      const withCat = txns.filter((t) => t.category);
+      if (withCat.length === 0) continue;
+
+      // Most common category
+      const catCounts = new Map<string, number>();
+      for (const t of withCat) {
+        if (t.category) catCounts.set(t.category, (catCounts.get(t.category) ?? 0) + 1);
+      }
+      const topCat = [...catCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (!topCat || topCat[1] < withCat.length * 0.5) continue;
+
+      // Most common entity
+      const entityCounts = new Map<string, number>();
+      for (const t of withCat) {
+        const ek = t.entityId ?? "__personal__";
+        entityCounts.set(ek, (entityCounts.get(ek) ?? 0) + 1);
+      }
+      const topEntityKey = [...entityCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const topEntityObj = (topEntityKey && topEntityKey !== "__personal__")
+        ? entities.find((e) => e.id === topEntityKey) ?? null
+        : null;
+
+      // Surface rows missing a category, or whose entity doesn't match the majority entity
+      const needsAction = txns.filter((t) => {
+        if (!t.category) return true;
+        if (topEntityObj && t.entityId !== topEntityObj.id) return true;
+        return false;
+      });
+      if (needsAction.length === 0) continue;
+
+      result.push({
+        vendor,
+        ids: needsAction.map((t) => t.id),
+        suggestedCategory: topCat[0],
+        suggestedEntityId: topEntityObj?.id ?? null,
+        suggestedEntityType: topEntityObj?.type ?? "personal",
+        suggestedEntityName: topEntityObj?.name,
+        totalCount: txns.length,
+      });
+    }
+
+    return result.sort((a, b) => b.ids.length - a.ids.length).slice(0, 8);
+  }, [filteredTransactions, entities, isCategorizedView, loading]);
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", fontFamily: font, paddingBottom: hasSelection ? (isMobile ? "160px" : "80px") : "0" }}>
@@ -284,11 +490,38 @@ export default function ReviewPage() {
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
               {loading
                 ? "Loading…"
+                : isCategorizedView
+                ? `${transactions.length} categorized transaction${transactions.length !== 1 ? "s" : ""} — click any category to edit`
                 : `${transactions.length} transaction${transactions.length !== 1 ? "s" : ""} need review`}
             </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            {!loading && transactions.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {/* Toggle pills */}
+            <div style={{ display: "flex", backgroundColor: "#f3f4f6", borderRadius: "8px", padding: "3px", gap: "2px" }}>
+              {(["needs_review", "categorized"] as const).map((val) => (
+                <button
+                  key={val}
+                  onClick={() => { setStatusFilter(val); clearSelection(); }}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    border: "none",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: font,
+                    backgroundColor: statusFilter === val ? "#fff" : "transparent",
+                    color: statusFilter === val ? "#111827" : "#6b7280",
+                    boxShadow: statusFilter === val ? "0 1px 4px rgba(0,0,0,0.10)" : "none",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {val === "needs_review" ? "Uncategorized" : "Categorized"}
+                </button>
+              ))}
+            </div>
+
+            {!isCategorizedView && !loading && transactions.length > 0 && (
               <button
                 onClick={handleAutoAll}
                 disabled={!!autoProgress}
@@ -311,6 +544,26 @@ export default function ReviewPage() {
               </button>
             )}
             <button
+              onClick={handleCleanupTransfers}
+              disabled={transferCleanup?.running ?? false}
+              title="Clear category, tax, and entity assignments on every transfer-typed transaction. Transfers don't have a category by design."
+              style={{
+                padding: "10px 14px",
+                backgroundColor: "#fff",
+                color: "#6b7280",
+                border: "1px solid #d1d5db",
+                borderRadius: "8px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: transferCleanup?.running ? "not-allowed" : "pointer",
+                opacity: transferCleanup?.running ? 0.6 : 1,
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {transferCleanup?.running ? "Cleaning…" : "Clean transfer rows"}
+            </button>
+            <button
               onClick={reload}
               style={{ padding: "10px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
             >
@@ -319,8 +572,50 @@ export default function ReviewPage() {
           </div>
         </div>
 
+        {/* Transfer-cleanup status line */}
+        {transferCleanup && !transferCleanup.running && transferCleanup.lastResult && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "8px 12px",
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: "8px",
+            fontSize: "12px",
+            color: "#1d4ed8",
+          }}>
+            ✓ {transferCleanup.lastResult}
+          </div>
+        )}
+
+        {/* Auto-categorize result toast */}
+        {autoToast && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "12px 16px",
+            borderRadius: "8px",
+            backgroundColor: autoToast.isError ? "#fef2f2" : "#f0fdf4",
+            border: `1px solid ${autoToast.isError ? "#fca5a5" : "#86efac"}`,
+            color: autoToast.isError ? "#b91c1c" : "#15803d",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontFamily: font,
+          }}>
+            <span>{autoToast.message}</span>
+            <button
+              onClick={() => setAutoToast(null)}
+              aria-label="Dismiss"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", lineHeight: 1, padding: "4px 0 4px 12px", display: "flex", alignItems: "center" }}
+            >
+              <X size={16} strokeWidth={2.4} />
+            </button>
+          </div>
+        )}
+
         {/* Legend */}
-        {!loading && transactions.length > 0 && (
+        {!loading && !isCategorizedView && transactions.length > 0 && (
           <div style={{ display: "flex", gap: "20px", marginBottom: "16px", fontSize: "12px", color: "#6b7280", flexWrap: "wrap", alignItems: "center" }}>
             <span>Click any category cell to edit inline</span>
             <span style={{ color: "#d1d5db" }}>·</span>
@@ -341,13 +636,51 @@ export default function ReviewPage() {
           </div>
         )}
 
-        {/* Account filter */}
-        {!loading && accountOptions.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
-            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
+        {/* Filters */}
+        {!loading && transactions.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
+            {(accountOptions.length > 0 || hasBlankAccounts) && (
+              <>
+                <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Account:</span>
+                <select
+                  value={accountFilter}
+                  onChange={(e) => setAccountFilter(e.target.value)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    backgroundColor: "#fff",
+                    fontSize: "13px",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontFamily: font,
+                    outline: "none",
+                  }}
+                >
+                  <option value="all">All Accounts</option>
+                  {hasBlankAccounts && (
+                    <option value="__blank__">— No Account —</option>
+                  )}
+                  {accountOptions.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                {accountFilter !== "all" && (
+                  <button
+                    onClick={() => setAccountFilter("all")}
+                    style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
+            )}
+
+            {/* Type filter */}
+            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Type:</span>
             <select
-              value={accountFilter}
-              onChange={(e) => setAccountFilter(e.target.value)}
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
               style={{
                 padding: "6px 10px",
                 borderRadius: "6px",
@@ -360,18 +693,160 @@ export default function ReviewPage() {
                 outline: "none",
               }}
             >
-              <option value="all">All Accounts</option>
-              {accountOptions.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
+              <option value="all">All Types</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+              <option value="transfer">Transfer</option>
+              <option value="refund">Refund</option>
             </select>
-            {accountFilter !== "all" && (
+            {typeFilter !== "all" && (
               <button
-                onClick={() => setAccountFilter("all")}
+                onClick={() => setTypeFilter("all")}
                 style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
               >
                 Clear
               </button>
+            )}
+
+            {/* Category filter */}
+            <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Category:</span>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#fff",
+                fontSize: "13px",
+                color: "#374151",
+                cursor: "pointer",
+                fontFamily: font,
+                outline: "none",
+                maxWidth: "220px",
+              }}
+            >
+              <option value="all">All Categories</option>
+              {hasUncategorized && (
+                <option value="__blank__">— Uncategorized —</option>
+              )}
+              {categoryOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {categoryFilter !== "all" && (
+              <button
+                onClick={() => setCategoryFilter("all")}
+                style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+              >
+                Clear
+              </button>
+            )}
+
+            {/* Assign to filter */}
+            {entities.length > 0 && (
+              <>
+                <span style={{ fontSize: "13px", color: "#6b7280", fontWeight: 500 }}>Assign to:</span>
+                <select
+                  value={entityFilter}
+                  onChange={(e) => setEntityFilter(e.target.value)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    backgroundColor: "#fff",
+                    fontSize: "13px",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontFamily: font,
+                    outline: "none",
+                    maxWidth: "220px",
+                  }}
+                >
+                  <option value="all">All Entities</option>
+                  <option value="__personal__">Personal</option>
+                  {entities.map((en) => (
+                    <option key={en.id} value={en.id}>{en.name}</option>
+                  ))}
+                </select>
+                {entityFilter !== "all" && (
+                  <button
+                    onClick={() => setEntityFilter("all")}
+                    style={{ background: "none", border: "none", fontSize: "12px", color: "#9ca3af", cursor: "pointer", fontFamily: font }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
+            )}
+
+            {/* Mismatch filter — shows only rows where category and entity disagree */}
+            {mismatchCount > 0 && (
+              <>
+                <div style={{ width: "1px", height: "20px", backgroundColor: "#e5e7eb" }} />
+                <button
+                  onClick={() => setMismatchOnly((v) => !v)}
+                  title="Rows where the category and entity assignment don't match. Often a misclassification — review and fix."
+                  style={{
+                    padding: "5px 12px",
+                    borderRadius: "999px",
+                    border: `1px solid ${mismatchOnly ? "#dc2626" : "#fde68a"}`,
+                    backgroundColor: mismatchOnly ? "#fef2f2" : "#fffbeb",
+                    color: mismatchOnly ? "#b91c1c" : "#92400e",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  ⚠ {mismatchOnly ? "Showing" : "Show"} mismatches ({mismatchCount})
+                </button>
+              </>
+            )}
+
+            {/* Set account for all filtered */}
+            {accountFilter !== "all" && filteredTransactions.length > 0 && (
+              <>
+                <div style={{ width: "1px", height: "20px", backgroundColor: "#e5e7eb" }} />
+                <span style={{ fontSize: "13px", color: "#6b7280", whiteSpace: "nowrap" }}>
+                  Set account for {filteredTransactions.length}:
+                </span>
+                <input
+                  type="text"
+                  value={filterAccountInput}
+                  onChange={(e) => setFilterAccountInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleApplyFilterAccount(); }}
+                  placeholder="Account name…"
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "13px",
+                    fontFamily: font,
+                    outline: "none",
+                    width: "160px",
+                  }}
+                />
+                <button
+                  onClick={handleApplyFilterAccount}
+                  disabled={!filterAccountInput.trim() || applyingFilterAccount}
+                  style={{
+                    padding: "5px 14px",
+                    backgroundColor: filterAccountInput.trim() && !applyingFilterAccount ? "#16A34A" : "#d1d5db",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: filterAccountInput.trim() && !applyingFilterAccount ? "pointer" : "not-allowed",
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {applyingFilterAccount ? "Applying…" : "Apply to all"}
+                </button>
+              </>
             )}
           </div>
         )}
@@ -380,6 +855,153 @@ export default function ReviewPage() {
         {error && (
           <div style={{ padding: "12px 16px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "16px" }}>
             {error}
+          </div>
+        )}
+
+        {/* Apply to Similar panel */}
+        {similarGroups.length > 0 && (
+          <div style={{
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: "10px",
+            padding: "12px 16px",
+            marginBottom: "16px",
+          }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#1e40af", marginBottom: "10px" }}>
+              Apply to similar — one click to confirm matching transactions
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {similarGroups.map((group) => (
+                <div key={group.vendor} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "12px", color: "#1e3a5f", fontWeight: 700, minWidth: "90px" }}>
+                    {group.vendor}
+                  </span>
+                  <span style={{ fontSize: "11px", color: "#6b7280" }}>
+                    {group.ids.length} of {group.totalCount} transactions
+                  </span>
+                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>→</span>
+                  <span style={{
+                    fontSize: "11px", color: "#374151",
+                    backgroundColor: "#fff", padding: "2px 9px",
+                    borderRadius: "5px", border: "1px solid #e5e7eb", fontWeight: 500,
+                  }}>
+                    {group.suggestedCategory}
+                  </span>
+                  {entities.length > 0 && (
+                    <>
+                      <span style={{ fontSize: "11px", color: "#94a3b8" }}>|</span>
+                      <span style={{
+                        fontSize: "11px", color: "#374151",
+                        backgroundColor: "#fff", padding: "2px 9px",
+                        borderRadius: "5px", border: "1px solid #e5e7eb", fontWeight: 500,
+                      }}>
+                        {group.suggestedEntityName ?? "Personal"}
+                      </span>
+                    </>
+                  )}
+                  <button
+                    onClick={() => handleApplySimilar(
+                      group.ids,
+                      group.suggestedCategory,
+                      group.suggestedEntityId,
+                      group.suggestedEntityType,
+                      group.suggestedEntityName
+                    )}
+                    style={{
+                      fontSize: "11px", padding: "4px 12px",
+                      backgroundColor: "#1d4ed8", color: "#fff",
+                      border: "none", borderRadius: "6px",
+                      cursor: "pointer", fontWeight: 600, fontFamily: font,
+                    }}
+                  >
+                    Apply to all
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Sticky pending-prompt banner — STAYS VISIBLE while scrolling so the
+           user can't miss the action. Mirrored by an inline prompt rendered
+           beneath the edited row in ReviewTable. */}
+        {pendingCategoryPrompt && (
+          <div style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 10,
+            marginBottom: "12px",
+            padding: "12px 16px",
+            backgroundColor: "#fffbeb",
+            border: "1px solid #fcd34d",
+            borderRadius: "10px",
+            boxShadow: "0 4px 14px rgba(120, 53, 15, 0.08)",
+            fontSize: "13px",
+            color: "#78350f",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}>
+            <div style={{ flex: "1 1 320px" }}>
+              <div style={{ fontWeight: 700, marginBottom: "2px" }}>
+                Apply this to similar transactions?
+              </div>
+              <div style={{ color: "#92400e" }}>
+                You updated &ldquo;<strong>{truncateForPrompt(pendingCategoryPrompt.description)}</strong>&rdquo;.
+                Apply{" "}
+                {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
+                  ? "this category and assignment"
+                  : pendingCategoryPrompt.category
+                  ? "this category"
+                  : "this assignment"}{" "}
+                to {pendingCategoryPrompt.affectedRowIds.length} similar transaction
+                {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
+              </div>
+              <div style={{
+                marginTop: "4px",
+                fontSize: "11px",
+                color: "#a16207",
+                fontStyle: "italic",
+              }}>
+                Applies category, tax treatment, and Assign To.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              <button
+                onClick={acceptCategoryPrompt}
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#16A34A",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Apply to all
+              </button>
+              <button
+                onClick={dismissCategoryPrompt}
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#fff",
+                  color: "#78350f",
+                  border: "1px solid #fcd34d",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Just this one
+              </button>
+            </div>
           </div>
         )}
 
@@ -404,6 +1026,9 @@ export default function ReviewPage() {
               onTypeChange={handleTypeChange}
               onConfirm={handleConfirm}
               onCustomCategoryAdded={handleCustomCategoryAdded}
+              pendingCategoryPrompt={pendingCategoryPrompt}
+              onAcceptCategoryPrompt={acceptCategoryPrompt}
+              onDismissCategoryPrompt={dismissCategoryPrompt}
             />
           )}
         </div>
@@ -421,6 +1046,9 @@ export default function ReviewPage() {
       </div>
 
       {/* ── Bulk action toolbar ────────────────────────────────────────────────── */}
+      {/* Visible on BOTH the Needs Review and Categorized tabs — users need
+          access to bulk actions (especially Re-categorize) for fixing batches
+          that were already moved to Categorized with the wrong values. */}
       {hasSelection && (
         <div style={{
           position: "fixed",
@@ -498,6 +1126,7 @@ export default function ReviewPage() {
           <button
             onClick={handleAutoSelected}
             disabled={!!autoProgress}
+            title="Run AI on rows that haven't been manually classified yet."
             style={{
               padding: "8px 16px", backgroundColor: "#0f172a",
               color: "#94a3b8", border: "1px solid #334155",
@@ -507,27 +1136,87 @@ export default function ReviewPage() {
           >
             {autoProgress ? `${autoProgress.processed}/${autoProgress.total}…` : "✦ AI Categorize"}
           </button>
+          <button
+            onClick={handleForceRecategorize}
+            disabled={!!autoProgress}
+            title="OVERWRITE the existing category/entity for the selected rows by re-running AI from scratch. Use to fix a batch where the wrong category was bulk-applied."
+            style={{
+              padding: "8px 14px", backgroundColor: "#0f172a",
+              color: "#fbbf24", border: "1px solid #d97706",
+              borderRadius: "8px", fontSize: "13px", fontWeight: 600,
+              cursor: autoProgress ? "not-allowed" : "pointer", fontFamily: font, whiteSpace: "nowrap",
+            }}
+          >
+            ↻ Re-categorize (force)
+          </button>
+
+          {/* Set Account */}
+          <div style={{ width: "1px", height: "20px", backgroundColor: "#334155" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", color: "#94a3b8", whiteSpace: "nowrap" }}>Set account:</span>
+            <input
+              type="text"
+              value={bulkAccountName}
+              onChange={(e) => setBulkAccountName(e.target.value)}
+              placeholder="Account name…"
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                backgroundColor: "#0f172a",
+                color: "#f1f5f9",
+                fontSize: "13px",
+                fontFamily: font,
+                outline: "none",
+                width: "140px",
+              }}
+            />
+            <button
+              onClick={() => {
+                if (!bulkAccountName.trim()) return;
+                handleBulkAccountAssign([...selectedIds], bulkAccountName.trim());
+                setBulkAccountName("");
+              }}
+              disabled={!bulkAccountName.trim()}
+              style={{
+                padding: "6px 14px",
+                backgroundColor: bulkAccountName.trim() ? "#334155" : "#1e293b",
+                color: bulkAccountName.trim() ? "#f1f5f9" : "#475569",
+                border: "1px solid #334155",
+                borderRadius: "6px",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: bulkAccountName.trim() ? "pointer" : "not-allowed",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Apply
+            </button>
+          </div>
 
           <div style={{ flex: 1 }} />
 
-          {/* Mark as reviewed */}
-          <button
-            onClick={handleBulkConfirm}
-            style={{
-              padding: "8px 20px",
-              backgroundColor: "#16A34A",
-              color: "#fff",
-              border: "none",
-              borderRadius: "8px",
-              fontSize: "13px",
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: font,
-              whiteSpace: "nowrap",
-            }}
-          >
-            ✓ Mark {selectedIds.size} as Reviewed
-          </button>
+          {/* Mark as reviewed — only meaningful on the Needs Review tab */}
+          {!isCategorizedView && (
+            <button
+              onClick={handleBulkConfirm}
+              style={{
+                padding: "8px 20px",
+                backgroundColor: "#16A34A",
+                color: "#fff",
+                border: "none",
+                borderRadius: "8px",
+                fontSize: "13px",
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ✓ Mark {selectedIds.size} as Reviewed
+            </button>
+          )}
 
           {/* Clear selection */}
           <button

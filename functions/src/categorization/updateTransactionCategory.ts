@@ -28,6 +28,14 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
   const txn = txnSnap.data()!;
   if (txn.uid !== uid) throw new HttpsError("permission-denied", "Access denied.");
 
+  // Defense in depth: transfers shouldn't have categories. If a stale client
+  // (or future code path) tries to write one, refuse — categories on
+  // transfers leak into the tax meter as junk and poison vendor rules.
+  if (txn.type === "transfer") {
+    console.warn(`[updateTransactionCategory] refusing category="${data.category}" on transfer txn=${data.transactionId}`);
+    return { updated: false, skipped: "transfer" };
+  }
+
   // ── 1. Update the transaction ──────────────────────────────────────────────
   const txnUpdate: Record<string, unknown> = {
     category:                  data.category,

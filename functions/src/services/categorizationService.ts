@@ -1,5 +1,13 @@
 import * as admin from "firebase-admin";
 import OpenAI from "openai";
+import {
+  buildAIPromptCategoryList,
+  fallbackCategoryForType,
+  getMappingFuzzy,
+  isValidCategory,
+  scheduleForCategory,
+} from "../shared/taxMap";
+import { extractVendor as canonicalExtractVendor } from "../shared/vendorExtraction";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -17,16 +25,30 @@ export interface CategorizationResult {
   taxSchedule: string;
   confidence: number;
   source: "rule" | "user_rule" | "ai" | "none";
-  // Entity prediction — populated from user rules when available
   entityId?: string | null;
   entityName?: string | null;
   entityType?: string;
-  // AI-suggested entity name (before ID resolution in batch)
   aiAssignment?: string | null;
-  // AI-suggested transaction type (to catch transfers)
-  aiType?: "income" | "expense" | "transfer";
-  // Human-readable explanation of how the category was decided
+  aiType?: "income" | "expense" | "transfer" | "refund";
   categorizationExplanation: string;
+}
+
+// ─── Shared context types (loaded once per batch) ─────────────────────────────
+
+export interface UserRule {
+  vendorName: string;
+  category: string;
+  taxCategory?: string;
+  taxSchedule?: string;
+  entityId?: string;
+  entityName?: string;
+  entityType?: string;
+  usageCount?: number;
+}
+
+export interface EntityForAI {
+  name: string;
+  type: "business" | "rental";
 }
 
 // ─── Hard-coded keyword rules ─────────────────────────────────────────────────
@@ -70,6 +92,12 @@ const KEYWORD_RULES: KeywordRule[] = [
     taxSchedule: "Form 1040",
   },
   {
+    keywords: ["payroll", "direct dep", "direct deposit", "salary", "paycheck", "adp ", "gusto", "paychex", "intuit payroll", "rippling"],
+    category: "Wages & Salaries",
+    taxCategory: "Wages & Salaries",
+    taxSchedule: "Form 1040",
+  },
+  {
     keywords: ["github", "aws", "amazon web services", "digitalocean", "heroku", "netlify", "vercel", "stripe", "twilio", "sendgrid"],
     category: "Software & Subscriptions",
     taxCategory: "Business Expense",
@@ -91,7 +119,7 @@ const KEYWORD_RULES: KeywordRule[] = [
 
 function applyKeywordRules(
   normalizedDescription: string
-): (CategorizationResult & { matchedKeyword: string }) | null {
+): CategorizationResult | null {
   for (const rule of KEYWORD_RULES) {
     const matched = rule.keywords.find((kw) => normalizedDescription.includes(kw));
     if (matched) {
@@ -105,50 +133,58 @@ function applyKeywordRules(
         entityName: null,
         entityType: undefined,
         categorizationExplanation: `Matched built-in keyword rule for "${matched}"`,
-        matchedKeyword: matched,
       };
     }
   }
   return null;
 }
 
-// ─── User rule lookup ─────────────────────────────────────────────────────────
+// ─── Batch loaders (call once per batch, not per transaction) ─────────────────
 
-interface UserRuleDoc {
-  vendorName: string;
-  category: string;
-  taxCategory?: string;
-  taxSchedule?: string;
-  usageCount?: number;
-  entityId?: string;
-  entityName?: string;
-  entityType?: string;
+export async function loadUserRules(uid: string): Promise<UserRule[]> {
+  const db = admin.firestore();
+  try {
+    const snap = await db.collection("categoryRules").where("uid", "==", uid).get();
+    return snap.docs.map((d) => d.data() as UserRule);
+  } catch {
+    return [];
+  }
 }
 
-async function checkUserRules(
-  uid: string,
+export async function loadUserEntities(uid: string): Promise<EntityForAI[]> {
+  const db = admin.firestore();
+  try {
+    const snap = await db.collection("entities").where("userId", "==", uid).get();
+    return snap.docs.map((d) => ({
+      name: d.data().name as string,
+      type: d.data().type as "business" | "rental",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ─── User rule matching (uses pre-loaded rules) ───────────────────────────────
+
+function matchUserRule(
+  rules: UserRule[],
   normalizedDescription: string,
   vendor: string
-): Promise<CategorizationResult | null> {
-  const db = admin.firestore();
-  const snap = await db.collection("categoryRules").where("uid", "==", uid).get();
-
-  // Prefer exact vendor match, then description substring match
-  let bestMatch: (UserRuleDoc & { docId: string }) | null = null;
+): CategorizationResult | null {
+  let bestMatch: UserRule | null = null;
   let matchType: "exact_vendor" | "substring" = "substring";
 
-  for (const docSnap of snap.docs) {
-    const rule = docSnap.data() as UserRuleDoc;
+  for (const rule of rules) {
     const ruleVendor = (rule.vendorName ?? "").toLowerCase().trim();
     if (!ruleVendor) continue;
 
     if (vendor && ruleVendor === vendor.toLowerCase()) {
-      bestMatch = { ...rule, docId: docSnap.id };
+      bestMatch = rule;
       matchType = "exact_vendor";
-      break; // exact vendor match wins immediately
+      break;
     }
     if (!bestMatch && normalizedDescription.includes(ruleVendor)) {
-      bestMatch = { ...rule, docId: docSnap.id };
+      bestMatch = rule;
     }
   }
 
@@ -157,8 +193,8 @@ async function checkUserRules(
   const usageCount = bestMatch.usageCount ?? 1;
   const explanation =
     matchType === "exact_vendor"
-      ? `Matched your past categorization of "${bestMatch.vendorName}" → ${bestMatch.category} (used ${usageCount} ${usageCount === 1 ? "time" : "times"})`
-      : `Description contains "${bestMatch.vendorName}" which you previously categorized as ${bestMatch.category}`;
+      ? `Matched your saved rule for vendor "${bestMatch.vendorName}" (used ${usageCount} time${usageCount !== 1 ? "s" : ""})`
+      : `Matched your saved rule for "${bestMatch.vendorName}" (substring match)`;
 
   return {
     category: bestMatch.category,
@@ -173,218 +209,292 @@ async function checkUserRules(
   };
 }
 
-// ─── Related rules for AI context ────────────────────────────────────────────
+// ─── Batch AI categorization (up to AI_BATCH_SIZE transactions per call) ──────
 
-interface RelatedRule {
-  vendorName: string;
+const AI_BATCH_SIZE = 10;
+
+interface AIBatchItem {
+  index: number;
   category: string;
+  taxCategory: string;
+  taxSchedule: string;
+  type: string;
+  assignment: string;
+  confidence: number;
+  explanation: string;
 }
 
-async function getRelatedRules(uid: string, limit = 5): Promise<RelatedRule[]> {
-  const db = admin.firestore();
-  try {
-    const snap = await db
-      .collection("categoryRules")
-      .where("uid", "==", uid)
-      .limit(50) // fetch more, dedupe client-side
-      .get();
+async function callAIBatch(
+  transactions: Array<{ idx: number; txn: TransactionInput }>,
+  entities: EntityForAI[],
+  userRules: UserRule[]
+): Promise<Map<number, CategorizationResult>> {
+  const results = new Map<number, CategorizationResult>();
+  if (transactions.length === 0) return results;
 
-    const seen = new Set<string>();
-    const rules: RelatedRule[] = [];
-    for (const d of snap.docs) {
-      const data = d.data();
-      const key = `${data.vendorName}:${data.category}`;
-      if (!seen.has(key) && data.vendorName && data.category) {
-        seen.add(key);
-        rules.push({ vendorName: data.vendorName as string, category: data.category as string });
-        if (rules.length >= limit) break;
-      }
-    }
-    return rules;
-  } catch {
-    return [];
-  }
-}
-
-// ─── User entity loader (for AI prompt context) ───────────────────────────────
-
-interface EntityForAI {
-  name: string;
-  type: "business" | "rental";
-}
-
-async function getUserEntitiesForAI(uid: string): Promise<EntityForAI[]> {
-  const db = admin.firestore();
-  try {
-    const snap = await db.collection("entities").where("userId", "==", uid).get();
-    return snap.docs.map((d) => ({
-      name: d.data().name as string,
-      type: d.data().type as "business" | "rental",
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// ─── AI fallback ──────────────────────────────────────────────────────────────
-
-async function callAI(
-  uid: string,
-  transaction: TransactionInput
-): Promise<CategorizationResult | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.warn("[CategorizationService] OPENAI_API_KEY not set — skipping AI.");
-    return null;
+    return results;
   }
 
-  // Fetch user's entities and past rules in parallel
-  const [entities, relatedRules] = await Promise.all([
-    getUserEntitiesForAI(uid),
-    getRelatedRules(uid, 5),
-  ]);
-
-  const rulesContext =
-    relatedRules.length > 0
-      ? `\nThis user's past categorizations (for context):\n${relatedRules
-          .map((r) => `  - "${r.vendorName}" → ${r.category}`)
-          .join("\n")}\n`
-      : "";
-
-  // Build entity list for assignment — AI sees names, uses type internally
   const entityLines = entities.map((e) =>
-    `  - "${e.name}" (${e.type === "business" ? "business/Schedule C" : "rental/Schedule E"})`
+    `  - "${e.name}" (${e.type === "business" ? "Schedule C" : "Schedule E"})`
   );
   const entityContext =
     entityLines.length > 0
-      ? `\nUser's entities (assign transaction to best match, or "Personal"):\n${entityLines.join("\n")}\n  - "Personal" (default for non-business/non-rental)\n`
-      : `\nAssign to: "Personal" (no business/rental entities configured)\n`;
+      ? `\nUser entities:\n${entityLines.join("\n")}\n  - "Personal"\n`
+      : `\nAssign to: "Personal" (no entities configured)\n`;
+
+  // Show up to 20 most-used rules (sorted by usageCount) so AI learns from history.
+  // Include entity assignment so AI can replicate entity choices for known vendors.
+  const rulesSample = [...userRules]
+    .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0))
+    .slice(0, 20);
+  const rulesContext =
+    rulesSample.length > 0
+      ? `\nUser's past categorizations (most-used first):\n${rulesSample.map((r) => {
+          const entityPart = r.entityName ? ` [${r.entityName}]` : r.entityType === "personal" ? " [Personal]" : "";
+          return `  - "${r.vendorName}" → ${r.category}${entityPart}`;
+        }).join("\n")}\n`
+      : "";
+
+  const txnLines = transactions.map(({ idx, txn }) =>
+    `[${idx}] vendor="${txn.vendor ?? ""}" desc="${txn.description}" amount=$${Math.abs(txn.amount).toFixed(2)} type=${txn.type}`
+  );
 
   const prompt =
-    `Classify this financial transaction for US tax purposes.\n\n` +
-    `Transaction:\n` +
-    `  Vendor: ${transaction.vendor ?? "(unknown)"}\n` +
-    `  Description: ${transaction.description}\n` +
-    `  Amount: $${Math.abs(transaction.amount).toFixed(2)} (${transaction.type})\n` +
-    `  Sign convention: negative amount = expense, positive = income\n` +
-    `${rulesContext}` +
-    `${entityContext}\n` +
+    `Classify these financial transactions for US tax purposes.\n` +
+    `${entityContext}` +
+    `${rulesContext}\n` +
     `CRITICAL RULES:\n` +
-    `  - Credit card payments, loan payments, and internal account transfers → type "transfer" (NEVER expense)\n` +
-    `  - Rental-related expenses (mortgage, property tax, repairs on rental) → assign to rental entity\n` +
+    `  - Credit card payments, loan payments, internal transfers → type "transfer"\n` +
+    `  - Rental expenses → assign to rental entity\n` +
     `  - Business expenses → assign to business entity\n` +
-    `  - Personal/unclear → assign to "Personal"\n\n` +
-    `Tax categories:\n` +
-    `  Income: Business Income, Rental Income, Investment Income, Other Income\n` +
-    `  Business (Sch. C): Advertising & Marketing, Auto & Vehicle, Business Meals, Business Travel,\n` +
-    `    Computer & Software, Contract Labor, Home Office, Legal & Professional, Office Supplies,\n` +
-    `    Phone & Internet, Rent & Lease, Repairs & Maintenance, Wages & Salaries, Other Business Expense\n` +
-    `  Rental (Sch. E): Mortgage Interest (Rental), Property Management, Property Taxes,\n` +
-    `    Rental Insurance, Rental Repairs & Maintenance, Rental Utilities\n` +
-    `  Deductions (Sch. A): Charitable Contribution, Medical Expense, Mortgage Interest\n` +
-    `  Personal: Groceries, Dining & Restaurants, Entertainment, Healthcare, Other Personal\n\n` +
-    `Return ONLY valid JSON with no markdown:\n` +
-    `{\n` +
-    `  "category": "<category from the list above>",\n` +
-    `  "taxCategory": "<brief tax category label>",\n` +
-    `  "taxSchedule": "<Schedule A|Schedule C|Schedule E|Form 1040|Personal>",\n` +
-    `  "type": "<income|expense|transfer>",\n` +
-    `  "assignment": "<exact entity name from the list above, or Personal>",\n` +
-    `  "confidence": <number between 0.60 and 0.90>,\n` +
-    `  "explanation": "<one concise sentence explaining why>"\n` +
-    `}`;
+    `  - Personal/unclear → assign to "Personal"\n` +
+    `  - "category" MUST be EXACTLY one of the categories listed below — do not invent variations\n\n` +
+    `Categories (use EXACT spelling, including ampersands):\n` +
+    `${buildAIPromptCategoryList()}\n\n` +
+    `Transactions to classify:\n${txnLines.join("\n")}\n\n` +
+    `Return ONLY a valid JSON array, one object per transaction, no markdown:\n` +
+    `[{"index":<number>,"category":"<category>","taxCategory":"<label>","taxSchedule":"<Schedule A|Schedule C|Schedule E|Form 1040|Personal>","type":"<income|expense|transfer|refund>","assignment":"<entity name or Personal>","confidence":<0.60-0.90>,"explanation":"<one sentence>"}]`;
 
   try {
     const openai = new OpenAI({ apiKey });
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 250,
+      max_tokens: 300 * transactions.length,
       temperature: 0,
     });
 
     const raw = completion.choices[0]?.message?.content?.trim() ?? "";
     const jsonText = raw.replace(/^```json?\s*/i, "").replace(/\s*```$/, "").trim();
-    const parsed = JSON.parse(jsonText) as {
-      category?: string;
-      taxCategory?: string;
-      taxSchedule?: string;
-      type?: string;
-      assignment?: string;
-      confidence?: number;
-      explanation?: string;
-    };
+    const parsed = JSON.parse(jsonText) as AIBatchItem[];
 
-    // Clamp AI confidence to [0.60, 0.90] — rules own the extremes
-    const rawConf = typeof parsed.confidence === "number" ? parsed.confidence : 0.75;
-    const confidence = Math.min(0.9, Math.max(0.6, rawConf));
+    const validEntityNames = new Set([...entities.map((e) => e.name), "Personal"]);
 
-    // Validate AI type — default to original transaction type if invalid
-    const aiType = (["income", "expense", "transfer"].includes(parsed.type ?? ""))
-      ? (parsed.type as "income" | "expense" | "transfer")
-      : undefined;
+    for (const item of parsed) {
+      const rawConf = typeof item.confidence === "number" ? item.confidence : 0.75;
+      let confidence = Math.min(0.9, Math.max(0.6, rawConf));
+      const aiType = (["income", "expense", "transfer", "refund"].includes(item.type ?? ""))
+        ? (item.type as "income" | "expense" | "transfer" | "refund")
+        : undefined;
+      const aiAssignment =
+        item.assignment && validEntityNames.has(item.assignment) ? item.assignment : null;
 
-    // Validate assignment — must be a known entity name or "Personal"
-    const validNames = new Set([...entities.map((e) => e.name), "Personal"]);
-    const aiAssignment =
-      parsed.assignment && validNames.has(parsed.assignment) ? parsed.assignment : null;
+      // Validate the AI's category against the canonical TAX_MAP. Three cases:
+      //  1) Exact match → trust the AI; pull canonical taxSchedule/taxBucket
+      //     from TAX_MAP rather than the AI's separately-emitted fields.
+      //  2) Fuzzy match (case/whitespace differs) → accept the canonical form
+      //     but knock down confidence so the row routes to needs_review.
+      //  3) No match → drop the AI's category entirely, fall back to the
+      //     "Other ..." bucket appropriate for this txn type, low confidence
+      //     so the user sees it in needs_review.
+      let resolvedCategory: string;
+      let resolvedTaxSchedule: string;
+      const txnType = transactions.find((t) => t.idx === item.index)?.txn.type ?? "expense";
+      if (item.category && isValidCategory(item.category)) {
+        const sched = scheduleForCategory(item.category)!;
+        resolvedCategory     = item.category;
+        resolvedTaxSchedule  = sched.taxSchedule;
+      } else if (item.category && getMappingFuzzy(item.category)) {
+        const m = getMappingFuzzy(item.category)!;
+        resolvedCategory     = m.category; // canonical form
+        resolvedTaxSchedule  = m.taxSchedule;
+        confidence = Math.min(confidence, 0.7); // route to needs_review
+        console.warn(`[AI] fuzzy-matched "${item.category}" → "${m.category}" — clamping confidence to 0.7`);
+      } else {
+        const fb = fallbackCategoryForType(txnType);
+        resolvedCategory     = fb.category;
+        resolvedTaxSchedule  = fb.taxSchedule;
+        confidence = 0.5; // forces needs_review
+        console.warn(`[AI] unknown category "${item.category}" — falling back to "${fb.category}"`);
+      }
 
-    return {
-      category: parsed.category ?? "",
-      taxCategory: parsed.taxCategory ?? "",
-      taxSchedule: parsed.taxSchedule ?? "",
-      confidence,
-      source: "ai",
-      entityId: null,
-      entityName: null,
-      entityType: undefined,
-      aiAssignment,
-      aiType,
-      categorizationExplanation:
-        parsed.explanation
-          ? `AI: ${parsed.explanation}`
-          : `AI classified as ${parsed.category ?? "unknown"} (confidence ${Math.round(confidence * 100)}%)`,
-    };
+      results.set(item.index, {
+        category: resolvedCategory,
+        taxCategory: item.taxCategory ?? resolvedCategory,
+        taxSchedule: resolvedTaxSchedule,
+        confidence,
+        source: "ai",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        aiAssignment,
+        aiType,
+        categorizationExplanation: item.explanation
+          ? `AI: ${item.explanation}`
+          : `AI classified as ${resolvedCategory} (${Math.round(confidence * 100)}%)`,
+      });
+    }
   } catch (err) {
-    console.error("[CategorizationService] AI error:", err);
-    return null;
+    console.error("[CategorizationService] AI batch error:", err);
   }
+
+  return results;
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+// ─── Batch-aware categorization (the main export for batch flows) ─────────────
 
 /**
- * Categorize a single transaction.
+ * Categorize an array of transactions using pre-loaded rules and entities.
+ * Runs keyword rules + user rules synchronously, then batches remaining
+ * transactions to AI in groups of AI_BATCH_SIZE (one OpenAI call per group).
  *
- * Priority:
- *   1. Hard-coded keyword rules  (confidence = 1.0)
- *   2. User categoryRules        (confidence = 0.95, may include entityId)
- *   3. OpenAI gpt-4o-mini        (confidence clamped to 0.60–0.90)
- *   4. No match                  (confidence = 0, source = "none")
+ * `options.bypassUserRules` — skip the user-vendor-rule matcher. Used when
+ * force-recategorizing a batch where the existing user rules are known to be
+ * wrong (e.g. all rows wrongly tagged "Laundry" learned a poisoned rule for
+ * every vendor). Built-in keyword rules and AI still apply.
  */
+export async function categorizeTransactionsBatch(
+  transactions: Array<{ idx: number; txn: TransactionInput }>,
+  userRules: UserRule[],
+  entities: EntityForAI[],
+  options: { bypassUserRules?: boolean } = {}
+): Promise<Map<number, CategorizationResult>> {
+  const results = new Map<number, CategorizationResult>();
+  const needsAI: Array<{ idx: number; txn: TransactionInput }> = [];
+
+  // Phase 0 — Pre-classification guards.
+  //
+  // (a) Transfers and refunds: hard-routed before any rule/AI can fire.
+  //     Transfers have no tax-category. Refunds shouldn't poison categoryRules.
+  // (b) Generic-rail rows: when the canonical vendor extractor returns ""
+  //     because the description is purely a generic payment-method token
+  //     (ZELLE, ACH, WIRE, CHECK with no payee), refuse to auto-categorize
+  //     and route to needs_review. AI guessing on these creates noise.
+  for (const { idx, txn } of transactions) {
+    if (txn.type === "transfer") {
+      results.set(idx, {
+        category: "",
+        taxCategory: "",
+        taxSchedule: "",
+        confidence: 1.0,
+        source: "rule",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        aiType: "transfer",
+        categorizationExplanation: "Transfer — no tax category by design",
+      });
+      continue;
+    }
+    if (txn.type === "refund") {
+      // Confidence < 0.8 forces needs_review — user should decide if the
+      // refund offsets a specific expense / entity / category.
+      results.set(idx, {
+        category: "",
+        taxCategory: "",
+        taxSchedule: "",
+        confidence: 0.5,
+        source: "rule",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        aiType: "refund",
+        categorizationExplanation: "Refund — review and categorize against the original expense",
+      });
+      continue;
+    }
+    const fingerprint = canonicalExtractVendor({
+      description:           txn.description,
+      normalizedDescription: txn.normalizedDescription,
+      vendor:                txn.vendor,
+    });
+    if (!fingerprint) {
+      const fb = fallbackCategoryForType(txn.type);
+      results.set(idx, {
+        category: fb.category,
+        taxCategory: fb.category,
+        taxSchedule: fb.taxSchedule,
+        confidence: 0.5, // forces needs_review
+        source: "none",
+        entityId: null,
+        entityName: null,
+        entityType: undefined,
+        categorizationExplanation: "Generic payment rail (Zelle/ACH/wire/etc.) — needs counterparty memo to classify",
+      });
+      continue;
+    }
+    needsAI.push({ idx, txn });
+  }
+
+  // Phase 1: user rules first (explicit user choices beat built-in keywords),
+  // then keyword rules for everything not yet matched. The user-rule layer
+  // is skipped when caller asks (force re-categorize against poisoned rules).
+  const stillUnmatched: Array<{ idx: number; txn: TransactionInput }> = [];
+  for (const { idx, txn } of needsAI) {
+    const normalizedDesc = (txn.normalizedDescription ?? txn.description).toLowerCase();
+    const vendor = txn.vendor ?? "";
+
+    if (!options.bypassUserRules) {
+      const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
+      if (userRuleResult && userRuleResult.category) {
+        results.set(idx, userRuleResult);
+        continue;
+      }
+    }
+
+    const keywordResult = applyKeywordRules(normalizedDesc);
+    if (keywordResult) {
+      results.set(idx, keywordResult);
+      continue;
+    }
+
+    stillUnmatched.push({ idx, txn });
+  }
+
+  // Phase 2: batch AI for remaining transactions
+  for (let i = 0; i < stillUnmatched.length; i += AI_BATCH_SIZE) {
+    const chunk = stillUnmatched.slice(i, i + AI_BATCH_SIZE);
+    const aiResults = await callAIBatch(chunk, entities, userRules);
+    for (const [idx, result] of aiResults) {
+      results.set(idx, result);
+    }
+  }
+
+  return results;
+}
+
+// ─── Single-transaction categorization (kept for backward compat) ─────────────
+
 export async function categorizeTransaction(
   uid: string,
   transaction: TransactionInput
 ): Promise<CategorizationResult> {
-  const normalizedDesc = (
-    transaction.normalizedDescription ?? transaction.description
-  ).toLowerCase();
+  const [userRules, entities] = await Promise.all([
+    loadUserRules(uid),
+    loadUserEntities(uid),
+  ]);
 
-  const vendor = transaction.vendor ?? "";
+  const resultMap = await categorizeTransactionsBatch(
+    [{ idx: 0, txn: transaction }],
+    userRules,
+    entities
+  );
 
-  // 1. Hard keyword rules
-  const ruleResult = applyKeywordRules(normalizedDesc);
-  if (ruleResult) return ruleResult;
-
-  // 2. User-specific learned rules
-  const userRuleResult = await checkUserRules(uid, normalizedDesc, vendor);
-  if (userRuleResult) return userRuleResult;
-
-  // 3. AI fallback
-  const aiResult = await callAI(uid, transaction);
-  if (aiResult) return aiResult;
-
-  return {
+  return resultMap.get(0) ?? {
     category: "",
     taxCategory: "",
     taxSchedule: "",
@@ -392,7 +502,6 @@ export async function categorizeTransaction(
     source: "none",
     entityId: null,
     entityName: null,
-    entityType: undefined,
-    categorizationExplanation: "Could not determine category",
+    categorizationExplanation: "No category could be determined.",
   };
 }

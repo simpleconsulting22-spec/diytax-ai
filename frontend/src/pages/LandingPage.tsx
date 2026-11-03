@@ -79,6 +79,20 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
+  // OAuth redirect handler — Plaid OAuth banks (Chase, Capital One, BofA, etc.)
+  // redirect users back to https://diytaxai.com/?oauth_state_id=… because the
+  // registered Plaid Dashboard redirect URI is the root path. We bounce the
+  // user (preserving the oauth_state_id query param) to /bank-accounts where
+  // the Plaid Link resume logic actually lives. Runs synchronously before the
+  // auth redirect fires so the param is never lost.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("oauth_state_id")) {
+      window.location.href = "/bank-accounts" + window.location.search;
+    }
+  }, []);
+
   // If already signed in, skip the landing page and go straight to the app.
   useEffect(() => {
     if (!loading && user) navigate("/dashboard", { replace: true });

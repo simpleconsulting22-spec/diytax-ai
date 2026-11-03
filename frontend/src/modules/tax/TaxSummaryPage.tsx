@@ -1,12 +1,15 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { FileText, AlertTriangle } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useScheduleC, EntityScheduleC, ScheduleCLine } from "./hooks/useScheduleC";
 import { useScheduleE } from "./hooks/useScheduleE";
 import { useSSAData } from "../income/hooks/useSSAData";
 import { useRetirementData } from "../income/hooks/useRetirementData";
+import { useForceImportedCount } from "./hooks/useForceImportedCount";
 import AppNav from "../../components/AppNav";
+import { ESTIMATE_EXCLUSIONS } from "../../shared/taxConstants";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -14,7 +17,7 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-function exportCSV(entities: EntityScheduleC[]) {
+function exportCSV(entities: EntityScheduleC[], taxYear: number) {
   const rows: string[][] = [["Entity", "Line", "Description", "Amount"]];
 
   for (const entity of entities) {
@@ -33,7 +36,7 @@ function exportCSV(entities: EntityScheduleC[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "schedule-c-2025.csv";
+  a.download = `schedule-c-${taxYear}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -239,6 +242,7 @@ export default function TaxSummaryPage() {
   const { properties } = useScheduleE();
   const { ssaTotal } = useSSAData();
   const { retirementTotal } = useRetirementData();
+  const { count: forceImportedCount } = useForceImportedCount();
 
   // Grand totals across all entities
   const grandIncome = entities.reduce((s, e) => s + e.scheduleC.income, 0);
@@ -266,23 +270,34 @@ export default function TaxSummaryPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              {selectedYear} Tax Summary
+              Your Business Income &amp; Expenses (Schedule C)
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
-              Schedule C — Self-Employment Income &amp; Deductions
+              {selectedYear} · Self-Employment Income &amp; Deductions
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
             {!loading && entities.length > 0 && (
-              <button
-                onClick={() => exportCSV(entities)}
-                style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
-              >
-                Export CSV
-              </button>
+              <>
+                <button
+                  onClick={() => exportCSV(entities, selectedYear)}
+                  className="no-print"
+                  style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                >
+                  Export CSV
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="no-print"
+                  style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
+                >
+                  Print / PDF
+                </button>
+              </>
             )}
             <button
               onClick={reload}
+              className="no-print"
               style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
             >
               Refresh
@@ -347,7 +362,9 @@ export default function TaxSummaryPage() {
               boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
             }}
           >
-            <div style={{ fontSize: "40px", marginBottom: "12px" }}>📋</div>
+            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+              <FileText size={44} strokeWidth={1.6} />
+            </div>
             <div style={{ fontWeight: 700, fontSize: "16px", color: "#111827", marginBottom: "8px" }}>
               No Schedule C data yet
             </div>
@@ -379,7 +396,7 @@ export default function TaxSummaryPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "18px" }}>⚠</span>
+                  <AlertTriangle size={20} strokeWidth={2.2} color="#ea580c" />
                   <span style={{ fontWeight: 600, color: "#9a3412", fontSize: "14px" }}>
                     Some Schedule C transactions are not assigned to a business entity
                   </span>
@@ -440,10 +457,42 @@ export default function TaxSummaryPage() {
               />
             ))}
 
-            {/* IRS disclaimer */}
+            {/* Possible duplicate disclosure — deterministic signal only. */}
+            {forceImportedCount > 0 && (
+              <div className="no-print" style={{ backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "12px", padding: "14px 20px", marginBottom: "20px", fontSize: "13px", color: "#92400e", lineHeight: 1.6 }}>
+                <strong>
+                  {forceImportedCount} transaction{forceImportedCount === 1 ? " was" : "s were"} imported past duplicate detection.
+                </strong>{" "}
+                {forceImportedCount === 1 ? "It" : "They"} matched an existing
+                transaction and {forceImportedCount === 1 ? "was" : "were"} kept
+                because you chose "import anyway". If that was a mistake,{" "}
+                {forceImportedCount === 1 ? "this row is" : "these rows are"}{" "}
+                counted twice in the totals above — review{" "}
+                <button
+                  onClick={() => navigate("/transactions")}
+                  style={{ background: "none", border: "none", padding: 0, color: "#92400e", textDecoration: "underline", cursor: "pointer", fontSize: "13px", fontFamily: font }}
+                >
+                  your transactions
+                </button>.
+              </div>
+            )}
+
+            {/* IRS disclaimer + what this does not include */}
             <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: 1.6, marginTop: "8px" }}>
-              <strong>Note:</strong> This summary is for informational purposes only. Meals expenses (Line 24b) are
-              generally only 50% deductible on Form 1040 Schedule C. Consult a tax professional before filing.
+              <strong>This is an estimate, not a filing-ready tax liability.</strong>{" "}
+              Meals expenses (Line 24b) are generally only 50% deductible on Form 1040
+              Schedule C. Self-employment tax applies to Schedule C net profit only —
+              wages, interest, dividends and rental income are taxable but are not
+              self-employment earnings. Not included in any figure here:
+              <ul style={{ margin: "6px 0 0", paddingLeft: "18px" }}>
+                {ESTIMATE_EXCLUSIONS.map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+              <div style={{ marginTop: "6px" }}>
+                Reconcile against your 1099s and bank statements, and consult a tax
+                professional before filing.
+              </div>
             </div>
           </>
         )}

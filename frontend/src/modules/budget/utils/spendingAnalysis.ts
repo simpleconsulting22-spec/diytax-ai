@@ -1,4 +1,5 @@
 import { DateRange } from "./periodRange";
+import { businessMileageRate } from "../../../shared/taxConstants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,11 +40,23 @@ export interface Insight {
 
 // ─── Tax deductibility notes ──────────────────────────────────────────────────
 
+/** Today's IRS business standard mileage rate. 2026 splits mid-year, so this
+ *  resolves by date rather than carrying a hard-coded figure. */
+function formatMileageRate(): string {
+  const rate = businessMileageRate(new Date().toISOString().slice(0, 10));
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 3,
+  }).format(rate);
+}
+
 export const TAX_NOTES: Record<string, string> = {
   "Meals & Entertainment":    "Only 50% of meals & entertainment is tax deductible (IRS §274).",
   "Travel":                   "Business travel is 100% deductible — keep all receipts and a trip log.",
   "Home Office":              "Home office requires exclusive, regular business use — track square footage.",
-  "Vehicle & Mileage":        "Business mileage rate is $0.70/mile — keep a mileage log.",
+  "Vehicle & Mileage":        `Business mileage rate is ${formatMileageRate()}/mile — keep a mileage log.`,
   "Professional Services":    "Legal and professional fees are fully deductible.",
   "Advertising":              "Advertising and marketing expenses are fully deductible.",
   "Office Supplies":          "Office supplies are fully deductible in the year purchased.",
@@ -58,8 +71,15 @@ function round2(n: number): number {
 }
 
 /**
- * Sum absolute expense amounts by category within a date range.
- * Excludes transfers, refunds, and income rows.
+ * Sum NET expense amounts by category within a date range. Refunds (type=refund)
+ * subtract from the category total — net spending = gross expense − refund.
+ * Excludes transfers and income rows.
+ *
+ * Filter on `type === "transfer"` (not `status === "transfer"`). Status was
+ * the legacy marker from the pre-unified-pipeline CSV path; the unified
+ * ingest writes `type: "transfer"` with status of "needs_review" or
+ * "auto_resolved", so the legacy status check missed every Plaid / new-CSV /
+ * AI transfer and they leaked into category totals.
  */
 function sumByCategory(
   transactions: SpendingRecord[],
@@ -68,19 +88,23 @@ function sumByCategory(
   const totals: Record<string, number> = {};
   for (const txn of transactions) {
     if (!txn.category) continue;
-    if (txn.type !== "expense") continue;
-    if (txn.status === "transfer") continue;
+    if (txn.type === "transfer") continue;
     if (txn.date < range.start || txn.date > range.end) continue;
-    totals[txn.category] = (totals[txn.category] ?? 0) + Math.abs(txn.amount);
+    const amt = Math.abs(txn.amount);
+    if (txn.type === "expense") {
+      totals[txn.category] = (totals[txn.category] ?? 0) + amt;
+    } else if (txn.type === "refund") {
+      totals[txn.category] = (totals[txn.category] ?? 0) - amt;
+    }
   }
   return totals;
 }
 
 /**
- * Sum absolute amounts of debt payment transactions (subType === "credit_card_payment")
- * within a date range.
+ * Sum absolute amounts of credit-card payment transactions
+ * (subType === "credit_card_payment") within a date range.
  */
-export function sumDebtPayments(
+export function sumCreditCardPayments(
   transactions: SpendingRecord[],
   range: DateRange
 ): number {
@@ -95,6 +119,30 @@ export function sumDebtPayments(
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0)
   );
 }
+
+/**
+ * Sum absolute amounts of loan payment transactions
+ * (subType === "loan_payment") within a date range.
+ */
+export function sumLoanPayments(
+  transactions: SpendingRecord[],
+  range: DateRange
+): number {
+  return round2(
+    transactions
+      .filter(
+        (txn) =>
+          txn.subType === "loan_payment" &&
+          txn.date >= range.start &&
+          txn.date <= range.end
+      )
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0)
+  );
+}
+
+/** Backwards-compat alias — older callers used "debt payments" to mean
+ *  credit-card payments specifically. */
+export const sumDebtPayments = sumCreditCardPayments;
 
 // ─── Core analysis functions ──────────────────────────────────────────────────
 

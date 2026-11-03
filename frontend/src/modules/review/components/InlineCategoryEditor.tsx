@@ -365,43 +365,75 @@ export default function InlineCategoryEditor({
   }
 
   // ── View mode ──────────────────────────────────────────────────────────────
+  // Two visual styles depending on whether the cell has a value:
+  //   • Categorized → minimal text, hover gives a subtle border (no noise on
+  //     rows that are already good).
+  //   • Empty       → button-like affordance with a persistent dashed border
+  //     and a "+ Add category" label so the click target is unmistakable.
+  // Click target is the full container in both modes, sized for an easy hit.
+  const isEmpty = !value;
   return (
     <div
       ref={containerRef}
       onClick={openEditor}
-      title={disabled ? undefined : "Click to edit"}
+      title={disabled ? undefined : (isEmpty ? "Click to add a category" : "Click to edit")}
       style={{
         display: "inline-flex",
         alignItems: "center",
         gap: "6px",
         cursor: disabled ? "default" : "pointer",
         borderRadius: "6px",
-        padding: "4px 8px",
-        border: "1.5px solid transparent",
+        padding: isEmpty ? "5px 12px" : "4px 8px",
+        border: isEmpty
+          ? "1.5px dashed #9ca3af"      // persistent affordance for empty rows
+          : "1.5px solid transparent",
+        backgroundColor: isEmpty ? "#fafafa" : "transparent",
+        minWidth: isEmpty ? "150px" : undefined,
         maxWidth: "240px",
         transition: "border-color 0.12s, background-color 0.12s",
       }}
       onMouseEnter={(e) => {
-        if (!disabled) {
-          (e.currentTarget as HTMLDivElement).style.borderColor = "#d1d5db";
-          (e.currentTarget as HTMLDivElement).style.backgroundColor = "#f9fafb";
+        if (disabled) return;
+        const el = e.currentTarget as HTMLDivElement;
+        if (isEmpty) {
+          el.style.borderColor     = "#16A34A";
+          el.style.borderStyle     = "solid";
+          el.style.backgroundColor = "#f0fdf4";
+        } else {
+          el.style.borderColor     = "#d1d5db";
+          el.style.backgroundColor = "#f9fafb";
         }
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLDivElement).style.borderColor = "transparent";
-        (e.currentTarget as HTMLDivElement).style.backgroundColor = "transparent";
+        const el = e.currentTarget as HTMLDivElement;
+        if (isEmpty) {
+          el.style.borderColor     = "#9ca3af";
+          el.style.borderStyle     = "dashed";
+          el.style.backgroundColor = "#fafafa";
+        } else {
+          el.style.borderColor     = "transparent";
+          el.style.backgroundColor = "transparent";
+        }
       }}
     >
-      <span style={{
-        fontSize: "13px",
-        color: value ? "#111827" : "#9ca3af",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        fontStyle: value ? "normal" : "italic",
-      }}>
-        {value ?? "Add category…"}
-      </span>
+      {isEmpty ? (
+        <>
+          <span style={{ color: "#16A34A", fontSize: "13px", fontWeight: 700, lineHeight: 1 }}>+</span>
+          <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>
+            Add category
+          </span>
+        </>
+      ) : (
+        <span style={{
+          fontSize: "13px",
+          color: "#111827",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}>
+          {value}
+        </span>
+      )}
       {sourceCfg && (
         <span style={{
           fontSize: "10px",

@@ -45,7 +45,8 @@ function round2(n: number) {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useScheduleA() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [data, setData] = useState<ScheduleAData>(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -60,19 +61,19 @@ export function useScheduleA() {
         getDocs(
           query(
             collection(db, "transactions"),
-            where("uid", "==", user.uid),
+            where("uid", "==", ownerUid),
             where("taxCategory", "==", "Charitable Contribution")
           )
         ),
         getDocs(
           query(
             collection(db, "transactions"),
-            where("uid", "==", user.uid),
+            where("uid", "==", ownerUid),
             where("taxCategory", "==", "Medical Expense")
           )
         ),
         getDocs(
-          query(collection(db, "deductions"), where("userId", "==", user.uid))
+          query(collection(db, "deductions"), where("userId", "==", ownerUid))
         ),
       ]);
 
@@ -86,14 +87,22 @@ export function useScheduleA() {
           );
         });
 
-      const charityFromTxns = filterByYear(charitySnap.docs).reduce(
-        (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
-        0
-      );
-      const medicalFromTxns = filterByYear(medicalSnap.docs).reduce(
-        (s, d) => s + Math.abs((d.data().amount as number) ?? 0),
-        0
-      );
+      // Refunds (type=refund) subtract from the deductible total — a refund of
+      // a charitable contribution or medical bill reduces the deduction.
+      // Unreviewed rows are excluded, matching the dashboard meter and the
+      // Schedule C/E pages: an unconfirmed guess must not become a deduction.
+      const reduceWithRefunds = (docs: typeof charitySnap.docs) =>
+        docs.reduce((s, d) => {
+          const data = d.data();
+          if (data.status === "needs_review") return s;
+          const amt = Math.abs((data.amount as number) ?? 0);
+          if (data.type === "refund") return s - amt;
+          if (data.type === "expense") return s + amt;
+          return s;
+        }, 0);
+
+      const charityFromTxns = reduceWithRefunds(filterByYear(charitySnap.docs));
+      const medicalFromTxns = reduceWithRefunds(filterByYear(medicalSnap.docs));
 
       let medicalManual = 0;
       let taxesUncapped = 0;
@@ -143,7 +152,7 @@ export function useScheduleA() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();

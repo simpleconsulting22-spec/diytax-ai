@@ -4,9 +4,10 @@ import {
   GoogleAuthProvider,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
 } from "firebase/auth";
 import { doc, setDoc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { auth, db } from "../firebase";
 
 const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
@@ -15,6 +16,8 @@ type Mode = "signin" | "signup";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTo = searchParams.get("redirect") ?? "/dashboard";
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -48,7 +51,7 @@ export default function LoginPage() {
       provider.setCustomParameters({ prompt: "select_account" });
       const result = await signInWithPopup(auth, provider);
       await ensureUserDoc(result.user.uid, result.user.email);
-      navigate("/dashboard");
+      navigate(redirectTo);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Sign-in failed. Please try again.");
     } finally {
@@ -67,11 +70,21 @@ export default function LoginPage() {
       if (mode === "signup") {
         const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
         await ensureUserDoc(result.user.uid, result.user.email);
+        // Password signups start unverified. acceptInvite requires a verified
+        // address, so send the link now rather than at accept time — otherwise
+        // an invited user reaches the accept screen with no way forward.
+        // Non-fatal: sign-up itself succeeded, and the invite screen offers a
+        // resend if this did not land.
+        try {
+          await sendEmailVerification(result.user);
+        } catch {
+          /* delivery is retryable from the accept screen */
+        }
       } else {
         const result = await signInWithEmailAndPassword(auth, email.trim(), password);
         await ensureUserDoc(result.user.uid, result.user.email);
       }
-      navigate("/dashboard");
+      navigate(redirectTo);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Authentication failed.";
       // Surface Firebase auth errors in plain English

@@ -6,14 +6,18 @@
     "node": "22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:integration": "npm run build && firebase emulators:exec --only auth,firestore,functions --project demo-diytax \"vitest run --config vitest.integration.config.ts\"",
+    "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@sendgrid/mail": "^8.1.6",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@types/nodemailer": "^7.0.11",
     "dotenv": "^17.4.0",
     "firebase-admin": "^12.7.0",
     "firebase-functions": "^7.2.2",
+    "nanoid": "^5.1.11",
     "nodemailer": "^8.0.4",
     "openai": "^4.0.0",
     "plaid": "^41.0.0",
@@ -21,6 +25,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.17.1",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.10"
   }
 }

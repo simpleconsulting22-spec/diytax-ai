@@ -1,17 +1,20 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { ReviewTransaction } from "../hooks/useReviewTransactions";
+import { CheckCircle2 } from "lucide-react";
+import { ReviewTransaction, truncateForPrompt } from "../hooks/useReviewTransactions";
 import { UserEntity } from "../../../services/entityService";
 import InlineCategoryEditor from "./InlineCategoryEditor";
+import { detectClassificationMismatch } from "../../../shared/taxMap";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-type ReviewType = "income" | "expense" | "transfer";
+type ReviewType = "income" | "expense" | "transfer" | "refund";
 type ReviewSubType = "credit_card_payment" | "loan_payment" | null;
 
 // All selectable options including transfer subtypes
 const TYPE_OPTIONS: Array<{ type: ReviewType; subType: ReviewSubType; label: string }> = [
   { type: "income",   subType: null,           label: "income" },
   { type: "expense",  subType: null,           label: "expense" },
+  { type: "refund",   subType: null,           label: "refund" },
   { type: "transfer", subType: null,           label: "transfer" },
   { type: "transfer", subType: "credit_card_payment", label: "credit card payment" },
   { type: "transfer", subType: "loan_payment", label: "loan payment" },
@@ -21,6 +24,7 @@ function typeBadgeStyle(type: ReviewType): React.CSSProperties {
   switch (type) {
     case "transfer": return { backgroundColor: "#f3f4f6", color: "#6b7280" };
     case "expense":  return { backgroundColor: "#fef2f2", color: "#dc2626" };
+    case "refund":   return { backgroundColor: "#f5f3ff", color: "#7c3aed" };
     default:         return { backgroundColor: "#f0fdf4", color: "#16A34A" };
   }
 }
@@ -157,12 +161,14 @@ function EntityDropdown({
   entities,
   disabled,
   autoAssigned,
+  entityAssignmentSource,
   onChange,
 }: {
   value: string | null;
   entities: UserEntity[];
   disabled: boolean;
   autoAssigned?: boolean;
+  entityAssignmentSource?: "rule" | "user_rule" | "ai" | null;
   onChange: (entityId: string | null, entityType: "business" | "rental" | "personal", entityName?: string) => void;
 }) {
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -175,22 +181,48 @@ function EntityDropdown({
     }
   }
 
+  // "Learned" shows whenever the entity assignment came from a saved user rule
+  // — whether the AI applied it OR the user just picked it (which writes
+  // entityAssignmentSource: "user_rule" via handleEntityChange). That's the
+  // signal the learning loop is active for this vendor.
+  const badge =
+    entityAssignmentSource === "user_rule"
+      ? { label: "Learned", bg: "#eff6ff", color: "#1d4ed8" }
+      : autoAssigned && entityAssignmentSource === "ai"
+        ? { label: "AI",   bg: "#fff7ed", color: "#c2410c" }
+        : autoAssigned && entityAssignmentSource === "rule"
+          ? { label: "rule", bg: "#f0fdf4", color: "#15803d" }
+          : null;
+
+  const borderColor =
+    entityAssignmentSource === "user_rule" ? "#bfdbfe"
+    : autoAssigned && entityAssignmentSource === "ai"   ? "#fed7aa"
+    : autoAssigned && entityAssignmentSource === "rule" ? "#bbf7d0"
+    : "#e5e7eb";
+
+  const bgColor =
+    entityAssignmentSource === "user_rule" ? "#eff6ff"
+    : autoAssigned && entityAssignmentSource === "ai"   ? "#fff7ed"
+    : autoAssigned && entityAssignmentSource === "rule" ? "#f0fdf4"
+    : "#fff";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
       <select
         value={value ?? ""}
         disabled={disabled}
         onChange={handleChange}
-        title={autoAssigned ? "Auto-predicted from past transactions — confirm or change" : undefined}
+        title={autoAssigned ? "Auto-assigned — confirm or change" : undefined}
         style={{
           fontSize: "11px",
-          padding: "4px 6px",
+          padding: "3px 5px",
           borderRadius: "6px",
-          border: autoAssigned ? "1.5px solid #a5b4fc" : "1px solid #e5e7eb",
-          backgroundColor: disabled ? "#f9fafb" : (autoAssigned ? "#eef2ff" : "#fff"),
+          border: `1.5px solid ${borderColor}`,
+          backgroundColor: disabled ? "#f9fafb" : bgColor,
           color: value ? "#111827" : "#9ca3af",
           cursor: disabled ? "not-allowed" : "pointer",
-          minWidth: "100px",
+          minWidth: "90px",
+          maxWidth: "120px",
         }}
       >
         <option value="">Personal</option>
@@ -198,9 +230,17 @@ function EntityDropdown({
           <option key={en.id} value={en.id}>{en.name}</option>
         ))}
       </select>
-      {autoAssigned && (
-        <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 600 }}>
-          ✦ auto-predicted
+      {badge && (
+        <span style={{
+          fontSize: "10px",
+          fontWeight: 700,
+          padding: "1px 5px",
+          borderRadius: "999px",
+          backgroundColor: badge.bg,
+          color: badge.color,
+          alignSelf: "flex-start",
+        }}>
+          {badge.label}
         </span>
       )}
     </div>
@@ -209,10 +249,20 @@ function EntityDropdown({
 
 // ─── Sort helpers ─────────────────────────────────────────────────────────────
 
-type SortCol = "date" | "amount" | "description" | "type" | "category" | null;
+type SortCol = "date" | "amount" | "description" | "type" | "category" | "account" | "entity" | "confidence" | null;
 type SortDir = "asc" | "desc";
 
 // ─── Table ────────────────────────────────────────────────────────────────────
+
+interface PendingCategoryPromptForUI {
+  editedRowId: string;
+  triggeredBy: "category" | "entity";
+  vendor: string;
+  description: string;
+  category: string | null;
+  entityType: "business" | "rental" | "personal" | null;
+  affectedRowIds: string[];
+}
 
 interface ReviewTableProps {
   transactions: ReviewTransaction[];
@@ -230,13 +280,18 @@ interface ReviewTableProps {
     entityType: "business" | "rental" | "personal",
     entityName?: string
   ) => void;
-  onTypeChange: (id: string, type: "income" | "expense" | "transfer", subType?: "credit_card_payment" | "loan_payment" | null) => void;
+  onTypeChange: (id: string, type: "income" | "expense" | "transfer" | "refund", subType?: "credit_card_payment" | "loan_payment" | null) => void;
   onConfirm: (id: string) => void;
   onCustomCategoryAdded: (category: string) => void;
+  /** Prompt to render inline beneath the edited row. Same prompt is also
+   *  surfaced as a sticky banner on the page above the table. */
+  pendingCategoryPrompt?: PendingCategoryPromptForUI | null;
+  onAcceptCategoryPrompt?: () => void | Promise<void>;
+  onDismissCategoryPrompt?: () => void;
 }
 
 const TH: React.CSSProperties = {
-  padding: "10px 14px",
+  padding: "8px 10px",
   textAlign: "left",
   fontWeight: 600,
   fontSize: "11px",
@@ -249,7 +304,7 @@ const TH: React.CSSProperties = {
 };
 
 const TD: React.CSSProperties = {
-  padding: "10px 14px",
+  padding: "8px 10px",
   fontSize: "13px",
   color: "#374151",
   verticalAlign: "middle",
@@ -277,6 +332,9 @@ export default function ReviewTable({
   onTypeChange,
   onConfirm,
   onCustomCategoryAdded,
+  pendingCategoryPrompt,
+  onAcceptCategoryPrompt,
+  onDismissCategoryPrompt,
 }: ReviewTableProps) {
   const [sortCol, setSortCol] = useState<SortCol>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -307,6 +365,9 @@ export default function ReviewTable({
       else if (sortCol === "description") { av = (a.description || "").toLowerCase(); bv = (b.description || "").toLowerCase(); }
       else if (sortCol === "type")   { av = a.type;                              bv = b.type; }
       else if (sortCol === "category") { av = (a.category || "").toLowerCase();  bv = (b.category || "").toLowerCase(); }
+      else if (sortCol === "account") { av = (a.accountName || "").toLowerCase(); bv = (b.accountName || "").toLowerCase(); }
+      else if (sortCol === "entity") { av = (a.entityName || "").toLowerCase();  bv = (b.entityName || "").toLowerCase(); }
+      else if (sortCol === "confidence") { av = a.categorizationConfidence ?? -1; bv = b.categorizationConfidence ?? -1; }
       if (av < bv) return sortDir === "asc" ? -1 : 1;
       if (av > bv) return sortDir === "asc" ? 1 : -1;
       return 0;
@@ -327,7 +388,9 @@ export default function ReviewTable({
   if (transactions.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "64px 24px", color: "#6b7280" }}>
-        <div style={{ fontSize: "40px", marginBottom: "12px" }}>✅</div>
+        <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center" }}>
+          <CheckCircle2 size={48} strokeWidth={1.7} color="#16A34A" />
+        </div>
         <div style={{ fontWeight: 700, color: "#111827", fontSize: "16px", marginBottom: "4px" }}>
           All caught up!
         </div>
@@ -350,16 +413,15 @@ export default function ReviewTable({
                 style={{ cursor: "pointer" }}
               />
             </th>
-            {sortableTH("date", "Date", { width: "56px" })}
+            {sortableTH("date", "Date", { width: "52px" })}
             {sortableTH("description", "Description")}
-            {sortableTH("amount", "Amount", { textAlign: "right" })}
-            {sortableTH("type", "Type", { width: "90px" })}
-            {sortableTH("category", "Category", { minWidth: "200px" })}
-            {entities.length > 0 && (
-              <th style={{ ...TH, minWidth: "140px" }}>Assign To</th>
-            )}
-            <th style={{ ...TH, textAlign: "center", width: "72px" }}>Conf.</th>
-            <th style={{ ...TH, textAlign: "center", width: "88px" }}>Action</th>
+            {sortableTH("amount", "Amount", { textAlign: "right", width: "90px" })}
+            {sortableTH("type", "Type", { width: "80px" })}
+            {sortableTH("category", "Category", { minWidth: "160px" })}
+            {sortableTH("account", "Account", { width: "110px" })}
+            {entities.length > 0 && sortableTH("entity", "Assign To", { width: "120px" })}
+            {sortableTH("confidence", "Conf.", { textAlign: "center", width: "60px" })}
+            <th style={{ ...TH, textAlign: "center", width: "80px" }}>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -367,10 +429,13 @@ export default function ReviewTable({
             const isUpdating = updating.has(txn.id);
             const isSelected = selectedIds.has(txn.id);
             const isAI       = txn.source === "ai";
+            const showInlinePrompt =
+              !!pendingCategoryPrompt && pendingCategoryPrompt.editedRowId === txn.id;
+            const totalCols = entities.length > 0 ? 10 : 9;
 
             return (
+              <React.Fragment key={txn.id}>
               <tr
-                key={txn.id}
                 style={{
                   backgroundColor: isSelected
                     ? "#f0fdf4"
@@ -379,7 +444,7 @@ export default function ReviewTable({
                     : idx % 2 === 0 ? "#fff" : "#fafafa",
                   opacity: isUpdating ? 0.5 : 1,
                   transition: "opacity 0.15s, background-color 0.1s",
-                  borderBottom: "1px solid #f3f4f6",
+                  borderBottom: showInlinePrompt ? "none" : "1px solid #f3f4f6",
                 }}
               >
                 {/* Checkbox */}
@@ -437,6 +502,29 @@ export default function ReviewTable({
                       {txn.vendor}
                     </div>
                   )}
+                  {(() => {
+                    const reason = detectClassificationMismatch(txn);
+                    if (!reason) return null;
+                    return (
+                      <div
+                        title={reason}
+                        style={{
+                          marginTop: "4px",
+                          padding: "3px 7px",
+                          backgroundColor: "#fef3c7",
+                          border: "1px solid #fde68a",
+                          borderRadius: "5px",
+                          fontSize: "11px",
+                          color: "#92400e",
+                          fontStyle: "italic",
+                          whiteSpace: "normal",
+                          lineHeight: "1.35",
+                        }}
+                      >
+                        ⚠ {reason}
+                      </div>
+                    );
+                  })()}
                 </td>
 
                 {/* Amount */}
@@ -446,7 +534,7 @@ export default function ReviewTable({
                   fontVariantNumeric: "tabular-nums",
                   fontWeight: 600,
                   whiteSpace: "nowrap",
-                  color: txn.type === "expense" ? "#dc2626" : txn.type === "transfer" ? "#9ca3af" : "#16A34A",
+                  color: txn.type === "expense" ? "#dc2626" : txn.type === "transfer" ? "#9ca3af" : txn.type === "refund" ? "#7c3aed" : "#16A34A",
                 }}>
                   {txn.type === "expense" ? "−" : txn.type === "transfer" ? "" : "+"}$
                   {Math.abs(txn.amount ?? 0).toFixed(2)}
@@ -455,7 +543,7 @@ export default function ReviewTable({
                 {/* Type — clickable badge */}
                 <td style={TD}>
                   <TypeBadge
-                    type={txn.type as "income" | "expense" | "transfer"}
+                    type={txn.type as "income" | "expense" | "transfer" | "refund"}
                     subType={txn.subType ?? null}
                     id={txn.id}
                     disabled={isUpdating}
@@ -463,31 +551,62 @@ export default function ReviewTable({
                   />
                 </td>
 
-                {/* Category — inline editable, filtered by entity type (Task 5) */}
+                {/* Category — disabled for transfers / cc-payment / loan-payment.
+                   Transfers don't have a category by design (they net out across
+                   accounts and don't belong to a tax category). The editor is
+                   replaced with a non-clickable em-dash for these rows. */}
                 <td style={TD}>
-                  <InlineCategoryEditor
-                    value={txn.category}
-                    source={txn.source}
-                    disabled={isUpdating}
-                    entityType={txn.entityType ?? null}
-                    customCategories={customCategories}
-                    onChange={(cat) => onCategoryChange(txn.id, cat)}
-                    onCustomCategoryAdded={onCustomCategoryAdded}
-                  />
+                  {txn.type === "transfer" ? (
+                    <span style={{ color: "#9ca3af", fontSize: "12px", fontStyle: "italic" }}>
+                      —
+                    </span>
+                  ) : (
+                    <InlineCategoryEditor
+                      value={txn.category}
+                      source={txn.source}
+                      disabled={isUpdating}
+                      entityType={txn.entityType ?? null}
+                      customCategories={customCategories}
+                      onChange={(cat) => onCategoryChange(txn.id, cat)}
+                      onCustomCategoryAdded={onCustomCategoryAdded}
+                    />
+                  )}
                 </td>
 
-                {/* Assign To */}
+                {/* Account */}
+                <td style={{ ...TD, maxWidth: "130px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {txn.accountName?.trim() || "—"}
+                  </div>
+                  {txn.importFile && (
+                    <div
+                      title={txn.importFile}
+                      style={{ fontSize: "10px", color: "#c4c9d4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}
+                    >
+                      {txn.importFile.replace(/\.[^.]+$/, "")}
+                    </div>
+                  )}
+                </td>
+
+                {/* Assign To — same rule as Category: not applicable for transfers. */}
                 {entities.length > 0 && (
                   <td style={TD}>
+                    {txn.type === "transfer" ? (
+                      <span style={{ color: "#9ca3af", fontSize: "12px", fontStyle: "italic" }}>
+                        —
+                      </span>
+                    ) : (
                     <EntityDropdown
                       value={txn.entityId}
                       entities={entities}
                       disabled={isUpdating}
                       autoAssigned={txn.entityAutoAssigned}
+                      entityAssignmentSource={txn.entityAssignmentSource}
                       onChange={(entityId, entityType, entityName) =>
                         onEntityChange(txn.id, entityId, entityType, entityName)
                       }
                     />
+                    )}
                   </td>
                 )}
 
@@ -521,6 +640,87 @@ export default function ReviewTable({
                   </button>
                 </td>
               </tr>
+              {showInlinePrompt && pendingCategoryPrompt && (
+                <tr style={{
+                  backgroundColor: "#fffbeb",
+                  borderBottom: "1px solid #fcd34d",
+                }}>
+                  <td colSpan={totalCols} style={{
+                    padding: "10px 14px",
+                    borderTop: "1px solid #fcd34d",
+                  }}>
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "12px",
+                      flexWrap: "wrap",
+                      fontSize: "13px",
+                      color: "#78350f",
+                    }}>
+                      <div style={{ flex: "1 1 280px" }}>
+                        <div style={{ fontWeight: 700, marginBottom: "2px" }}>
+                          Apply this to similar transactions?
+                        </div>
+                        <div style={{ color: "#92400e" }}>
+                          You updated &ldquo;<strong>{truncateForPrompt(pendingCategoryPrompt.description)}</strong>&rdquo;.
+                          Apply{" "}
+                          {pendingCategoryPrompt.category && pendingCategoryPrompt.entityType
+                            ? "this category and assignment"
+                            : pendingCategoryPrompt.category
+                            ? "this category"
+                            : "this assignment"}{" "}
+                          to {pendingCategoryPrompt.affectedRowIds.length} similar transaction
+                          {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
+                        </div>
+                        <div style={{
+                          marginTop: "3px",
+                          fontSize: "11px",
+                          color: "#a16207",
+                          fontStyle: "italic",
+                        }}>
+                          Applies category, tax treatment, and Assign To.
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                        <button
+                          onClick={() => onAcceptCategoryPrompt?.()}
+                          style={{
+                            padding: "7px 14px",
+                            backgroundColor: "#16A34A",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Apply to all
+                        </button>
+                        <button
+                          onClick={() => onDismissCategoryPrompt?.()}
+                          style={{
+                            padding: "7px 14px",
+                            backgroundColor: "#fff",
+                            color: "#78350f",
+                            border: "1px solid #fcd34d",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Just this one
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
         </tbody>

@@ -1,4 +1,5 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import * as admin from "firebase-admin";
 import {
   Configuration,
   PlaidApi,
@@ -8,7 +9,7 @@ import {
 } from "plaid";
 import { requireAuth } from "../middleware/auth";
 
-export const createPlaidLinkToken = onCall({ cors: true, invoker: "public" }, async (request) => {
+export const createPlaidLinkToken = onCall({ secrets: ["PLAID_SECRET"], cors: true, invoker: "public" }, async (request) => {
   const uid = await requireAuth(request);
 
   const clientId = process.env.PLAID_CLIENT_ID;
@@ -30,14 +31,55 @@ export const createPlaidLinkToken = onCall({ cors: true, invoker: "public" }, as
   });
 
   const plaidClient = new PlaidApi(configuration);
+  // Hardcoded redirect — Firebase domain accepted by all OAuth banks. Mirrors
+  // Expense Workflow's working pattern exactly. NO webhook field — webhook is
+  // configured at the Plaid Dashboard app level instead. Including webhook in
+  // linkTokenCreate has caused OAuth handoff failures for Capital One.
+  const redirectUri = "https://diytax-ai.web.app/bank-accounts";
 
-  const response = await plaidClient.linkTokenCreate({
-    user: { client_user_id: uid },
-    client_name: "DIYTax AI",
-    products: [Products.Transactions],
-    country_codes: [CountryCode.Us],
-    language: "en",
-  });
+  console.log(`[LINK_TOKEN_DIAG] env=${plaidEnv} redirect_uri=${redirectUri}`);
 
-  return { linkToken: response.data.link_token };
+  const data = (request.data ?? {}) as { existingAccountId?: string };
+
+  try {
+    if (data.existingAccountId) {
+      // Update mode — opens Plaid for an already-connected institution without re-login
+      const db = admin.firestore();
+      const accountSnap = await db.collection("accounts").doc(data.existingAccountId).get();
+      if (!accountSnap.exists || accountSnap.data()?.uid !== uid) {
+        throw new HttpsError("not-found", "Account not found.");
+      }
+      const accessToken = accountSnap.data()!.plaidAccessToken as string;
+      const response = await plaidClient.linkTokenCreate({
+        user: { client_user_id: uid },
+        client_name: "DIYTax AI",
+        // access_token triggers update mode — products are inherited from existing item
+        access_token: accessToken,
+        country_codes: [CountryCode.Us],
+        language: "en",
+        redirect_uri: redirectUri,
+      });
+      return { linkToken: response.data.link_token };
+    }
+
+    // Normal mode — fresh institution connection. Kept minimal to match the
+    // Expense Workflow Platform setup that works reliably for Capital One.
+    const response = await plaidClient.linkTokenCreate({
+      user: { client_user_id: uid },
+      client_name: "DIYTax AI",
+      products: [Products.Transactions],
+      country_codes: [CountryCode.Us],
+      language: "en",
+      redirect_uri: redirectUri,
+    });
+
+    return { linkToken: response.data.link_token };
+  } catch (err: unknown) {
+    if (err instanceof HttpsError) throw err;
+    // Extract Plaid API error detail when available
+    const axiosBody = (err as { response?: { data?: unknown } })?.response?.data;
+    const detail = axiosBody ? JSON.stringify(axiosBody) : String(err);
+    console.error("createPlaidLinkToken Plaid error:", detail);
+    throw new HttpsError("internal", `Plaid error: ${detail}`);
+  }
 });

@@ -1,10 +1,16 @@
-import React from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { AlertTriangle } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTaxYear } from "../../contexts/TaxYearContext";
 import { useDashboardData, CategoryTotal, ScheduleARow, EntityTotal, ScheduleEProperty } from "./useDashboardData";
 import { useScheduleA } from "../tax/hooks/useScheduleA";
 import AppNav from "../../components/AppNav";
+import LiveTaxMeter from "./LiveTaxMeter";
+import { useNotifications } from "../../hooks/useNotifications";
+import { db } from "../../firebase";
+import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { apiClient } from "../../services/apiClient";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -82,9 +88,14 @@ function CategoryRow({
     <div
       style={{ ...rowBase, cursor: "pointer" }}
       onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
     >
       <span style={{ color: "#374151" }}>{row.category}</span>
-      <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>
+      <span style={{
+        fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+        textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+      }}>
         {fmt(row.amount)}
       </span>
     </div>
@@ -94,9 +105,11 @@ function CategoryRow({
 function EntitySection({
   entity,
   onGoToReview,
+  onCategoryClick,
 }: {
   entity: EntityTotal;
   onGoToReview: () => void;
+  onCategoryClick: (category: string) => void;
 }) {
   const sortedCategories = Object.entries(entity.categories).sort(
     ([, a], [, b]) => b - a
@@ -142,9 +155,18 @@ function EntitySection({
         )}
       </div>
       {sortedCategories.map(([category, amount]) => (
-        <div key={category} style={rowBase}>
+        <div
+          key={category}
+          style={{ ...rowBase, cursor: "pointer" }}
+          onClick={() => onCategoryClick(category)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        >
           <span style={{ color: "#374151", paddingLeft: "8px" }}>{category}</span>
-          <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>
+          <span style={{
+            fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+            textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+          }}>
             {fmt(amount)}
           </span>
         </div>
@@ -217,7 +239,7 @@ function ScheduleCSection({
   );
 }
 
-function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
+function ScheduleASection({ rows, onCategoryClick }: { rows: ScheduleARow[]; onCategoryClick: (cat: string) => void }) {
   if (rows.length === 0) return null;
   return (
     <div>
@@ -225,9 +247,20 @@ function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
         Schedule A — Itemized Deductions
       </div>
       {rows.map((row) => (
-        <div key={row.taxCategory} style={rowBase}>
+        <div
+          key={row.taxCategory}
+          style={{ ...rowBase, cursor: "pointer" }}
+          onClick={() => onCategoryClick(row.taxCategory)}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f9fafb")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        >
           <span style={{ color: "#374151" }}>{row.taxCategory}</span>
-          <span style={{ fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums" }}>{fmt(row.amount)}</span>
+          <span style={{
+            fontWeight: 600, color: "#111827", fontVariantNumeric: "tabular-nums",
+            textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px",
+          }}>
+            {fmt(row.amount)}
+          </span>
         </div>
       ))}
     </div>
@@ -237,11 +270,134 @@ function ScheduleASection({ rows }: { rows: ScheduleARow[] }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
   const navigate = useNavigate();
   const { selectedYear } = useTaxYear();
   const { data, loading, error, reload } = useDashboardData();
   const { data: scheduleAData, loading: scheduleALoading } = useScheduleA();
+  const { permission, requestPermission } = useNotifications();
+  const [notifDismissed, setNotifDismissed] = useState(
+    () => localStorage.getItem("notif_prompt_dismissed") === "1"
+  );
+
+  const [entityCleanup, setEntityCleanup] = useState<
+    { running: true } | { running: false; lastResult?: string } | null
+  >(null);
+
+  const hasEntityDupes = useMemo(() => {
+    const seen = new Set<string>();
+    for (const e of data.entityTotals) {
+      const k = (e.entityName ?? "").trim().toLowerCase();
+      if (!k) continue;
+      if (seen.has(k)) return true;
+      seen.add(k);
+    }
+    return false;
+  }, [data.entityTotals]);
+
+  async function handleEntityCleanup() {
+    setEntityCleanup({ running: true });
+    try {
+      const res = await apiClient.call<{
+        txns:  { reassigned: number; orphaned: number };
+        rules: { reassigned: number; orphaned: number };
+        entityDupsDeleted: number;
+      }>("cleanupEntityDuplicates");
+      const parts: string[] = [];
+      if (res.txns.reassigned)  parts.push(`${res.txns.reassigned} transaction${res.txns.reassigned !== 1 ? "s" : ""} reassigned`);
+      if (res.rules.reassigned) parts.push(`${res.rules.reassigned} rule${res.rules.reassigned !== 1 ? "s" : ""} reassigned`);
+      if (res.entityDupsDeleted) parts.push(`${res.entityDupsDeleted} duplicate entity record${res.entityDupsDeleted !== 1 ? "s" : ""} removed`);
+      const orphaned = res.txns.orphaned + res.rules.orphaned;
+      const summary = parts.length === 0
+        ? "Already clean — no duplicates found."
+        : parts.join(", ") + (orphaned ? `. ${orphaned} reference${orphaned !== 1 ? "s" : ""} couldn't be matched and were left as-is.` : ".");
+      setEntityCleanup({ running: false, lastResult: summary });
+      await reload();
+    } catch (e) {
+      setEntityCleanup({
+        running: false,
+        lastResult: e instanceof Error ? `Failed: ${e.message}` : "Failed.",
+      });
+    }
+  }
+
+  // ── Spending forecast data ────────────────────────────────────────────────
+  const [sfTransactions, setSfTransactions] = useState<any[]>([]);
+  const [sfRecurring, setSfRecurring]       = useState<any[]>([]);
+  const [sfLoaded, setSfLoaded]             = useState(false);
+
+  // Auto-scan recurring transactions once per day, silently in the background
+  useEffect(() => {
+    if (!effectiveOwnerUid) return;
+    const SCAN_KEY = `recurring_scan_${effectiveOwnerUid}`;
+    const lastScan = Number(localStorage.getItem(SCAN_KEY) ?? 0);
+    if (Date.now() - lastScan < 24 * 60 * 60 * 1000) return;
+    apiClient.call("detectRecurring").then(() => {
+      localStorage.setItem(SCAN_KEY, String(Date.now()));
+    }).catch(() => {/* silent — don't surface background errors */});
+  }, [effectiveOwnerUid]);
+
+  useEffect(() => {
+    if (!effectiveOwnerUid) return;
+    const now = new Date();
+    const cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split("T")[0];
+    const txQ = query(
+      collection(db, "transactions"),
+      where("uid", "==", effectiveOwnerUid),
+      where("date", ">=", cutoff)
+    );
+    const unsubTx = onSnapshot(txQ, (snap) => {
+      setSfTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setSfLoaded(true);
+    });
+    const recQ = query(collection(db, "recurringItems"), where("uid", "==", effectiveOwnerUid));
+    const unsubRec = onSnapshot(recQ, (snap) => {
+      setSfRecurring(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsubTx(); unsubRec(); };
+  }, [effectiveOwnerUid]);
+
+  const sf = useMemo(() => {
+    const now    = new Date();
+    const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const lmDate       = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthKey = `${lmDate.getFullYear()}-${String(lmDate.getMonth() + 1).padStart(2, "0")}`;
+
+    const thisM  = { income: 0, expenses: 0, deductible: 0 };
+    const lastM  = { income: 0, expenses: 0 };
+    const catMap: Record<string, number> = {};
+
+    for (const t of sfTransactions) {
+      const amt = Math.abs((t.amount as number) ?? 0);
+      const dk  = typeof t.date === "string" ? t.date.substring(0, 7) : "";
+      if (dk === thisMonthKey) {
+        if (t.type === "income") {
+          thisM.income += amt;
+        } else {
+          thisM.expenses += amt;
+          if (t.taxCategory && t.taxCategory !== "Personal" && t.taxCategory !== "") {
+            thisM.deductible += amt;
+            catMap[t.taxCategory as string] = (catMap[t.taxCategory as string] ?? 0) + amt;
+          }
+        }
+      } else if (dk === lastMonthKey) {
+        if (t.type === "income") lastM.income += amt;
+        else                     lastM.expenses += amt;
+      }
+    }
+
+    const topCategories = Object.entries(catMap).sort(([, a], [, b]) => b - a).slice(0, 4);
+    const maxCat        = topCategories[0]?.[1] ?? 1;
+
+    const today    = now.toISOString().split("T")[0];
+    const twoWeeks = new Date(now.getTime() + 14 * 86400000).toISOString().split("T")[0];
+    const upcomingBills = sfRecurring
+      .filter((r) => typeof r.nextExpectedDate === "string" && r.nextExpectedDate >= today && r.nextExpectedDate <= twoWeeks)
+      .sort((a, b) => (a.nextExpectedDate as string).localeCompare(b.nextExpectedDate as string))
+      .slice(0, 5);
+
+    return { thisM, lastM, topCategories, maxCat, upcomingBills };
+  }, [sfTransactions, sfRecurring]);
 
   const progress =
     data.total > 0 ? Math.round((data.categorized / data.total) * 100) : 0;
@@ -281,42 +437,152 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ── Section 1: Overview ──────────────────────────────────────────── */}
+        {/* ── Live Tax Meter ───────────────────────────────────────────────── */}
+        <LiveTaxMeter needsReviewCount={loading ? 0 : data.needsReviewCount} />
 
-        {/* Needs Review alert */}
-        {!loading && data.needsReviewCount > 0 && (
-          <div
-            style={{
-              backgroundColor: "#fffbeb",
-              border: "1px solid #fde68a",
-              borderRadius: "12px",
-              padding: "16px 20px",
-              marginBottom: "24px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "16px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontSize: "20px" }}>⚠️</span>
-              <div>
-                <span style={{ fontWeight: 700, color: "#92400e", fontSize: "15px" }}>
-                  {fmt(data.needsReviewAmount)} needs review
-                </span>
-                <span style={{ color: "#b45309", fontSize: "13px", marginLeft: "8px" }}>
-                  ({data.needsReviewCount} transaction{data.needsReviewCount !== 1 ? "s" : ""})
-                </span>
-              </div>
+        {/* ── Notification prompt ──────────────────────────────────────────── */}
+        {permission === "default" && !notifDismissed && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px",
+            padding: "12px 16px", backgroundColor: "#f0fdf4", border: "1px solid #86efac",
+            borderRadius: "10px", marginBottom: "20px",
+          }}>
+            <span style={{ fontSize: "13px", color: "#15803d" }}>
+              Get morning tax snapshots, expense reminders & quarterly deadline alerts.
+            </span>
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              <button
+                onClick={requestPermission}
+                style={{ padding: "6px 14px", backgroundColor: "#16A34A", color: "#fff", border: "none", borderRadius: "7px", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: font }}
+              >
+                Enable
+              </button>
+              <button
+                onClick={() => { setNotifDismissed(true); localStorage.setItem("notif_prompt_dismissed", "1"); }}
+                style={{ padding: "6px 10px", backgroundColor: "transparent", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "12px", cursor: "pointer", fontFamily: font }}
+              >
+                Later
+              </button>
             </div>
-            <button
-              onClick={() => navigate("/review")}
-              style={{ padding: "8px 18px", backgroundColor: "#d97706", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontFamily: font }}
-            >
-              Go to Review
-            </button>
           </div>
         )}
+
+        {/* ── Spending Forecast Cards ──────────────────────────────────────── */}
+        {sfLoaded && (
+          <>
+            {/* Row: This Month Cash Flow + Upcoming Bills */}
+            <div style={{ display: "flex", gap: "16px", marginBottom: "16px", flexWrap: "wrap" }}>
+
+              {/* This Month Cash Flow */}
+              <div style={{
+                backgroundColor: "#fff",
+                borderRadius: "12px",
+                padding: "20px 24px",
+                flex: "1 1 260px",
+                boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>This Month</span>
+                  <span style={{ fontSize: "11px", color: "#9ca3af" }}>
+                    {new Date().toLocaleString("en-US", { month: "long", year: "numeric" })}
+                  </span>
+                </div>
+                {[
+                  { label: "Income",   val: sf.thisM.income,   lastVal: sf.lastM.income,   color: "#16A34A" },
+                  { label: "Expenses", val: sf.thisM.expenses, lastVal: sf.lastM.expenses, color: "#dc2626" },
+                ].map(({ label, val, lastVal, color }) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #f3f4f6", fontSize: "13px" }}>
+                    <span style={{ color: "#6b7280" }}>{label}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      {lastVal > 0 && (
+                        <span style={{ fontSize: "10px", color: (label === "Income" ? val >= lastVal : val <= lastVal) ? "#16A34A" : "#dc2626" }}>
+                          {(label === "Income" ? val >= lastVal : val <= lastVal) ? "▲" : "▼"}
+                        </span>
+                      )}
+                      <span style={{ fontWeight: 600, color }}>{fmt(val)}</span>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 0 2px", fontSize: "13px" }}>
+                  <span style={{ fontWeight: 700, color: "#111827" }}>Net</span>
+                  <span style={{ fontWeight: 700, color: (sf.thisM.income - sf.thisM.expenses) >= 0 ? "#16A34A" : "#dc2626" }}>
+                    {fmt(sf.thisM.income - sf.thisM.expenses)}
+                  </span>
+                </div>
+                {sf.thisM.deductible > 0 && (
+                  <div style={{ marginTop: "10px", fontSize: "12px", color: "#15803d", backgroundColor: "#f0fdf4", borderRadius: "6px", padding: "6px 10px", lineHeight: 1.5 }}>
+                    {fmt(sf.thisM.deductible)} of expenses are tax-deductible
+                  </div>
+                )}
+              </div>
+
+              {/* Upcoming Bills */}
+              <div style={{
+                backgroundColor: "#fff",
+                borderRadius: "12px",
+                padding: "20px 24px",
+                flex: "1 1 260px",
+                boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
+              }}>
+                <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827", marginBottom: "14px" }}>
+                  Upcoming Bills{" "}
+                  <span style={{ fontSize: "11px", color: "#9ca3af", fontWeight: 400 }}>next 14 days</span>
+                </div>
+                {sf.upcomingBills.length === 0 ? (
+                  <div style={{ fontSize: "13px", color: "#6b7280", lineHeight: 1.5 }}>No bills due in the next 14 days</div>
+                ) : (
+                  sf.upcomingBills.map((bill: any) => {
+                    const dueDate  = new Date(bill.nextExpectedDate + "T00:00:00");
+                    const daysLeft = Math.round((dueDate.getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000);
+                    return (
+                      <div key={bill.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #f3f4f6", fontSize: "13px" }}>
+                        <div>
+                          <div style={{ color: "#374151", fontWeight: 500 }}>{bill.description}</div>
+                          <div style={{ fontSize: "12px", fontWeight: 500, color: daysLeft <= 3 ? "#dc2626" : "#6b7280" }}>
+                            {daysLeft === 0 ? "Today" : daysLeft === 1 ? "Tomorrow" : `in ${daysLeft} days`}
+                          </div>
+                        </div>
+                        <span style={{ fontWeight: 600, color: "#dc2626" }}>
+                          {fmt(Math.abs((bill.amount as number) ?? 0))}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Top Spending Categories */}
+            {sf.topCategories.length > 0 && (
+              <div style={{ ...card }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Top Spending This Month</span>
+                  <button
+                    onClick={() => navigate("/spending-forecast")}
+                    style={{ background: "none", border: "none", color: "#16A34A", fontWeight: 600, fontSize: "12px", cursor: "pointer", fontFamily: font }}
+                  >
+                    Full Forecast →
+                  </button>
+                </div>
+                {sf.topCategories.map(([category, amount]) => (
+                  <div key={category} style={{ marginBottom: "10px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", color: "#374151", marginBottom: "4px" }}>
+                      <span>{category}</span>
+                      <span style={{ fontWeight: 600 }}>{fmt(amount)}</span>
+                    </div>
+                    <div style={{ backgroundColor: "#e5e7eb", borderRadius: "999px", height: "5px", overflow: "hidden" }}>
+                      <div style={{ width: `${Math.round((amount / sf.maxCat) * 100)}%`, height: "100%", backgroundColor: "#16A34A", borderRadius: "999px" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Section 1: Overview ──────────────────────────────────────────── */}
+        {/* Note: the "needs review" callout now lives inside the LiveTaxMeter
+            as an action chip — duplicate banner removed. */}
 
         {/* Unassigned transactions warning */}
         {!loading && data.hasUnassigned && (
@@ -334,7 +600,7 @@ export default function DashboardPage() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontSize: "18px" }}>⚠</span>
+              <AlertTriangle size={20} strokeWidth={2.2} color="#ea580c" />
               <span style={{ fontWeight: 600, color: "#9a3412", fontSize: "14px" }}>
                 Some transactions are not assigned to a business
               </span>
@@ -407,7 +673,44 @@ export default function DashboardPage() {
         {/* ── Section 2: By Entity ──────────────────────────────────────────── */}
         {!loading && hasEntityTotals && (
           <div style={card}>
-            <div style={sectionTitle}>Expenses by Business</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", gap: "12px", flexWrap: "wrap" }}>
+              <div style={{ ...sectionTitle, marginBottom: 0 }}>Expenses by Business</div>
+              {(hasEntityDupes || entityCleanup) && (
+                <button
+                  onClick={handleEntityCleanup}
+                  disabled={entityCleanup?.running ?? false}
+                  title="Reassign transactions and rules pointing at deleted entity records to the surviving entity that matches by name."
+                  style={{
+                    padding: "6px 12px",
+                    backgroundColor: "#fff",
+                    color: "#6b7280",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: entityCleanup?.running ? "not-allowed" : "pointer",
+                    opacity: entityCleanup?.running ? 0.6 : 1,
+                    fontFamily: font,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {entityCleanup?.running ? "Merging…" : "Merge duplicates"}
+                </button>
+              )}
+            </div>
+            {entityCleanup && !entityCleanup.running && entityCleanup.lastResult && (
+              <div style={{
+                marginBottom: "12px",
+                padding: "8px 12px",
+                backgroundColor: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                fontSize: "12px",
+                color: "#1d4ed8",
+              }}>
+                ✓ {entityCleanup.lastResult}
+              </div>
+            )}
             {data.entityTotals.map((entity, i) => (
               <React.Fragment key={entity.entityId ?? "__unassigned__"}>
                 {i > 0 && (
@@ -416,6 +719,7 @@ export default function DashboardPage() {
                 <EntitySection
                   entity={entity}
                   onGoToReview={() => navigate("/review")}
+                  onCategoryClick={(cat) => navigate(`/transactions?category=${encodeURIComponent(cat)}`)}
                 />
               </React.Fragment>
             ))}
@@ -430,7 +734,7 @@ export default function DashboardPage() {
               <CategoryRow
                 key={row.category}
                 row={row}
-                onClick={() => navigate("/transactions")}
+                onClick={() => navigate(`/transactions?category=${encodeURIComponent(row.category)}`)}
               />
             ))}
             <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "14px", fontWeight: 700, fontSize: "14px", color: "#111827" }}>
@@ -501,7 +805,12 @@ export default function DashboardPage() {
             {hasScheduleC && hasScheduleA && (
               <div style={{ borderTop: "1px solid #e5e7eb", margin: "16px 0" }} />
             )}
-            {hasScheduleA && <ScheduleASection rows={data.scheduleA} />}
+            {hasScheduleA && (
+              <ScheduleASection
+                rows={data.scheduleA}
+                onCategoryClick={(cat) => navigate(`/transactions?category=${encodeURIComponent(cat)}`)}
+              />
+            )}
           </div>
         )}
 

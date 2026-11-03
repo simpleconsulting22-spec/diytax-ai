@@ -1,23 +1,41 @@
 import { useState, useRef } from "react";
-import Papa from "papaparse";
 import {
   collection,
   query,
   where,
   getDocs,
-  addDoc,
-  updateDoc,
+  getDoc,
   deleteDoc,
   writeBatch,
   doc,
   setDoc,
+  updateDoc,
   serverTimestamp,
   increment,
 } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
 import { db } from "../../../firebase";
 import { useAuth } from "../../../contexts/AuthContext";
-import { getUserEntities, UserEntity } from "../../../services/entityService";
+import { apiClient } from "../../../services/apiClient";
+import {
+  ingestCsvFile,
+  summarizeResult,
+  type DetectionResult,
+  type RowError,
+} from "../csvEngine";
+import {
+  findDuplicates,
+  computeRowDedupeHash,
+  type MatchInfo,
+} from "../csvEngine/findDuplicates";
+import { track } from "../../../lib/telemetry";
+
+// Diagnostic logging — opt-in via ?debug=1 query param so the noisy
+// applyTypeRules / updateRowType / dumpTypeRules logs only appear when the
+// user (or me) is intentionally instrumenting. Evaluated once at module load;
+// to toggle, append/remove ?debug=1 and reload.
+const DEBUG_LOGS =
+  typeof window !== "undefined" &&
+  /(?:\?|&)debug=1\b/.test(window.location.search);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,7 +52,13 @@ export interface NormalizedRow {
   accountIdentifier: string | null;
   accountType: "bank" | "credit_card";
   rawData: Record<string, string>;
-  userModified?: boolean;   // true when user manually overrode the type in the preview
+  userModified?: boolean;     // true when user manually overrode the type in the preview
+  // ── Pre-import duplicate detection ──────────────────────────────────────
+  // The canonical content key used by the backend's dedup decision. Frontend
+  // computes the same hash for query + override-tracking purposes.
+  dedupeHash?: string;
+  // Set when findDuplicates() identified a likely duplicate. UI badges off this.
+  possibleDuplicate?: MatchInfo | null;
 }
 
 // ─── Transfer detection ───────────────────────────────────────────────────────
@@ -116,6 +140,9 @@ function detectLoanPayment(description: string): boolean {
   return LOAN_PAYMENT_PATTERNS.some((re) => re.test(description));
 }
 
+// Refund / reversal / chargeback indicators in transaction descriptions.
+const REFUND_KEYWORDS = /\b(REFUND|REVERSAL|REIMBURSEMENT|REIMB|CHARGEBACK)\b/i;
+
 /** Derive transaction type based on account type, amount, and description. */
 function deriveType(
   description: string,
@@ -147,31 +174,20 @@ function deriveType(
     return { type: "transfer", isTransfer: true };
   }
 
+  // Bank account refunds: description has REFUND/REVERSAL/etc. keyword.
+  // type="refund" so the amount nets against the original expense category
+  // rather than inflating reported income.
+  if (REFUND_KEYWORDS.test(description)) {
+    return { type: "refund", isTransfer: false };
+  }
+
   return {
     type: !isNaN(amount) && amount >= 0 ? "income" : "expense",
     isTransfer: false,
   };
 }
 
-interface PreparedRow {
-  row: NormalizedRow;
-  accountId: string | null;
-  normalizedDescription: string;
-  importKey: string;
-  possibleDuplicate: boolean;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// Find the first header whose lowercase form contains any candidate substring
-function findColumn(headers: string[], candidates: string[]): string | undefined {
-  const lower = headers.map((h) => h.toLowerCase().trim());
-  for (const candidate of candidates) {
-    const idx = lower.findIndex((h) => h.includes(candidate));
-    if (idx !== -1) return headers[idx];
-  }
-  return undefined;
-}
 
 // Collapse whitespace, lowercase — used in importKey and stored on the doc
 export function normalize(desc: string): string {
@@ -180,13 +196,54 @@ export function normalize(desc: string): string {
 
 // ─── Vendor extraction ────────────────────────────────────────────────────────
 
-// Common payment-processor prefixes to strip before extracting vendor name
+// Common payment-processor prefixes to strip before extracting vendor name.
+//
+// The strip loop iterates this list in order, applies the first pattern that
+// matches, then restarts. MORE-SPECIFIC PATTERNS MUST COME FIRST — e.g.
+// "Zelle Sent to <name>" must be caught before the bare "Zelle <name>"
+// fallback, otherwise the wider pattern would strip too little and leave
+// "sent" as the apparent vendor.
+//
+// The P2P groups (Zelle / Venmo / Cash App / PayPal direct sends) intentionally
+// peel both the brand AND the verb (Sent / Payment / Received / Deposit /
+// Cashout) AND any to/from connector, so the recipient/sender NAME becomes
+// the vendor key. That's what the pattern-learning cascade keys off of —
+// without this, "Zelle Sent to Gregory" and "Zelle Sent to Pearl" both
+// collapse to vendor="zelle" and a single correction would falsely cascade
+// across unrelated recipients.
 const VENDOR_LEADING_NOISE = [
   /^sq\s*\*\s*/i, /^tst\s*\*\s*/i, /^pp\s*\*\s*/i, /^paypal\s*\*\s*/i,
   /^amzn\s+mktp(\s+us)?\s*/i, /^amazon\.com\/bill\s*/i,
   /^ach\s+(credit|debit)?\s*/i, /^pos\s*#?\s*\d*\s*/i,
   /^debit\s+card\s+/i, /^purchase\s+at\s+/i, /^payment\s+to\s+/i,
-  /^autopay\s+/i, /^zelle\s+(to|from)\s+/i, /^venmo\s+/i,
+  /^autopay\s+/i,
+
+  // ── P2P platforms ──
+  // Permissive form: strip "<brand> [up to 3 connector words] (to|from) " so
+  // bank-specific phrasings like "Zelle money received from <name>" or
+  // "Venmo Sent to <name>" all collapse to the recipient as the vendor key.
+  // Capital One specifically formats Zelle entries as "Zelle money received
+  // from / sent to" — without the {0,3} word allowance, every Zelle row in
+  // their CSVs collapses to vendor="money" and breaks per-recipient learning.
+  // Then a verb-only fallback (no recipient), then the bare-brand fallback.
+  // Zelle
+  /^zelle\s+(?:[a-z]+\s+){0,3}(?:to|from)\s+/i,
+  /^zelle\s+(?:sent|payment|received|deposit|cashout|funds|money)\s+/i,
+  /^zelle\s+/i,
+  // Venmo
+  /^venmo\s+(?:[a-z]+\s+){0,3}(?:to|from)\s+/i,
+  /^venmo\s+(?:sent|payment|received|cashout|charge|funds|money)\s+/i,
+  /^venmo\s+/i,
+  // Cash App (handles "Cash App", "CashApp", "Cash app")
+  /^cash\s*app\s+(?:[a-z]+\s+){0,3}(?:to|from)\s+/i,
+  /^cash\s*app\s+(?:sent|payment|received|cashout|funds|money)\s+/i,
+  /^cash\s*app\s+/i,
+  // PayPal direct sends. "/^paypal\s*\*\s*/i" above handles the
+  // "PayPal*Merchant" form for merchants billing through PayPal.
+  /^paypal\s+(?:[a-z]+\s+){0,3}(?:to|from)\s+/i,
+  /^paypal\s+(?:instant\s+transfer|sent|payment|received|transfer|funds|money)\s+/i,
+  /^paypal\s+/i,
+
   /^recurring\s+/i, /^online\s+(payment|purchase)\s*/i,
   /^\d{4,}\s+/,
 ];
@@ -202,6 +259,12 @@ const VENDOR_BRAND_ALIASES: Array<[RegExp, string]> = [
   [/^github\b/i, "github"], [/^aws\b/i, "amazon web services"],
   [/^shopify\b/i, "shopify"], [/^quickbooks/i, "quickbooks"],
 ];
+
+// English articles that we never want to surface as the vendor key. Without
+// this filter, descriptions like "Zelle THE AWESOME G" and "Zelle THE
+// CITYLIGHT" both extract to vendor="the" and pattern-learning incorrectly
+// groups them together.
+const VENDOR_STOP_WORDS = new Set(["the", "a", "an"]);
 
 export function extractVendor(normalizedDescription: string): string {
   if (!normalizedDescription) return "unknown";
@@ -222,134 +285,15 @@ export function extractVendor(normalizedDescription: string): string {
     if (pat.test(s)) return canonical;
   }
 
-  const words = s.split(/\s+/).filter((w) => /[a-z]/.test(w) && w.length >= 2);
+  const words = s
+    .split(/\s+/)
+    .filter((w) => /[a-z]/.test(w) && w.length >= 2 && !VENDOR_STOP_WORDS.has(w));
   if (words.length === 0) return normalizedDescription.split(" ")[0] || "unknown";
   return words[0].length <= 2 && words[1] ? `${words[0]} ${words[1]}` : words[0];
 }
 
-// ─── Fuzzy duplicate detection ────────────────────────────────────────────────
-
-// Word-bag Jaccard similarity — fast, no external deps
-function jaccardSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.split(/\s+/).filter((w) => w.length > 1));
-  const wordsB = new Set(b.split(/\s+/).filter((w) => w.length > 1));
-  if (wordsA.size === 0 && wordsB.size === 0) return 1;
-  let intersection = 0;
-  wordsA.forEach((w) => { if (wordsB.has(w)) intersection++; });
-  const union = new Set([...wordsA, ...wordsB]).size;
-  return union === 0 ? 1 : intersection / union;
-}
-
-// Returns a set of importKeys that appear to be cross-batch fuzzy duplicates.
-// Skips if date range > 90 days to bound query cost.
-async function findCrossBatchFuzzyDuplicates(
-  userId: string,
-  candidates: PreparedRow[]
-): Promise<Set<string>> {
-  const flagged = new Set<string>();
-  if (candidates.length === 0) return flagged;
-
-  const dates = candidates.map((p) => p.row.date).filter(Boolean).sort();
-  if (dates.length === 0) return flagged;
-
-  const minDate = dates[0];
-  const maxDate = dates[dates.length - 1];
-  const daySpan =
-    (new Date(maxDate).getTime() - new Date(minDate).getTime()) /
-    (1000 * 60 * 60 * 24);
-
-  // Skip fuzzy check for very wide date ranges — too many existing transactions
-  if (daySpan > 90) return flagged;
-
-  const uniqueDates = [...new Set(dates)];
-  const existingTxns: Array<{ date: string; amount: number; normalizedDescription: string }> = [];
-
-  for (let i = 0; i < uniqueDates.length; i += DEDUP_CHUNK_SIZE) {
-    const chunk = uniqueDates.slice(i, i + DEDUP_CHUNK_SIZE);
-    const snap = await getDocs(
-      query(
-        collection(db, "transactions"),
-        where("uid", "==", userId),
-        where("date", "in", chunk)
-      )
-    );
-    snap.docs.forEach((d) => {
-      const data = d.data();
-      if (data.date && data.amount !== undefined && data.normalizedDescription) {
-        existingTxns.push({
-          date: data.date as string,
-          amount: data.amount as number,
-          normalizedDescription: data.normalizedDescription as string,
-        });
-      }
-    });
-    // Guard: bail if we'd be comparing against a huge set
-    if (existingTxns.length > 2000) return flagged;
-  }
-
-  for (const candidate of candidates) {
-    for (const existing of existingTxns) {
-      if (candidate.row.date !== existing.date) continue;
-      if (Math.abs(candidate.row.amount - existing.amount) > 0.01) continue;
-      const sim = jaccardSimilarity(
-        candidate.normalizedDescription,
-        existing.normalizedDescription
-      );
-      if (sim >= 0.8) {
-        flagged.add(candidate.importKey);
-        break;
-      }
-    }
-  }
-
-  return flagged;
-}
-
-// Normalise a date string to YYYY-MM-DD; returns empty string when unrecognised
-function parseDate(raw: string): string {
-  const s = raw.trim();
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (mdy) {
-    const [, m, d, y] = mdy;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const mdyShort = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-  if (mdyShort) {
-    const [, m, d, y] = mdyShort;
-    const fullYear = parseInt(y) > 50 ? `19${y}` : `20${y}`;
-    return `${fullYear}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const mdyDash = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (mdyDash) {
-    const [, m, d, y] = mdyDash;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
-
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-
-  return "";
-}
-
-// Parse an amount string to a number.
-// Returns NaN for empty or unparseable input (not coerced to 0)
-// so validation in writeTransactions can detect missing/invalid amounts.
-function parseAmount(raw: string): number {
-  let s = raw.trim();
-  if (!s) return NaN;
-
-  // (123.45) → -123.45
-  const parens = s.match(/^\(([^)]+)\)$/);
-  if (parens) s = `-${parens[1]}`;
-
-  s = s.replace(/[$,\s]/g, "");
-  return parseFloat(s);
-}
+// Date and amount parsing live in the csvEngine module — see
+// frontend/src/modules/import/csvEngine/parsing.ts. Re-export not needed here.
 
 // ─── Sign-issue detection ─────────────────────────────────────────────────────
 
@@ -383,31 +327,81 @@ export function detectSignIssue(rows: NormalizedRow[]): boolean {
 /**
  * Load user's learned type rules from Firestore and apply them to parsed rows.
  * Rows whose vendor matches a saved rule have their type overridden automatically.
+ *
+ * NOTE: This silently rewrites row.type at parse time. Phase-1 instrumentation
+ * below logs every match so we can see when this fires and which rules are
+ * involved. Phase 2 will move this to a non-destructive suggestion model.
  */
 async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<NormalizedRow[]> {
   try {
     const snap = await getDocs(
       query(collection(db, "typeRules"), where("uid", "==", userId))
     );
-    if (snap.empty) return rows;
+    if (snap.empty) {
+      if (DEBUG_LOGS) console.log(`[applyTypeRules] uid=${userId} rulesLoaded=0 — no rules to apply`);
+      return rows;
+    }
 
-    const rules = new Map<string, TransactionType>();
+    const rules     = new Map<string, TransactionType>();
+    const ruleMeta  = new Map<string, { docId: string; updatedAt?: unknown; usageCount?: number }>();
     snap.docs.forEach((d) => {
       const data = d.data();
       if (data.vendorName && data.type) {
         rules.set(data.vendorName as string, data.type as TransactionType);
+        ruleMeta.set(data.vendorName as string, {
+          docId:      d.id,
+          updatedAt:  data.updatedAt,
+          usageCount: data.usageCount as number | undefined,
+        });
       }
     });
 
-    return rows.map((row) => {
+    interface Hit {
+      idx:      number;
+      desc:     string;
+      vendor:   string;
+      fromType: string;
+      toType:   string;
+      ruleDoc:  string;
+      usageCount: number | undefined;
+    }
+    const hits: Hit[] = [];
+
+    const out = rows.map((row, idx) => {
       const vendor = extractVendor(normalize(row.description));
       const learnedType = rules.get(vendor);
       if (learnedType && learnedType !== row.type) {
+        const meta = ruleMeta.get(vendor);
+        hits.push({
+          idx,
+          desc:     row.description,
+          vendor,
+          fromType: row.type,
+          toType:   learnedType,
+          ruleDoc:  meta?.docId ?? "(unknown)",
+          usageCount: meta?.usageCount,
+        });
         return { ...row, type: learnedType, isTransfer: learnedType === "transfer" };
       }
       return row;
     });
-  } catch {
+
+    if (DEBUG_LOGS) {
+      console.groupCollapsed(
+        `[applyTypeRules] scanned=${rows.length} rulesLoaded=${rules.size} hits=${hits.length}`,
+      );
+      if (hits.length > 0) {
+        console.table(hits);
+      } else {
+        console.log("(no rule matched any row in this batch)");
+      }
+      console.log("ruleKeys:", [...rules.keys()].sort());
+      console.groupEnd();
+    }
+
+    return out;
+  } catch (e) {
+    if (DEBUG_LOGS) console.warn("[applyTypeRules] failed:", e);
     return rows; // non-blocking — fail silently
   }
 }
@@ -426,166 +420,76 @@ async function applyTypeRules(userId: string, rows: NormalizedRow[]): Promise<No
  * @param accountType Controls type derivation logic. "credit_card" uses payment
  *                    pattern detection; "bank" uses amount sign. Default: "bank".
  */
-export function parseCSVFile(
-  file: File,
-  options?: { flipSign?: boolean; accountType?: "bank" | "credit_card" }
-): Promise<NormalizedRow[]> {
-  const flipSign = options?.flipSign ?? false;
+export interface ParseCsvOutput {
+  rows:      NormalizedRow[];
+  detection: DetectionResult;
+  errors:    RowError[];
+  warnings:  string[];
+}
+
+/**
+ * Parse a CSV file via the modular csvEngine and adapt its output to the
+ * NormalizedRow shape the rest of this hook expects.
+ *
+ * The engine emits canonical (positive=inflow) signed amounts based on file
+ * format; this wrapper applies the per-account flipSign override (Amex /
+ * Capital One credit-card style) AFTER the engine has parsed, then re-runs
+ * deriveType so the existing preview heuristics (credit-card-payment,
+ * loan-payment, refund keywords) still tag rows for the UI.
+ */
+export async function parseCSVFile(
+  file:    File,
+  options?: { flipSign?: boolean; accountType?: "bank" | "credit_card" },
+): Promise<ParseCsvOutput> {
+  const flipSign    = options?.flipSign    ?? false;
   const accountType = options?.accountType ?? "bank";
 
-  return new Promise((resolve, reject) => {
-    Papa.parse<Record<string, string>>(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const headers = results.meta.fields ?? [];
+  const engine = await ingestCsvFile(file);
 
-        const dateCol = findColumn(headers, ["date", "posted", "posting", "transaction date"]);
-        const descCol = findColumn(headers, ["description", "memo", "name", "payee", "desc", "narrative"]);
-        const acctCol = findColumn(headers, ["account", "account name", "account number"]);
+  const accountHeader = engine.detection.resolvedHeaders.account;
 
-        // ── Column layout detection ────────────────────────────────────────
-        // Prefer a single Amount column. Fall back to separate Debit/Credit
-        // columns only when there is no Amount column at all.
-        const singleAmtCol = findColumn(headers, ["amount", "transaction amount"]);
-        const debitCol  = findColumn(headers, ["debit"]);
-        const creditCol = findColumn(headers, ["credit"]);
+  const rows: NormalizedRow[] = engine.rows.map((r) => {
+    // Apply per-account sign-inversion override (e.g. Amex CSVs encode
+    // charges as positive in the source). The engine itself stays
+    // file-format-aware; account-aware sign correction lives here.
+    const amount = flipSign ? -r.amount : r.amount;
 
-        // "Split" layout: separate Debit + Credit columns, no Amount column
-        const hasSplitColumns =
-          !singleAmtCol && !!debitCol && !!creditCol && debitCol !== creditCol;
+    const { type, subType, isTransfer } = deriveType(r.description, amount, accountType);
 
-        const amtCol = singleAmtCol ?? (!hasSplitColumns ? (debitCol ?? creditCol) : undefined);
-
-        if (!dateCol || !descCol || (!amtCol && !hasSplitColumns)) {
-          reject(
-            new Error(
-              `Could not detect required columns. Found: ${headers.join(", ")}. ` +
-              `Need columns for Date, Description, and Amount (or separate Debit/Credit).`
-            )
-          );
-          return;
-        }
-
-        const rows: NormalizedRow[] = results.data
-          .map((row) => {
-            // ── Amount resolution ──────────────────────────────────────────
-            let amount: number;
-
-            if (hasSplitColumns) {
-              // Split Debit/Credit layout: both columns are positive values.
-              // Debit = money out (expense) → store as negative.
-              // Credit = money in (income) → store as positive.
-              const debitVal  = parseAmount(row[debitCol!]  ?? "");
-              const creditVal = parseAmount(row[creditCol!] ?? "");
-
-              if (!isNaN(debitVal) && debitVal > 0) {
-                amount = flipSign ? debitVal : -debitVal;
-              } else if (!isNaN(creditVal) && creditVal > 0) {
-                amount = flipSign ? -creditVal : creditVal;
-              } else {
-                amount = NaN;
-              }
-            } else {
-              // Single Amount column (positive or negative)
-              const raw = parseAmount(row[amtCol!] ?? "");
-              amount = flipSign ? -raw : raw;
-            }
-
-            const description = (row[descCol] ?? "").trim();
-            const { type, subType, isTransfer } = deriveType(description, amount, accountType);
-
-            return {
-              date: parseDate(row[dateCol] ?? ""),
-              description,
-              amount,
-              type,
-              subType,
-              isTransfer,
-              accountIdentifier: acctCol ? (row[acctCol] ?? "").trim() || null : null,
-              accountType,
-              rawData: row,
-            };
-          })
-          .filter((r) => r.description.length > 0 || !isNaN(r.amount));
-
-        resolve(rows);
-      },
-      error: (err) => reject(new Error(err.message)),
-    });
+    return {
+      date:              r.date,
+      description:       r.description,
+      amount,
+      type,
+      subType,
+      isTransfer,
+      accountIdentifier: accountHeader ? (r.rawRow[accountHeader] ?? "").trim() || null : null,
+      accountType,
+      rawData:           r.rawRow,
+    };
   });
+
+  return {
+    rows,
+    detection: engine.detection,
+    errors:    engine.errors,
+    warnings:  summarizeResult(engine),
+  };
 }
 
-// ─── Account resolution ───────────────────────────────────────────────────────
-
-// Look up an existing account by name or last4; create one if not found.
-// Stores accountType ("bank" | "credit_card") on the account document.
-async function resolveAccount(
-  userId: string,
-  identifier: string,
-  accountType: "bank" | "credit_card"
-): Promise<string> {
-  const snap = await getDocs(
-    query(collection(db, "accounts"), where("uid", "==", userId))
-  );
-
-  const identLower = identifier.toLowerCase();
-  const possibleLast4 = identifier.replace(/\D/g, "").slice(-4);
-
-  for (const d of snap.docs) {
-    const data = d.data();
-    if (
-      (data.name ?? "").toLowerCase() === identLower ||
-      (data.last4 && data.last4 === possibleLast4)
-    ) {
-      // Update accountType if it changed or was never set
-      if (data.accountType !== accountType) {
-        await updateDoc(d.ref, { accountType });
-      }
-      return d.id;
-    }
-  }
-
-  const newDoc = await addDoc(collection(db, "accounts"), {
-    uid: userId,
-    name: identifier,
-    last4: possibleLast4.length === 4 ? possibleLast4 : null,
-    accountType,
-    createdAt: serverTimestamp(),
-  });
-  return newDoc.id;
-}
-
-// ─── Duplicate detection ──────────────────────────────────────────────────────
-
-// Firestore "in" operator accepts up to 30 values per query.
-// Requires composite index: transactions(uid ASC, importKey ASC) — see firestore.indexes.json
 const DEDUP_CHUNK_SIZE = 30;
 
-async function findExistingImportKeys(userId: string, keys: string[]): Promise<Set<string>> {
-  const existing = new Set<string>();
-  const uniqueKeys = [...new Set(keys)];
-
-  for (let i = 0; i < uniqueKeys.length; i += DEDUP_CHUNK_SIZE) {
-    const chunk = uniqueKeys.slice(i, i + DEDUP_CHUNK_SIZE);
-    const snap = await getDocs(
-      query(
-        collection(db, "transactions"),
-        where("uid", "==", userId),
-        where("importKey", "in", chunk)
-      )
-    );
-    snap.docs.forEach((d) => {
-      const k = d.data().importKey as string | undefined;
-      if (k) existing.add(k);
-    });
-  }
-  return existing;
-}
-
-// ─── Write logic ──────────────────────────────────────────────────────────────
+// ─── Write logic — delegates to unified backend ingestTransactions callable ──
 
 const BATCH_SIZE = 499;
+
+interface IngestReportLite {
+  total:    number;
+  imported: number;
+  skipped:  number;
+  errors:   string[];
+  importId: string | null;
+}
 
 interface WriteResult {
   importId: string;
@@ -596,139 +500,49 @@ interface WriteResult {
 }
 
 async function writeTransactions(
-  userId: string,
   rows: NormalizedRow[],
   fileName: string,
-  accountType: "bank" | "credit_card",
-  defaultAccountName?: string
+  accountId: string,
+  forceImportHashes: string[],
 ): Promise<WriteResult> {
-  // ── 0. Resolve default entity (auto-assign if exactly one entity) ──────────
-  const entities = await getUserEntities(userId);
-  const defaultEntity: UserEntity | null =
-    entities.length === 1 ? entities[0] : null;
-
-  // ── 1. Validation ──────────────────────────────────────────────────────────
-  let skippedCount = 0;
+  // Validation: drop rows missing date or amount before sending to backend.
+  // (Per spec, we do NOT filter duplicates client-side — backend is the single
+  // source of truth on dedup. We only drop rows that can't be persisted at all.)
+  let validationSkipped = 0;
   const validRows: NormalizedRow[] = [];
-
   for (const row of rows) {
-    if (!row.date) {
-      skippedCount++;
-      continue;
-    }
-    if (isNaN(row.amount)) {
-      skippedCount++;
-      continue;
-    }
+    if (!row.date || isNaN(row.amount)) { validationSkipped++; continue; }
     validRows.push(row);
   }
 
-  console.log(`[CSV Import] Total rows parsed: ${rows.length}`);
-  console.log(`[CSV Import] Valid rows: ${validRows.length}`);
-  console.log(`[CSV Import] Skipped rows (validation): ${skippedCount}`);
+  const transactions = validRows.map((r) => ({
+    date:        r.date,
+    description: r.description,
+    amount:      r.amount,
+    rawRow:      r.rawData,
+    // Honor preview edits: only ship type/subType when the user explicitly
+    // changed it. Unmodified rows fall through to the unified backend
+    // classifier (which has cross-account context the frontend doesn't).
+    ...(r.userModified ? { type: r.type } : {}),
+    ...(r.userModified && r.subType ? { subType: r.subType } : {}),
+  }));
 
-  // ── 2. Resolve accounts ────────────────────────────────────────────────────
-  const accountMap = new Map<string, string>();
-  const uniqueIdentifiers = [
-    ...new Set(
-      validRows
-        .map((r) => r.accountIdentifier ?? (defaultAccountName || null))
-        .filter((id): id is string => id !== null)
-    ),
-  ];
-  for (const ident of uniqueIdentifiers) {
-    accountMap.set(ident, await resolveAccount(userId, ident, accountType));
-  }
-
-  // ── 3. Build importKeys ────────────────────────────────────────────────────
-  const prepared: PreparedRow[] = validRows.map((row) => {
-    const identifier = row.accountIdentifier ?? (defaultAccountName || null);
-    const accountId = identifier ? (accountMap.get(identifier) ?? null) : null;
-    const normalizedDescription = normalize(row.description);
-    const importKey = `${userId}|${accountId ?? "na"}|${row.date}|${row.amount}|${normalizedDescription}`;
-    return { row, accountId, normalizedDescription, importKey, possibleDuplicate: false };
+  // Backend pipeline: normalize → enrich → classify → store + categorize.
+  const report = await apiClient.call<IngestReportLite>("ingestTransactions", {
+    source:       "csv",
+    accountId,
+    transactions,
+    importLabel:  fileName,
+    forceImportHashes,
   });
 
-  // ── 4. Strict deduplication against existing transactions ─────────────────
-  const allKeys = prepared.map((p) => p.importKey);
-  const existingKeys = await findExistingImportKeys(userId, allKeys);
-
-  let duplicateCount = 0;
-  let transferCount = 0;
-  const rowsToWrite = prepared.filter(({ importKey }) => {
-    if (existingKeys.has(importKey)) {
-      duplicateCount++;
-      return false;
-    }
-    return true;
-  });
-
-  // ── 4b. Fuzzy duplicate detection (cross-batch) ────────────────────────────
-  // Flag rows that look like near-duplicates of existing transactions.
-  // These are still written but marked possibleDuplicate: true so the
-  // review UI can surface them for user confirmation.
-  try {
-    const fuzzyKeys = await findCrossBatchFuzzyDuplicates(userId, rowsToWrite);
-    for (const row of rowsToWrite) {
-      if (fuzzyKeys.has(row.importKey)) row.possibleDuplicate = true;
-    }
-  } catch {
-    // Non-blocking — fuzzy detection is best-effort
-  }
-
-  console.log(`[CSV Import] Duplicates skipped: ${duplicateCount}`);
-  console.log(`[CSV Import] Rows to write: ${rowsToWrite.length}`);
-
-  // ── 5. Create import record ────────────────────────────────────────────────
-  const importRef = await addDoc(collection(db, "imports"), {
-    userId,
-    fileName,
-    rowCount: rows.length,
-    importedCount: rowsToWrite.length,
-    skippedCount: skippedCount + duplicateCount,
-    createdAt: serverTimestamp(),
-  });
-  const importId = importRef.id;
-
-  // ── 6. Write transactions in batches ───────────────────────────────────────
-  for (let i = 0; i < rowsToWrite.length; i += BATCH_SIZE) {
-    const batch = writeBatch(db);
-    const chunk = rowsToWrite.slice(i, i + BATCH_SIZE);
-
-    for (const { row, accountId, normalizedDescription, importKey, possibleDuplicate } of chunk) {
-      const ref = doc(collection(db, "transactions"));
-      if (row.isTransfer) transferCount++;
-      const vendor = extractVendor(normalizedDescription);
-      batch.set(ref, {
-        uid: userId,
-        accountId,
-        accountType: row.accountType,
-        date: row.date,
-        description: row.description,
-        normalizedDescription,
-        vendor,
-        amount: row.amount,
-        type: row.type,
-        ...(row.subType ? { subType: row.subType } : {}),
-        originalType: row.type,
-        status: row.isTransfer ? "transfer" : "needs_review",
-        source: "csv",
-        importId,
-        importKey,
-        rawData: row.rawData,
-        entityId: row.isTransfer ? null : (defaultEntity?.id ?? null),
-        entityType: row.isTransfer ? null : (defaultEntity?.type ?? "personal"),
-        entityName: row.isTransfer ? null : (defaultEntity?.name ?? null),
-        taxYear: parseInt(row.date.slice(0, 4)) || null,
-        ...(possibleDuplicate ? { possibleDuplicate: true } : {}),
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    await batch.commit();
-  }
-
-  return { importId, importedCount: rowsToWrite.length, skippedCount, duplicateCount, transferCount };
+  return {
+    importId:      report.importId ?? "",
+    importedCount: report.imported,
+    skippedCount:  validationSkipped + report.errors.length,
+    duplicateCount: report.skipped,
+    transferCount: 0, // Backend pipeline classifies transfers; not tracked client-side anymore.
+  };
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -752,10 +566,19 @@ interface ImportState {
   flipSign: boolean;
   signWarning: boolean;
   accountType: "bank" | "credit_card";
+  cascadeMessage: string;
+  signConventionMessage: string;   // "Auto-detected positive=charge for this account…"
+  signConventionLocked: boolean;   // true once amountSignInverted is persisted on the account
+  detection: DetectionResult | null;
+  engineWarnings: string[];
+  engineErrors: RowError[];
+  /** Hashes the user clicked to "import anyway" — bypasses backend dedup skip. */
+  forceImportHashes: string[];
 }
 
 export function useCSVImport() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const lastFileRef = useRef<File | null>(null);
 
   const [state, setState] = useState<ImportState>({
@@ -768,11 +591,72 @@ export function useCSVImport() {
     flipSign: false,
     signWarning: false,
     accountType: "bank",
+    cascadeMessage: "",
+    signConventionMessage: "",
+    signConventionLocked: false,
+    detection: null,
+    engineWarnings: [],
+    engineErrors: [],
+    forceImportHashes: [],
   });
 
-  async function handleFileChange(file: File | null) {
+  // Per-vendor correction history for pattern-based learning. First correction
+  // of a vendor → only that row changes. Second matching correction of the
+  // same vendor → cascade to all matching rows + save typeRule.
+  // Lives in a ref because it should NOT trigger re-renders; UI reads
+  // cascadeMessage from state when the cascade actually fires.
+  const correctionHistoryRef = useRef<Map<string, {
+    type:    TransactionType;
+    subType?: TransactionSubType;
+    indices: Set<number>;
+  }>>(new Map());
+
+  // Reset correction history when a new file is parsed.
+  function resetCorrectionHistory() {
+    correctionHistoryRef.current.clear();
+  }
+
+  // Look up the persisted sign convention on the account doc (set by either
+  // Plaid sync's per-account auto-detection or a prior CSV import).
+  async function loadAccountSignConvention(accountId: string): Promise<{
+    flipSign: boolean;
+    locked: boolean;
+  }> {
+    if (!accountId || accountId === "__new__") return { flipSign: false, locked: false };
+    try {
+      const snap = await getDoc(doc(db, "accounts", accountId));
+      if (!snap.exists()) return { flipSign: false, locked: false };
+      const data = snap.data();
+      const inverted = data.amountSignInverted === true;
+      const locked   = !!data.amountSignDetectedAt;
+      return { flipSign: inverted, locked };
+    } catch {
+      return { flipSign: false, locked: false };
+    }
+  }
+
+  // Persist sign convention to the account doc so future imports auto-apply.
+  async function persistAccountSignConvention(
+    accountId: string,
+    flipSign: boolean,
+    method: "csv-auto" | "csv-manual",
+  ): Promise<void> {
+    if (!accountId || accountId === "__new__") return;
+    try {
+      await updateDoc(doc(db, "accounts", accountId), {
+        amountSignInverted:        flipSign,
+        amountSignDetectedAt:      serverTimestamp(),
+        amountSignDetectionMethod: method,
+      });
+    } catch {
+      // Non-blocking — best-effort.
+    }
+  }
+
+  async function handleFileChange(file: File | null, accountId?: string) {
     if (!file) return;
     lastFileRef.current = file;
+    resetCorrectionHistory();
     setState((prev) => ({
       ...prev,
       fileName: file.name,
@@ -781,12 +665,60 @@ export function useCSVImport() {
       importResult: null,
       flipSign: false,
       signWarning: false,
+      signConventionMessage: "",
+      signConventionLocked: false,
     }));
     try {
-      let rows = await parseCSVFile(file, { accountType: state.accountType });
-      if (user) rows = await applyTypeRules(user.uid, rows);
-      const signWarning = state.accountType === "bank" && detectSignIssue(rows);
-      setState((prev) => ({ ...prev, rows, signWarning }));
+      // 1. Seed flip from the account's stored convention (if any)
+      const { flipSign: storedFlip, locked: convLocked } = accountId
+        ? await loadAccountSignConvention(accountId)
+        : { flipSign: false, locked: false };
+
+      let parsed = await parseCSVFile(file, { flipSign: storedFlip, accountType: state.accountType });
+      let rows   = parsed.rows;
+      if (user) rows = await applyTypeRules(ownerUid, rows);
+
+      // 2. If the account has no stored convention yet, auto-detect from this file
+      let resolvedFlip = storedFlip;
+      let conventionMessage = "";
+      if (!convLocked && accountId) {
+        const seemsInverted = detectSignIssue(rows);
+        if (seemsInverted !== storedFlip) {
+          resolvedFlip = seemsInverted;
+          parsed = await parseCSVFile(file, {
+            flipSign: resolvedFlip,
+            accountType: state.accountType,
+          });
+          rows = parsed.rows;
+          if (user) rows = await applyTypeRules(ownerUid, rows);
+        }
+        // 3. Persist whatever we landed on so we don't have to redo this
+        await persistAccountSignConvention(accountId, resolvedFlip, "csv-auto");
+        conventionMessage = resolvedFlip
+          ? `Auto-detected positive-charge format (e.g. American Express) for this account. Saved — future imports will apply automatically.`
+          : `Detected standard sign convention (negative=expense) for this account. Saved — future imports will apply automatically.`;
+      } else if (storedFlip) {
+        conventionMessage = `Sign convention already saved for this account: charges are positive. Auto-flipped on import.`;
+      }
+
+      // 4. Pre-import duplicate detection — annotate every row with hash +
+      //    possibleDuplicate so the preview can show badges before the user
+      //    clicks Import. Does not change the import behavior; default skip
+      //    on collision is still enforced by the backend.
+      const annotated = await annotateDuplicates(ownerUid, accountId, rows);
+
+      setState((prev) => ({
+        ...prev,
+        rows: annotated,
+        flipSign: resolvedFlip,
+        signWarning: false,
+        signConventionMessage: conventionMessage,
+        signConventionLocked: true,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
+        forceImportHashes: [],   // fresh parse → discard prior overrides
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -795,17 +727,49 @@ export function useCSVImport() {
     }
   }
 
-  async function handleFlipSign() {
+  /** Helper: compute hashes + run findDuplicates. Pure, no setState. */
+  async function annotateDuplicates(
+    uid:       string,
+    accountId: string | undefined,
+    rows:      NormalizedRow[],
+  ): Promise<NormalizedRow[]> {
+    const withHashes = rows.map((r) => {
+      if (!r.date || isNaN(r.amount) || !accountId) return r;
+      return { ...r, dedupeHash: computeRowDedupeHash(accountId, r.date, r.amount, r.description) };
+    });
+    if (!uid || !accountId) return withHashes;
+    const matches = await findDuplicates(uid, accountId, withHashes);
+    return withHashes.map((r, i) => ({ ...r, possibleDuplicate: matches.get(i) ?? null }));
+  }
+
+  // Manual override — toggles the flip AND persists the user's choice to the
+  // account doc, so the override sticks for next time.
+  async function handleFlipSign(accountId?: string) {
     if (!lastFileRef.current) return;
     const nextFlip = !state.flipSign;
     setState((prev) => ({ ...prev, flipSign: nextFlip, rows: [] }));
     try {
-      let rows = await parseCSVFile(lastFileRef.current, {
+      const parsed = await parseCSVFile(lastFileRef.current, {
         flipSign: nextFlip,
         accountType: state.accountType,
       });
-      if (user) rows = await applyTypeRules(user.uid, rows);
-      setState((prev) => ({ ...prev, rows }));
+      let rows = parsed.rows;
+      if (user) rows = await applyTypeRules(ownerUid, rows);
+      if (accountId) {
+        await persistAccountSignConvention(accountId, nextFlip, "csv-manual");
+      }
+      const annotated = await annotateDuplicates(ownerUid, accountId, rows);
+      setState((prev) => ({
+        ...prev,
+        rows: annotated,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
+        forceImportHashes: [],   // overrides invalidated by re-parse
+        signConventionMessage: nextFlip
+          ? "Flipped: charges are now read as expenses. Saved for this account."
+          : "Reverted: amounts read at face value. Saved for this account.",
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -818,13 +782,21 @@ export function useCSVImport() {
     setState((prev) => ({ ...prev, accountType, rows: [], signWarning: false }));
     if (!lastFileRef.current) return;
     try {
-      let rows = await parseCSVFile(lastFileRef.current, {
+      const parsed = await parseCSVFile(lastFileRef.current, {
         flipSign: state.flipSign,
         accountType,
       });
-      if (user) rows = await applyTypeRules(user.uid, rows);
+      let rows = parsed.rows;
+      if (user) rows = await applyTypeRules(ownerUid, rows);
       const signWarning = accountType === "bank" && detectSignIssue(rows);
-      setState((prev) => ({ ...prev, rows, signWarning }));
+      setState((prev) => ({
+        ...prev,
+        rows,
+        signWarning,
+        detection: parsed.detection,
+        engineWarnings: parsed.warnings,
+        engineErrors:   parsed.errors,
+      }));
     } catch (e: unknown) {
       setState((prev) => ({
         ...prev,
@@ -833,47 +805,184 @@ export function useCSVImport() {
     }
   }
 
-  async function updateRowType(index: number, newType: TransactionType) {
+  /**
+   * Apply a type change to one preview row.
+   *
+   * Refunds are special — they're transaction-level by nature (this charge
+   * was refunded, but the next one wasn't), so they NEVER cascade, never
+   * count toward pattern detection, and never write a typeRule. The user
+   * gets a one-line note explaining this on the first refund edit.
+   *
+   * For every other type, the 2-vote pattern detector still runs but does
+   * NOT cascade silently. On the second matching correction, a confirmation
+   * banner appears with "Apply to all" / "Just these" buttons. The cascade +
+   * rule write only happen if the user clicks Apply to all.
+   */
+  async function updateRowType(
+    index: number,
+    newType: TransactionType,
+    newSubType?: TransactionSubType,
+  ) {
     const row = state.rows[index];
     if (!row || !user) return;
 
-    // Update preview immediately
+    track("type_selected", { type: newType, subType: newSubType ?? null });
+
+    // ── Refunds: ALWAYS single-row, never learn ────────────────────────
+    if (newType === "refund") {
+      setState((prev) => ({
+        ...prev,
+        rows: prev.rows.map((r, i) =>
+          i === index
+            ? { ...r, type: "refund", subType: undefined, isTransfer: false, userModified: true }
+            : r,
+        ),
+        cascadeMessage:
+          "Refunds are applied per transaction and won't be applied to other transactions.",
+        // Editing a row to refund clears any pending non-refund prompt.
+      }));
+      // Refund does NOT advance the correction history — keep it pristine
+      // so subsequent expense/income/transfer edits aren't confused by a
+      // refund "vote" that doesn't apply to them.
+      return;
+    }
+
+    const targetVendor = extractVendor(normalize(row.description));
+
+    // ── 2-vote pattern detection — auto-cascade when triggered ─────────
+    // First matching edit on a vendor → only the clicked row changes. Second
+    // matching edit (same vendor, same target type+subType) is interpreted
+    // as the user establishing a pattern: cascade to every other matching
+    // row + persist a typeRule for future imports. A conflicting second
+    // edit (same vendor, different type) resets the history so no false
+    // cascade fires.
+    const prior = correctionHistoryRef.current.get(targetVendor);
+    const sameAsPrior =
+      !!prior && prior.type === newType && prior.subType === newSubType;
+    const isPatternCommit = !!prior && sameAsPrior && !prior.indices.has(index);
+
+    if (DEBUG_LOGS) {
+      console.log("[updateRowType]", {
+        index, description: row.description, targetVendor, newType, newSubType,
+        prior: prior ? { type: prior.type, subType: prior.subType, indices: [...prior.indices] } : null,
+        sameAsPrior, isPatternCommit,
+      });
+    }
+
+    if (!prior || !sameAsPrior) {
+      correctionHistoryRef.current.set(targetVendor, {
+        type: newType, subType: newSubType, indices: new Set([index]),
+      });
+    } else {
+      prior.indices.add(index);
+    }
+
+    let cascadeCount = 0;
     setState((prev) => {
-      const rows = [...prev.rows];
-      rows[index] = {
-        ...rows[index],
-        type: newType,
-        isTransfer: newType === "transfer",
-        userModified: true,
+      const rows = prev.rows.map((r, i) => {
+        if (!r || isNaN(r.amount)) return r;
+        const isTarget = i === index;
+        if (isTarget) {
+          return {
+            ...r,
+            type: newType,
+            subType: newSubType,
+            isTransfer: newType === "transfer",
+            userModified: true,
+          };
+        }
+        if (!isPatternCommit) return r;
+        const sameVendor =
+          targetVendor && extractVendor(normalize(r.description)) === targetVendor;
+        if (!sameVendor) return r;
+        if (r.type === newType && r.subType === newSubType) return r;
+        cascadeCount++;
+        return {
+          ...r,
+          type: newType,
+          subType: newSubType,
+          isTransfer: newType === "transfer",
+          userModified: true,
+        };
+      });
+      return {
+        ...prev,
+        rows,
+        cascadeMessage: isPatternCommit
+          ? cascadeCount > 0
+            ? `Pattern detected — applied "${newType}" to ${cascadeCount} other "${targetVendor}" row${cascadeCount !== 1 ? "s" : ""} and saved a rule for future imports.`
+            : `Pattern detected for "${targetVendor}" — saved a rule for future imports.`
+          : prior
+          ? ""
+          : `Got it — only this row changed. Mark another "${targetVendor}" row the same way to apply to all matching rows.`,
       };
-      return { ...prev, rows };
     });
 
-    // Persist as a learned type rule for future imports
-    try {
-      const vendor = extractVendor(normalize(row.description));
-      const ruleRef = doc(db, "typeRules", `${user.uid}_${vendor}`);
-      await setDoc(
-        ruleRef,
-        {
-          uid: user.uid,
-          vendorName: vendor,
-          type: newType,
-          usageCount: increment(1),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    } catch {
-      // Non-blocking — rule writing is best-effort
+    if (DEBUG_LOGS) console.log(`[updateRowType:result] cascadeCount=${cascadeCount} (isPatternCommit=${isPatternCommit})`);
+
+    // Save the typeRule on pattern commit so the cascade also informs
+    // future imports of this account.
+    if (isPatternCommit) {
+      try {
+        const ruleRef = doc(db, "typeRules", `${ownerUid}_${targetVendor}`);
+        await setDoc(
+          ruleRef,
+          {
+            uid: ownerUid,
+            vendorName: targetVendor,
+            type: newType,
+            ...(newSubType ? { subType: newSubType } : {}),
+            usageCount: increment(1),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      } catch {
+        // Non-blocking — rule writing is best-effort.
+      }
     }
   }
 
-  async function handleImport(defaultAccountName?: string) {
+  function clearCascadeMessage() {
+    setState((prev) => ({ ...prev, cascadeMessage: "" }));
+  }
+
+  /**
+   * Toggle the user's "import anyway" override on a row that the duplicate
+   * detector flagged. Soft matches are not togglable (they always import);
+   * exact + intra-csv matches default to skip and become force-imported when
+   * toggled on. The hash gets added/removed from forceImportHashes — the
+   * canonical key the backend uses to decide.
+   */
+  function toggleForceImport(rowIndex: number) {
+    setState((prev) => {
+      const row = prev.rows[rowIndex];
+      if (!row || !row.dedupeHash) return prev;
+      const dup = row.possibleDuplicate;
+      if (!dup || dup.kind === "soft") return prev;   // not togglable
+      const set = new Set(prev.forceImportHashes);
+      if (set.has(row.dedupeHash)) set.delete(row.dedupeHash);
+      else                         set.add(row.dedupeHash);
+      return { ...prev, forceImportHashes: [...set] };
+    });
+  }
+
+  async function handleImport(accountId: string) {
     if (!user || state.rows.length === 0) return;
+    if (!accountId) {
+      setState((prev) => ({ ...prev, importError: "Please select an account before importing." }));
+      return;
+    }
     setState((prev) => ({ ...prev, importing: true, importError: "" }));
     try {
-      const result = await writeTransactions(user.uid, state.rows, state.fileName, state.accountType, defaultAccountName);
+      // Spec: send ALL rows to backend; backend decides skip vs write based on
+      // dedupeHash. Override list lets the user keep specific duplicates.
+      const result = await writeTransactions(
+        state.rows,
+        state.fileName,
+        accountId,
+        state.forceImportHashes,
+      );
       setState((prev) => ({
         ...prev,
         importing: false,
@@ -901,6 +1010,13 @@ export function useCSVImport() {
       flipSign: false,
       signWarning: false,
       accountType: "bank",
+      cascadeMessage: "",
+      signConventionMessage: "",
+      signConventionLocked: false,
+      detection: null,
+      engineWarnings: [],
+      engineErrors: [],
+      forceImportHashes: [],
     });
   }
 
@@ -910,7 +1026,7 @@ export function useCSVImport() {
     const txnSnap = await getDocs(
       query(
         collection(db, "transactions"),
-        where("uid", "==", user.uid),
+        where("uid", "==", ownerUid),
         where("importId", "==", importId)
       )
     );
@@ -923,5 +1039,5 @@ export function useCSVImport() {
     await deleteDoc(doc(db, "imports", importId));
   }
 
-  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType };
+  return { state, handleFileChange, handleFlipSign, handleAccountTypeChange, handleImport, resetImport, deleteImport, updateRowType, clearCascadeMessage, toggleForceImport };
 }

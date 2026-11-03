@@ -24,18 +24,19 @@ export interface RetirementForm {
 const TAX_YEAR = new Date().getFullYear();
 
 export function useRetirementData() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const [forms, setForms] = useState<RetirementForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     setLoading(true);
     setError("");
     try {
       const snap = await getDocs(
-        query(collection(db, "retirementForms"), where("userId", "==", user.uid))
+        query(collection(db, "retirementForms"), where("userId", "==", ownerUid))
       );
       setForms(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RetirementForm)));
     } catch (e: unknown) {
@@ -43,7 +44,7 @@ export function useRetirementData() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, ownerUid]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -52,12 +53,12 @@ export function useRetirementData() {
     totalDistribution: number,
     taxableAmount: number
   ): Promise<void> {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     if (!payerName.trim()) throw new Error("Payer name is required.");
     if (totalDistribution < 0) throw new Error("Total distribution cannot be negative.");
     if (taxableAmount < 0) throw new Error("Taxable amount cannot be negative.");
     await addDoc(collection(db, "retirementForms"), {
-      userId: user.uid,
+      userId: ownerUid,
       payerName: payerName.trim(),
       totalDistribution,
       taxableAmount,

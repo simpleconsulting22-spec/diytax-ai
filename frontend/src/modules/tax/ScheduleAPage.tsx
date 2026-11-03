@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { Receipt } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleA, SALT_CAP } from "./hooks/useScheduleA";
 import AppNav from "../../components/AppNav";
@@ -30,13 +31,14 @@ export default function ScheduleAPage() {
       note: "Note: AGI threshold (7.5%) not yet applied — consult your tax professional.",
     },
     {
-      label: "Taxes Paid (SALT)",
+      label: "State & Local Taxes",
       irsLine: "Line 5",
       amount: data.taxesTotal,
       breakdown: data.saltCapApplied
         ? `Actual total ${fmt(data.taxesUncapped)} — capped at ${fmt(SALT_CAP)} federal limit`
         : undefined,
       capApplied: data.saltCapApplied,
+      note: "Includes property taxes and state income taxes (subject to IRS limits)",
     },
     {
       label: "Mortgage Interest",
@@ -158,7 +160,9 @@ export default function ScheduleAPage() {
             {/* No data prompt */}
             {data.totalDeductions === 0 && (
               <div style={{ backgroundColor: "#fff", borderRadius: "12px", padding: "40px 24px", textAlign: "center", boxShadow: "0 1px 8px rgba(0,0,0,0.06)", marginBottom: "24px" }}>
-                <div style={{ fontSize: "36px", marginBottom: "10px" }}>📋</div>
+                <div style={{ marginBottom: "10px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+                  <Receipt size={40} strokeWidth={1.6} />
+                </div>
                 <div style={{ fontWeight: 700, fontSize: "15px", color: "#111827", marginBottom: "8px" }}>
                   No deductions recorded yet
                 </div>

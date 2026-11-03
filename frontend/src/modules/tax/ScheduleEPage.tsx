@@ -1,7 +1,9 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { Home, AlertTriangle } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useScheduleE, PropertyScheduleE, ScheduleELine } from "./hooks/useScheduleE";
+import { useTaxYear } from "../../contexts/TaxYearContext";
 import AppNav from "../../components/AppNav";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -10,7 +12,7 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-function exportCSV(properties: PropertyScheduleE[]) {
+function exportCSV(properties: PropertyScheduleE[], taxYear: number) {
   const rows: string[][] = [["Property", "Line", "Description", "Amount"]];
 
   for (const prop of properties) {
@@ -29,7 +31,7 @@ function exportCSV(properties: PropertyScheduleE[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "schedule-e-2025.csv";
+  a.download = `schedule-e-${taxYear}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -219,6 +221,7 @@ function PropertyCard({ property }: { property: PropertyScheduleE }) {
 export default function ScheduleEPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { selectedYear } = useTaxYear();
   const { properties, loading, error, reload } = useScheduleE();
 
   const assignedProps = properties.filter((p) => p.entityId !== null);
@@ -238,16 +241,16 @@ export default function ScheduleEPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
           <div>
             <h1 style={{ fontSize: "26px", fontWeight: 700, color: "#111827", margin: 0 }}>
-              2025 Rental Income Summary
+              Your Rental Income &amp; Expenses (Schedule E)
             </h1>
             <p style={{ color: "#6b7280", margin: "6px 0 0", fontSize: "14px" }}>
-              Schedule E — Supplemental Income and Loss (Rental Real Estate)
+              {selectedYear} · Rental Real Estate
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
             {!loading && properties.length > 0 && (
               <button
-                onClick={() => exportCSV(properties)}
+                onClick={() => exportCSV(properties, selectedYear)}
                 style={{ padding: "9px 18px", backgroundColor: "#f3f4f6", color: "#374151", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: font }}
               >
                 Export CSV
@@ -282,7 +285,9 @@ export default function ScheduleEPage() {
               boxShadow: "0 1px 8px rgba(0,0,0,0.06)",
             }}
           >
-            <div style={{ fontSize: "40px", marginBottom: "12px" }}>🏠</div>
+            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "center", color: "#9ca3af" }}>
+              <Home size={44} strokeWidth={1.6} />
+            </div>
             <div style={{ fontWeight: 700, fontSize: "16px", color: "#111827", marginBottom: "8px" }}>
               No rental income data yet
             </div>
@@ -314,7 +319,7 @@ export default function ScheduleEPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "18px" }}>⚠</span>
+                  <AlertTriangle size={20} strokeWidth={2.2} color="#ea580c" />
                   <span style={{ fontWeight: 600, color: "#9a3412", fontSize: "14px" }}>
                     Some rental transactions are not assigned to a property
                   </span>

@@ -8,7 +8,7 @@ import { useTaxYear, matchesTaxYear } from "../../contexts/TaxYearContext";
 
 interface TxnRecord {
   amount: number;
-  type: "income" | "expense";
+  type: "income" | "expense" | "refund" | "transfer";
   category: string | null;
   taxCategory: string | null;
   taxSchedule: string | null;
@@ -99,18 +99,27 @@ function aggregate(txns: TxnRecord[]): DashboardData {
 
     categorized++;
 
-    // YTD income / expenses (all categorized, excluding transfers)
-    if (txn.status !== "transfer") {
+    // YTD income / expenses (all categorized, excluding transfers).
+    // Filter on `type` not `status`: legacy CSV path used status === "transfer",
+    // but the unified ingest writes type === "transfer" with a "needs_review"
+    // / "auto_resolved" status. Without this fix, every Plaid / new-CSV / AI
+    // transfer leaks into income/expense totals.
+    if (txn.type !== "transfer") {
       if (txn.type === "income") {
         ytdIncome += txn.amount > 0 ? txn.amount : Math.abs(txn.amount);
+      } else if (txn.type === "refund") {
+        ytdExpenses -= absAmount; // refund reduces total expenses
       } else {
-        ytdExpenses += Math.abs(txn.amount);
+        ytdExpenses += absAmount;
       }
     }
 
     // Category totals — expense transactions with a known category
     if (txn.type === "expense" && txn.category) {
       categoryMap.set(txn.category, (categoryMap.get(txn.category) ?? 0) + absAmount);
+    }
+    if (txn.type === "refund" && txn.category) {
+      categoryMap.set(txn.category, (categoryMap.get(txn.category) ?? 0) - absAmount);
     }
 
     // Schedule C — income and expense breakdown
@@ -247,19 +256,20 @@ const EMPTY_DATA: DashboardData = {
 };
 
 export function useDashboardData() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [data, setData] = useState<DashboardData>(EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownerUid) return;
     setLoading(true);
     setError("");
     try {
       const snap = await getDocs(
-        query(collection(db, "transactions"), where("uid", "==", user.uid))
+        query(collection(db, "transactions"), where("uid", "==", ownerUid))
       );
       const allTxns = snap.docs.map((d) => d.data() as TxnRecord);
       const txns = allTxns.filter((t) => matchesTaxYear(t, selectedYear));
@@ -269,7 +279,7 @@ export function useDashboardData() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();

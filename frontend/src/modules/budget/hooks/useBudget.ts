@@ -28,7 +28,8 @@ import {
   computeBudgetStatus,
   analyzeSpending,
   generateInsights,
-  sumDebtPayments,
+  sumCreditCardPayments,
+  sumLoanPayments,
 } from "../utils/spendingAnalysis";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,7 +51,8 @@ interface BudgetState {
   budgetStatuses: BudgetStatus[];
   analysis: CategoryAnalysis[];
   insights: Insight[];
-  debtPayments: number;
+  creditCardPayments: number;
+  loanPayments: number;
   currentRange: DateRange;
   previousRange: DateRange;
   // UI state
@@ -71,7 +73,8 @@ const INITIAL_STATE: BudgetState = {
   budgetStatuses: [],
   analysis: [],
   insights: [],
-  debtPayments: 0,
+  creditCardPayments: 0,
+  loanPayments: 0,
   currentRange: DEFAULT_RANGE,
   previousRange: DEFAULT_PREV,
   periodType: "monthly",
@@ -83,7 +86,8 @@ const INITIAL_STATE: BudgetState = {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useBudget() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [state, setState] = useState<BudgetState>(INITIAL_STATE);
 
@@ -97,11 +101,16 @@ export function useBudget() {
     const now = new Date();
     const currentRange  = getPeriodRange(now, periodType);
     const previousRange = getPreviousPeriodRange(now, periodType);
-    const budgetStatuses = computeBudgetStatus(transactions, budgetCategories, currentRange);
-    const analysis       = analyzeSpending(transactions, currentRange, previousRange);
-    const insights       = generateInsights(budgetStatuses, analysis);
-    const debtPayments   = sumDebtPayments(transactions, currentRange);
-    return { budgetStatuses, analysis, insights, debtPayments, currentRange, previousRange };
+    const budgetStatuses    = computeBudgetStatus(transactions, budgetCategories, currentRange);
+    const analysis          = analyzeSpending(transactions, currentRange, previousRange);
+    const insights          = generateInsights(budgetStatuses, analysis);
+    const creditCardPayments = sumCreditCardPayments(transactions, currentRange);
+    const loanPayments       = sumLoanPayments(transactions, currentRange);
+    return {
+      budgetStatuses, analysis, insights,
+      creditCardPayments, loanPayments,
+      currentRange, previousRange,
+    };
   }
 
   // ── Initial load ──────────────────────────────────────────────────────────
@@ -113,7 +122,7 @@ export function useBudget() {
     try {
       // 1. Fetch budget settings
       const budgetSnap = await getDocs(
-        query(collection(db, "budgets"), where("userId", "==", user.uid))
+        query(collection(db, "budgets"), where("userId", "==", ownerUid))
       );
       const budgetDoc = budgetSnap.docs[0] ?? null;
       const budget: Budget | null = budgetDoc
@@ -133,7 +142,7 @@ export function useBudget() {
       const txnSnap = await getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("date", ">=", fetchFrom),
           where("date", "<=", yearEnd)
         )
@@ -169,7 +178,7 @@ export function useBudget() {
         error: e instanceof Error ? e.message : "Failed to load budget data.",
       }));
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();
@@ -206,7 +215,7 @@ export function useBudget() {
         });
       } else {
         await addDoc(collection(db, "budgets"), {
-          userId: user.uid,
+          userId: ownerUid,
           periodType,
           categories,
           createdAt: serverTimestamp(),

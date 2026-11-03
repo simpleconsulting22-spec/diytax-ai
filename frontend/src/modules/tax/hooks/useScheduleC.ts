@@ -80,11 +80,24 @@ function formatLineNumber(key: string): string {
 interface RawTxn {
   entityId?: string | null;
   entityName?: string;
-  type: "income" | "expense";
+  type: "income" | "expense" | "refund" | "transfer";
   amount: number;
   category: string | null;
+  status?: string | null;
   taxYear?: number | null;
   date?: string;
+}
+
+/**
+ * Rows that must not reach a Schedule C total:
+ *   - transfers — moving your own money is not business income or expense
+ *   - needs_review — an unconfirmed guess should not appear on a tax form
+ *
+ * The dashboard tax meter already excluded both; this page did not, so the two
+ * surfaces reported different Schedule C figures for the same year.
+ */
+function countsTowardSchedule(txn: { type?: string; status?: string | null }): boolean {
+  return txn.type !== "transfer" && txn.status !== "needs_review";
 }
 
 function aggregate(txns: RawTxn[]): EntityScheduleC[] {
@@ -94,6 +107,8 @@ function aggregate(txns: RawTxn[]): EntityScheduleC[] {
   >();
 
   for (const txn of txns) {
+    if (!countsTowardSchedule(txn)) continue;
+
     const key = txn.entityId ?? "__unassigned__";
     const name =
       key === "__unassigned__" ? "Unassigned" : (txn.entityName ?? key);
@@ -107,6 +122,9 @@ function aggregate(txns: RawTxn[]): EntityScheduleC[] {
 
     if (txn.type === "income") {
       entry.income += absAmount;
+    } else if (txn.type === "refund" && txn.category) {
+      const lineKey = CATEGORY_TO_LINE[txn.category] ?? "line27a";
+      entry.lineAmounts.set(lineKey, (entry.lineAmounts.get(lineKey) ?? 0) - absAmount);
     } else if (txn.category) {
       const lineKey = CATEGORY_TO_LINE[txn.category] ?? "line27a";
       entry.lineAmounts.set(lineKey, (entry.lineAmounts.get(lineKey) ?? 0) + absAmount);
@@ -155,7 +173,8 @@ function aggregate(txns: RawTxn[]): EntityScheduleC[] {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useScheduleC() {
-  const { user } = useAuth();
+  const { user, effectiveOwnerUid } = useAuth();
+  const ownerUid = effectiveOwnerUid ?? user?.uid ?? "";
   const { selectedYear } = useTaxYear();
   const [entities, setEntities] = useState<EntityScheduleC[]>([]);
   const [loading, setLoading] = useState(true);
@@ -169,7 +188,7 @@ export function useScheduleC() {
       const snap = await getDocs(
         query(
           collection(db, "transactions"),
-          where("uid", "==", user.uid),
+          where("uid", "==", ownerUid),
           where("taxSchedule", "==", "Schedule C")
         )
       );
@@ -184,7 +203,7 @@ export function useScheduleC() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedYear]);
+  }, [user, ownerUid, selectedYear]);
 
   useEffect(() => {
     load();
