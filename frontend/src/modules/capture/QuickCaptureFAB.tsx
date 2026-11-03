@@ -93,7 +93,12 @@ export default function QuickCaptureFAB() {
 
   // AI suggestion
   const [aiLoading, setAiLoading] = useState(false);
+  const typeRef = useRef(type);
+  typeRef.current = type;
   const [aiSource, setAiSource] = useState<"ai" | "user_rule" | null>(null);
+  // True when the suggestion would put an expense on Schedule C/E/A without the
+  // user confirming its purpose. Saved as Needs review unless they pick it themselves.
+  const [needsPurpose, setNeedsPurpose] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Receipt
@@ -129,6 +134,7 @@ export default function QuickCaptureFAB() {
     setEntityType("personal");
     setAiLoading(false);
     setAiSource(null);
+    setNeedsPurpose(false);
     setReceiptPreview(null);
     setReceiptStoragePath(null);
     setReceiptUrl(null);
@@ -159,9 +165,11 @@ export default function QuickCaptureFAB() {
             taxSchedule: string;
             confidence: number;
             source: string;
+            needsPurposeConfirmation?: boolean;
           }>("suggestCategory", {
             description: desc,
             amount: parseFloat(amt) || undefined,
+            type: typeRef.current,
           });
 
           if (result.category) {
@@ -169,6 +177,7 @@ export default function QuickCaptureFAB() {
             setTaxCategory(result.taxCategory || result.category);
             setTaxSchedule(result.taxSchedule || "Personal");
             setAiSource(result.source === "user_rule" ? "user_rule" : "ai");
+            setNeedsPurpose(result.source !== "user_rule" && result.needsPurposeConfirmation === true);
           }
         } catch {
           // Suggestion failed — user can set manually, no need to surface error
@@ -191,6 +200,7 @@ export default function QuickCaptureFAB() {
   function handleCategoryChange(val: string) {
     setCategory(val);
     setAiSource(null);
+    setNeedsPurpose(false);
     const { taxSchedule: sched, taxCategory: tcat } = categoryToSchedule(val);
     setTaxSchedule(sched);
     setTaxCategory(tcat);
@@ -241,7 +251,14 @@ export default function QuickCaptureFAB() {
         merchant: string;
         amount: number;
         date: string;
+        confidence?: "high" | "medium" | "low";
       }>("extractReceiptData", { storagePath: path });
+
+      if (!extracted.merchant && !extracted.amount && !extracted.date) {
+        setReceiptError("Zach couldn't read this receipt. The photo is attached; please fill in the details.");
+      } else if (extracted.confidence === "low") {
+        setReceiptError("Parts of this receipt were hard to read. Please check the details below.");
+      }
 
       if (extracted.merchant) setDescription(extracted.merchant);
       if (extracted.amount > 0) setAmount(String(extracted.amount));
@@ -253,7 +270,12 @@ export default function QuickCaptureFAB() {
       }
     } catch (err) {
       console.error("[QuickCapture] Receipt processing error:", err);
-      setReceiptError("Couldn't read receipt — fill in manually.");
+      const code = ((err as { code?: string }).code ?? "").replace("functions/", "");
+      setReceiptError(
+        code === "invalid-argument" || code === "resource-exhausted"
+          ? (err as { message?: string }).message ?? "Couldn't read receipt. Please fill in the details."
+          : "Couldn't read receipt. Please fill in the details."
+      );
     } finally {
       setUploadingReceipt(false);
     }
@@ -295,13 +317,17 @@ export default function QuickCaptureFAB() {
         vendor: description.trim(),
         amount: storedAmount,
         type,
-        status: category ? "categorized" : "needs_review",
+        // An AI-suggested deductible category is a suggestion, not a confirmed
+        // deduction: it waits in Review (Ask) until the user confirms it.
+        status: category && !(needsPurpose && aiSource === "ai") ? "categorized" : "needs_review",
         source: "manual",
         category: category || null,
         taxCategory: taxCategory || null,
         taxSchedule: taxSchedule || null,
-        categorizationSource: category ? "user_rule" : null,
-        isUserModified: true,
+        categorizationSource: !category ? null : needsPurpose && aiSource === "ai" ? "ai" : "user_rule",
+        zachTier: !category ? "ask" : needsPurpose && aiSource === "ai" ? "ask" : "sure",
+        reviewTriggers: needsPurpose && aiSource === "ai" ? ["needs_purpose_confirmation"] : [],
+        isUserModified: !(needsPurpose && aiSource === "ai"),
         entityId,
         entityType,
         entityName,
@@ -578,10 +604,15 @@ export default function QuickCaptureFAB() {
                           textTransform: "none",
                         }}
                       >
-                        ✦ {aiSource === "user_rule" ? "from your rules" : "AI suggested"}
+                        ✦ {aiSource === "user_rule" ? "from your rules" : "Zach's suggestion"}
                       </span>
                     )}
                   </span>
+                  {needsPurpose && aiSource && (
+                    <div style={{ fontSize: "12px", color: "#92400e", backgroundColor: "#fffbeb", borderRadius: "8px", padding: "6px 8px", marginBottom: "6px" }}>
+                      This would count as a {taxSchedule} deduction. If you save it as suggested, it waits in Review for you to confirm the purpose. Choosing the category yourself confirms it now.
+                    </div>
+                  )}
                   <select
                     value={category}
                     onChange={(e) => handleCategoryChange(e.target.value)}

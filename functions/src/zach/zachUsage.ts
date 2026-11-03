@@ -21,7 +21,9 @@ import { createHash } from "crypto";
 import { HttpsError } from "firebase-functions/v2/https";
 import { ModelTier, ZachConfig, costUsd } from "./zachConfig";
 
-const FieldValue = admin.firestore.FieldValue;
+// Modular FieldValue: the namespace form breaks under the Functions emulator
+// (see getTaxForecast.ts).
+import { FieldValue } from "firebase-admin/firestore";
 
 export const ids = {
   userDay: (uid: string, day: string) => `u_${uid}_${day}`,
@@ -308,7 +310,8 @@ export async function settleCategorizationUsage(
   cfg: ZachConfig,
   r: BudgetReservation,
   inputTokens: number,
-  outputTokens: number
+  outputTokens: number,
+  kind: "categorize" | "receipt" = "categorize"
 ): Promise<number> {
   const { day } = periodKeys(now);
   const cost = costUsd(cfg.models.fast, inputTokens, outputTokens);
@@ -318,11 +321,33 @@ export async function settleCategorizationUsage(
       {
         costUsd: inc(cost),
         reservedUsd: inc(-r.reservedUsd),
-        byModel: { categorize: { requests: inc(1), costUsd: inc(cost), inputTokens: inc(inputTokens), outputTokens: inc(outputTokens) } },
+        byModel: { [kind]: { requests: inc(1), costUsd: inc(cost), inputTokens: inc(inputTokens), outputTokens: inc(outputTokens) } },
       },
       { merge: true }
     ),
     db.collection("zachUsage").doc(ids.day(day)).set({ day, costUsd: inc(cost) }, { merge: true }),
   ]);
   return cost;
+}
+
+/**
+ * Generic per-user daily counter for AI-backed helpers (category suggestions,
+ * receipt reading). Throws resource-exhausted with a friendly message.
+ */
+export async function checkDailyCounter(
+  db: admin.firestore.Firestore,
+  uid: string,
+  field: "suggestCount" | "receiptCount",
+  max: number,
+  now: Date,
+  message: string
+): Promise<void> {
+  const { day } = periodKeys(now);
+  const ref = db.collection("zachUsage").doc(ids.userDay(uid, day));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const n = Number(snap.exists ? snap.data()![field] ?? 0 : 0);
+    if (n >= max) throw new HttpsError("resource-exhausted", message);
+    tx.set(ref, { uid, day, [field]: n + 1 }, { merge: true });
+  });
 }

@@ -1,121 +1,88 @@
-import { onCall } from "firebase-functions/v2/https";
+// Quick-capture category suggestion.
+//
+// Uses the same path as every other categorization: the user's rules, then
+// built-in keywords, then Claude (via the shared categorizer, which reserves
+// cost against the monthly AI limit). Returns the Sure / Likely / Ask decision
+// so the client can save an AI-suggested deductible category as Needs review
+// rather than as a confirmed deduction.
+
 import * as admin from "firebase-admin";
-import OpenAI from "openai";
-import { resolveEffectiveOwner } from "../middleware/auth";
-import { extractVendorName } from "../services/vendorExtraction";
-import {
-  buildAIPromptCategoryList,
-  fallbackCategoryForType,
-  getMappingFuzzy,
-  isValidCategory,
-  scheduleForCategory,
-} from "../shared/taxMap";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { requireFreshMfa, resolveEffectiveOwner } from "../middleware/auth";
+import { categorizeTransactionsBatch, loadUserRules } from "../services/categorizationService";
+import { decide } from "./decisionPolicy";
+import { loadZachConfig } from "../zach/zachConfig";
+import { checkDailyCounter } from "../zach/zachUsage";
+
+export const SUGGESTIONS_PER_DAY = 200;
+
+export interface SuggestionResult {
+  category: string;
+  taxCategory: string;
+  taxSchedule: string;
+  confidence: number;
+  source: "user_rule" | "rule" | "ai" | "none";
+  tier: "sure" | "likely" | "ask" | null;
+  /** True when saving this suggestion as-is would claim a deduction the user hasn't confirmed. */
+  needsPurposeConfirmation: boolean;
+  explanation: string;
+}
+
+const EMPTY: SuggestionResult = {
+  category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none", tier: null,
+  needsPurposeConfirmation: false, explanation: "",
+};
+
+export async function suggestCategoryCore(
+  ownerUid: string,
+  description: string,
+  amount: number | undefined,
+  type: "income" | "expense" | "refund"
+): Promise<SuggestionResult> {
+  const desc = description.trim().slice(0, 200);
+  if (desc.length < 3) return EMPTY;
+  const rules = await loadUserRules(ownerUid);
+  const res = (
+    await categorizeTransactionsBatch(
+      [{ idx: 0, txn: { description: desc, normalizedDescription: desc.toLowerCase(), vendor: "", amount: amount ?? 0, type } }],
+      rules,
+      []
+    )
+  ).get(0);
+  if (!res || !res.category || res.source === "none") return EMPTY;
+  const d = decide(res, { amount: amount ?? 0, type, description: desc });
+  return {
+    category: res.category,
+    taxCategory: res.taxCategory || res.category,
+    taxSchedule: res.taxSchedule,
+    confidence: res.confidence,
+    source: res.source,
+    tier: d.tier,
+    needsPurposeConfirmation: d.reviewTriggers.includes("needs_purpose_confirmation"),
+    explanation: res.categorizationExplanation,
+  };
+}
 
 export const suggestCategory = onCall(
-  { cors: true, invoker: "public" },
-  async (request) => {
-    const { effectiveOwnerUid } = await resolveEffectiveOwner(request);
-    const { description, amount } = request.data as {
-      description?: string;
-      amount?: number;
-    };
-
-    if (!description?.trim()) {
-      return { category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none" };
-    }
-
+  { cors: true, invoker: "public", secrets: ["ANTHROPIC_API_KEY"] },
+  async (request): Promise<SuggestionResult> => {
+    const callerUid = requireFreshMfa(request);
+    const data = (request.data ?? {}) as { description?: unknown; amount?: unknown; type?: unknown };
+    if (typeof data.description !== "string") return EMPTY;
+    const amount = typeof data.amount === "number" && Number.isFinite(data.amount) ? data.amount : undefined;
+    const type = data.type === "income" || data.type === "refund" ? data.type : "expense";
     const db = admin.firestore();
-    const vendor =
-      extractVendorName(description, description.toUpperCase().trim()) ||
-      description.trim();
-
-    // Check user's learned category rules first
-    const rulesSnap = await db
-      .collection("categoryRules")
-      .where("uid", "==", effectiveOwnerUid)
-      .where("vendorName", "==", vendor)
-      .limit(1)
-      .get();
-
-    if (!rulesSnap.empty) {
-      const rule = rulesSnap.docs[0].data();
-      return {
-        category: rule.category ?? "",
-        taxCategory: rule.taxCategory ?? rule.category ?? "",
-        taxSchedule: rule.taxSchedule ?? "",
-        confidence: 1.0,
-        source: "user_rule",
-      };
-    }
-
-    // Fall back to GPT-4o-mini
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return { category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none" };
-    }
-
-    const prompt = `Categorize this financial transaction for US tax purposes.
-Vendor/Description: "${description}"
-${amount !== undefined ? `Amount: $${amount}` : ""}
-
-Choose the single best category from the list below. Use EXACT spelling
-including ampersands. Do not invent variations.
-
-${buildAIPromptCategoryList()}
-
-Return ONLY valid JSON (no markdown, no code fences):
-{"category":"string","taxCategory":"string","taxSchedule":"Schedule C|Schedule A|Schedule E|Form 1040|Personal","confidence":0.0}`;
-
+    const cfg = await loadZachConfig(db);
+    if (!cfg.enabled) return EMPTY;
+    await checkDailyCounter(db, callerUid, "suggestCount", SUGGESTIONS_PER_DAY, new Date(),
+      "You've reached today's limit for category suggestions. You can still pick a category yourself.");
+    const { effectiveOwnerUid } = await resolveEffectiveOwner(request);
     try {
-      const openai = new OpenAI({ apiKey });
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 120,
-        temperature: 0,
-      });
-
-      const raw = completion.choices[0]?.message?.content?.trim() ?? "{}";
-      const clean = raw.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-      const parsed = JSON.parse(clean) as {
-        category?: string;
-        taxCategory?: string;
-        taxSchedule?: string;
-        confidence?: number;
-      };
-
-      // Validate against TAX_MAP — same three-case logic as the batch path.
-      let category: string;
-      let taxSchedule: string;
-      let confidence = parsed.confidence ?? 0.75;
-      const txnType = amount !== undefined && amount > 0 ? "income" : "expense";
-
-      if (parsed.category && isValidCategory(parsed.category)) {
-        const sched = scheduleForCategory(parsed.category)!;
-        category = parsed.category;
-        taxSchedule = sched.taxSchedule;
-      } else if (parsed.category && getMappingFuzzy(parsed.category)) {
-        const m = getMappingFuzzy(parsed.category)!;
-        category = m.category;
-        taxSchedule = m.taxSchedule;
-        confidence = Math.min(confidence, 0.7);
-      } else {
-        const fb = fallbackCategoryForType(txnType);
-        category = fb.category;
-        taxSchedule = fb.taxSchedule;
-        confidence = 0.5;
-      }
-
-      return {
-        category,
-        taxCategory: parsed.taxCategory ?? category,
-        taxSchedule,
-        confidence,
-        source: "ai",
-      };
+      return await suggestCategoryCore(effectiveOwnerUid, data.description, amount, type);
     } catch (err) {
-      console.error("[suggestCategory] error:", err);
-      return { category: "", taxCategory: "", taxSchedule: "", confidence: 0, source: "none" };
+      console.error("[suggestCategory] error:", err instanceof Error ? err.message : err);
+      if (err instanceof HttpsError) throw err;
+      return EMPTY;
     }
   }
 );
