@@ -69,6 +69,7 @@ service cloud.firestore {
         'notes',
         'categorizationSource', 'categorizationConfidence', 'categorizationExplanation',
         'isUserModified', 'aiSuggested', 'aiSource',
+        'history', 'zachTier', 'reviewTriggers',
         'updatedBy', 'updatedByRole', 'updatedAt'
       ];
     }
@@ -358,6 +359,14 @@ service cloud.firestore {
 
     // Per-conversation counts and cost (no conversation text). Server only.
     match /zachConversations/{doc} {
+      allow read, write: if false;
+    }
+
+    // Question-round settings and sent rounds. Server only (callables).
+    match /zachHouseholds/{doc} {
+      allow read, write: if false;
+    }
+    match /zachRounds/{doc} {
       allow read, write: if false;
     }
 
