@@ -44,6 +44,10 @@ export interface UserRule {
   entityName?: string;
   entityType?: string;
   usageCount?: number;
+  /** When set, the rule only matches transactions of this type. */
+  appliesToType?: "income" | "expense";
+  /** Retired rules keep their text in retiredVendorName and never match. */
+  retired?: boolean;
 }
 
 export interface EntityForAI {
@@ -166,25 +170,33 @@ export async function loadUserEntities(uid: string): Promise<EntityForAI[]> {
 
 // ─── User rule matching (uses pre-loaded rules) ───────────────────────────────
 
-function matchUserRule(
+export function matchUserRule(
   rules: UserRule[],
   normalizedDescription: string,
-  vendor: string
+  vendor: string,
+  txnType?: string
 ): CategorizationResult | null {
   let bestMatch: UserRule | null = null;
   let matchType: "exact_vendor" | "substring" = "substring";
+  let bestLength = 0;
 
   for (const rule of rules) {
     const ruleVendor = (rule.vendorName ?? "").toLowerCase().trim();
-    if (!ruleVendor) continue;
+    if (!ruleVendor || rule.retired) continue;
+    // Direction-scoped rules (e.g. CityLight pay in vs. donations out) only
+    // apply to transactions of that type.
+    if (rule.appliesToType && txnType && rule.appliesToType !== txnType) continue;
 
     if (vendor && ruleVendor === vendor.toLowerCase()) {
       bestMatch = rule;
       matchType = "exact_vendor";
       break;
     }
-    if (!bestMatch && normalizedDescription.includes(ruleVendor)) {
+    // Longest substring wins, so "state farm" beats "state" and a short
+    // generic rule can't shadow a specific one regardless of load order.
+    if (ruleVendor.length > bestLength && normalizedDescription.includes(ruleVendor)) {
       bestMatch = rule;
+      bestLength = ruleVendor.length;
     }
   }
 
@@ -449,7 +461,7 @@ export async function categorizeTransactionsBatch(
     const vendor = txn.vendor ?? "";
 
     if (!options.bypassUserRules) {
-      const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor);
+      const userRuleResult = matchUserRule(userRules, normalizedDesc, vendor, txn.type);
       if (userRuleResult && userRuleResult.category) {
         results.set(idx, userRuleResult);
         continue;
