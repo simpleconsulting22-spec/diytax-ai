@@ -4,6 +4,7 @@
 // thresholds is hard-coded elsewhere.
 
 import * as admin from "firebase-admin";
+import { normalizeReplyDomain } from "./replyTokens";
 
 export type ModelTier = "fast" | "deep";
 
@@ -20,6 +21,8 @@ export interface ZachConfig {
   enabled: boolean;
   /** Answering round emails by reply (and attaching receipts). Off until the reply. MX and webhook are set up. */
   inboundEmail: boolean;
+  /** Domain replies are received on (reply.diytaxai.com or a Resend <id>.resend.app address). */
+  replyDomain: string;
   /** Above this month-to-date spend, every request uses the fast model. */
   monthlyTargetUsd: number;
   /** Crossing this sends the administrator an alert email. */
@@ -39,6 +42,7 @@ export interface ZachConfig {
 export const DEFAULT_CONFIG: ZachConfig = {
   enabled: true,
   inboundEmail: false,
+  replyDomain: "reply.diytaxai.com",
   monthlyTargetUsd: 25,
   monthlyAlertUsd: 50,
   monthlyLimitUsd: 50,
@@ -97,6 +101,7 @@ export function mergeConfig(stored: unknown, env: NodeJS.ProcessEnv = process.en
   const cfg: ZachConfig = {
     enabled: env.ZACH_ENABLED === "false" ? false : s.enabled === false ? false : true,
     inboundEmail: s.inboundEmail === true,
+    replyDomain: normalizeReplyDomain(s.replyDomain),
     monthlyLimitUsd: limit,
     monthlyTargetUsd: Math.min(limit, clamp(s.monthlyTargetUsd, usd.min, usd.max, d.monthlyTargetUsd)),
     monthlyAlertUsd: clamp(s.monthlyAlertUsd, usd.min, usd.max, d.monthlyAlertUsd),

@@ -32,7 +32,7 @@ import { getDownloadURL } from "firebase-admin/storage";
 import { onRequest } from "firebase-functions/v2/https";
 import { createHmac, timingSafeEqual } from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
-import { createReplyAddress, hashToken, ReplyTokenDoc } from "./replyTokens";
+import { createReplyAddress, hashToken, normalizeReplyDomain, REPLY_DOMAIN, ReplyTokenDoc } from "./replyTokens";
 import { TAX_MAP, getMapping } from "../shared/taxMap";
 import { appendHistory, DEDUCTIBLE_SCHEDULES, snapshotFields } from "../categorization/decisionPolicy";
 import { loadZachConfig, worstCaseCost, ZachConfig } from "./zachConfig";
@@ -51,13 +51,14 @@ const RESEND_API = "https://api.resend.com";
 // ─── Tokens ──────────────────────────────────────────────────────────────────
 
 /** Pull the token out of the recipient list. */
-export function tokenFromRecipients(to: unknown): string | null {
+export function tokenFromRecipients(to: unknown, domain: string = REPLY_DOMAIN): string | null {
+  const want = normalizeReplyDomain(domain);
   const list = Array.isArray(to) ? to : [to];
   for (const raw of list) {
     if (typeof raw !== "string") continue;
     const addr = (raw.match(/<([^>]+)>/)?.[1] ?? raw).trim().toLowerCase();
-    const m = addr.match(/^zach\+([a-f0-9]{40})@reply\.diytaxai\.com$/);
-    if (m) return m[1];
+    const m = addr.match(/^zach\+([a-f0-9]{40})@(.+)$/);
+    if (m && m[2] === want) return m[1];
   }
   return null;
 }
@@ -442,7 +443,7 @@ export type InboundResult =
 const bareAddress = (s: string) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim().toLowerCase();
 
 /** Handle one verified `email.received` event. */
-export async function processInbound(deps: InboundDeps, event: unknown, inboundEnabled: boolean): Promise<InboundResult> {
+export async function processInbound(deps: InboundDeps, event: unknown, inboundEnabled: boolean, domain: string = REPLY_DOMAIN): Promise<InboundResult> {
   const e = (event ?? {}) as { type?: unknown; data?: Record<string, unknown> };
   if (e.type !== "email.received" || !e.data) return { status: "ignored", reason: "not_received_event" };
   const emailId = typeof e.data.email_id === "string" && /^[A-Za-z0-9-]{8,64}$/.test(e.data.email_id) ? e.data.email_id : null;
@@ -460,7 +461,7 @@ export async function processInbound(deps: InboundDeps, event: unknown, inboundE
   const finish = async (status: string, extra: Record<string, unknown> = {}) => logRef.set({ status, ...extra, finishedAt: deps.now().getTime() }, { merge: true });
 
   try {
-    return await processVerified(deps, e.data, emailId, now, inboundEnabled, finish);
+    return await processVerified(deps, e.data, emailId, now, inboundEnabled, finish, domain);
   } catch (err) {
     await finish("error", { error: err instanceof Error ? err.message.slice(0, 120) : "unknown" }).catch(() => undefined);
     throw err;
@@ -473,7 +474,8 @@ async function processVerified(
   emailId: string,
   now: number,
   inboundEnabled: boolean,
-  finish: (status: string, extra?: Record<string, unknown>) => Promise<unknown>
+  finish: (status: string, extra?: Record<string, unknown>) => Promise<unknown>,
+  domain: string
 ): Promise<InboundResult> {
   const { db } = deps;
   if (!inboundEnabled) {
@@ -481,7 +483,7 @@ async function processVerified(
     return { status: "ignored", reason: "inbound_off" };
   }
 
-  const token = tokenFromRecipients(data.to);
+  const token = tokenFromRecipients(data.to, domain);
   if (!token) {
     await finish("ignored", { reason: "no_token" });
     return { status: "ignored", reason: "no_token" };
@@ -629,7 +631,8 @@ async function processVerified(
         roundId: tok.roundId,
         groups: tok.groups.filter((_, i) => !answered.has(i)),
       },
-      now
+      now,
+      domain
     );
     await deps.send(summaryEmail(member.email, applied, receipts, unanswered, replyTo));
   } catch (err) {
@@ -664,7 +667,7 @@ export const zachInboundEmail = onRequest(
     }
     try {
       const cfg = await loadZachConfig(admin.firestore(), Date.now());
-      const r = await processInbound(defaultInboundDeps(), JSON.parse(raw), cfg.inboundEmail);
+      const r = await processInbound(defaultInboundDeps(), JSON.parse(raw), cfg.inboundEmail, cfg.replyDomain);
       console.log(JSON.stringify({ event: "zach_inbound", ...r }));
     } catch (err) {
       console.error("[zachInbound] failed", err instanceof Error ? err.message.slice(0, 200) : "unknown");

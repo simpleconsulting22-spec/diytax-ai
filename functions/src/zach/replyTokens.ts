@@ -6,6 +6,15 @@ import { createHash, randomBytes } from "crypto";
 import type { RoundGroup } from "./rounds";
 
 export const REPLY_DOMAIN = "reply.diytaxai.com";
+
+/**
+ * Where replies are received: our reply. subdomain, or a Resend-hosted
+ * <id>.resend.app address (no DNS needed). Anything else falls back.
+ */
+export function normalizeReplyDomain(v: unknown): string {
+  const d = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return d === REPLY_DOMAIN || /^[a-z0-9-]{1,63}\.resend\.app$/.test(d) ? d : REPLY_DOMAIN;
+}
 export const TOKEN_TTL_MS = 30 * 86_400_000;
 
 export const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -25,9 +34,10 @@ export interface ReplyTokenDoc {
 export async function createReplyAddress(
   db: admin.firestore.Firestore,
   doc: Omit<ReplyTokenDoc, "createdAt" | "expiresAt" | "uses">,
-  now: number
+  now: number,
+  domain: string = REPLY_DOMAIN
 ): Promise<string> {
   const token = randomBytes(20).toString("hex"); // 160 bits; lowercase survives any mail system
   await db.collection("zachReplyTokens").doc(hashToken(token)).set({ ...doc, createdAt: now, expiresAt: now + TOKEN_TTL_MS, uses: 0 });
-  return `zach+${token}@${REPLY_DOMAIN}`;
+  return `zach+${token}@${normalizeReplyDomain(domain)}`;
 }
