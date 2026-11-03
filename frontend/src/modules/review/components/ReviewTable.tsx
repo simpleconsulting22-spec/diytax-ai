@@ -135,6 +135,7 @@ export const TRIGGER_TEXT: Record<string, string> = {
   meals_travel_75: "Business meal or travel of $75 or more: keep the receipt and note the purpose.",
   charity_250: "Gift to charity of $250 or more: keep the written acknowledgment.",
   mixed_use_merchant: "This store sells both personal and business items. Please confirm.",
+  email_answer_confirm: "You answered this by email. Confirm the business, rental or itemized purpose to count it as deductible.",
 };
 
 const TIER_STYLE = {

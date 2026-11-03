@@ -369,6 +369,16 @@ service cloud.firestore {
     match /zachRounds/{doc} {
       allow read, write: if false;
     }
+    // Email replies: token hashes, processing log, unmatched receipts. Server only.
+    match /zachReplyTokens/{doc} {
+      allow read, write: if false;
+    }
+    match /zachInbound/{doc} {
+      allow read, write: if false;
+    }
+    match /zachReceiptInbox/{doc} {
+      allow read, write: if false;
+    }
 
     // Zach settings (limits, models). Changed only through setZachConfig.
     match /config/{doc=**} {

@@ -19,11 +19,15 @@ import { randomUUID } from "crypto";
 import { requireFreshMfa, resolveEffectiveOwner } from "../middleware/auth";
 import { extractVendor } from "../shared/vendorExtraction";
 import { EmailMessage, sendEmail } from "../services/emailService";
+import { loadZachConfig } from "./zachConfig";
+import { createReplyAddress } from "./replyTokens";
 
 export const ROUND_SIZE = 10;
 export const REMINDER_AFTER_MS = 3 * 86_400_000;
 export const LOOKBACK_DAYS = 400;
 export const APP_URL = "https://diytaxai.com";
+export const REPLY_HINT =
+  'Or just reply to this email in your own words, for example "Home Depot was for the rental, Target was personal". You can attach receipt photos too. Anything that would be deductible still needs one tap in the app to confirm.';
 const CADENCE_MS = { weekly: 7 * 86_400_000, biweekly: 14 * 86_400_000, monthly: 30 * 86_400_000 } as const;
 export type Cadence = keyof typeof CADENCE_MS;
 
@@ -159,15 +163,15 @@ const esc = (s: string) =>
 const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** Email for one person's questions. Merchant names and amounts only. */
-export function roundEmail(email: string, groups: RoundGroup[], reminder: boolean): EmailMessage {
+export function roundEmail(email: string, groups: RoundGroup[], reminder: boolean, replyTo?: string): EmailMessage {
   const n = groups.length;
   const subject = reminder
     ? `Reminder: Zach still has ${n} question${n !== 1 ? "s" : ""} for you`
     : `Zach has ${n} question${n !== 1 ? "s" : ""} about recent transactions`;
   const lines = groups.map((g) => {
-    const when = g.from === g.to ? g.from : `${g.from} to ${g.to}`;
+    const when = !g.from ? "" : g.from === g.to ? g.from : `${g.from} to ${g.to}`;
     const guess = g.guess ? ` Zach's guess: ${g.guess}.` : "";
-    return { text: `- ${g.vendor}: ${g.count} charge${g.count !== 1 ? "s" : ""}, ${usd(g.total)} (${when}).${guess}`, g, when, guess };
+    return { text: `- ${g.vendor}: ${g.count} charge${g.count !== 1 ? "s" : ""}, ${usd(g.total)}${when ? ` (${when})` : ""}.${guess}`, g, when, guess };
   });
   const link = `${APP_URL}/review?zach=mine`;
   const settings = `${APP_URL}/settings/zach`;
@@ -175,18 +179,20 @@ export function roundEmail(email: string, groups: RoundGroup[], reminder: boolea
     `${reminder ? "A quick reminder: " : ""}Zach needs your help with a few transactions while you still remember them.\n\n` +
     lines.map((l) => l.text).join("\n") +
     `\n\nAnswer in DIYTax AI (about 2 minutes): ${link}\n\n` +
+    (replyTo ? `${REPLY_HINT}\n\n` : "") +
     `Nothing changes until you answer, and every answer can be undone.\n` +
     `Change how often Zach asks, or turn rounds off: ${settings}`;
   const html =
     `<div style="font-family:-apple-system,Segoe UI,sans-serif;color:#111827;max-width:560px">` +
     `<p>${reminder ? "A quick reminder: " : ""}Zach needs your help with a few transactions while you still remember them.</p>` +
     `<ul style="padding-left:18px">${lines
-      .map((l) => `<li style="margin-bottom:6px"><strong>${esc(l.g.vendor)}</strong>: ${l.g.count} charge${l.g.count !== 1 ? "s" : ""}, ${usd(l.g.total)} (${esc(l.when)}).${esc(l.guess)}</li>`)
+      .map((l) => `<li style="margin-bottom:6px"><strong>${esc(l.g.vendor)}</strong>: ${l.g.count} charge${l.g.count !== 1 ? "s" : ""}, ${usd(l.g.total)}${l.when ? ` (${esc(l.when)})` : ""}.${esc(l.guess)}</li>`)
       .join("")}</ul>` +
     `<p><a href="${link}" style="display:inline-block;background:#16A34A;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Answer in DIYTax AI</a></p>` +
+    (replyTo ? `<p style="font-size:14px">${esc(REPLY_HINT)}</p>` : "") +
     `<p style="color:#6b7280;font-size:13px">Nothing changes until you answer, and every answer can be undone.<br>` +
     `<a href="${settings}" style="color:#6b7280">Change how often Zach asks, or turn rounds off</a>.</p></div>`;
-  return { to: email, subject, html, text };
+  return { to: email, subject, html, text, ...(replyTo ? { replyTo } : {}) };
 }
 
 // ─── Firestore plumbing ──────────────────────────────────────────────────────
@@ -196,6 +202,8 @@ export interface RoundDeps {
   send: (m: EmailMessage) => Promise<unknown>;
   emailOf: (uid: string) => Promise<string | null>;
   now: () => Date;
+  /** True when replies to round emails are being received (config/zach.inboundEmail). */
+  inboundEnabled?: () => Promise<boolean>;
 }
 
 export const defaultDeps = (): RoundDeps => ({
@@ -210,7 +218,23 @@ export const defaultDeps = (): RoundDeps => ({
     }
   },
   now: () => new Date(),
+  inboundEnabled: async () => (await loadZachConfig(admin.firestore(), Date.now())).inboundEmail,
 });
+
+/** Reply-To for one person's questions, when replies are on. Never blocks the round. */
+async function replyAddressFor(deps: RoundDeps, ownerUid: string, uid: string, email: string, roundId: string, groups: RoundGroup[]): Promise<string | undefined> {
+  try {
+    if (!deps.inboundEnabled || !(await deps.inboundEnabled())) return undefined;
+    return await createReplyAddress(
+      deps.db,
+      { ownerUid, respondentUid: uid, email, roundId, groups: groups.map(({ key, vendor, count, total, guess, txnIds }) => ({ key, vendor, count, total, guess: guess ?? null, txnIds })) },
+      deps.now().getTime()
+    );
+  } catch (err) {
+    console.error("[zachRounds] reply address failed", err instanceof Error ? err.message.slice(0, 120) : "unknown");
+    return undefined;
+  }
+}
 
 export async function loadSettings(db: admin.firestore.Firestore, ownerUid: string): Promise<RoundSettings> {
   const snap = await db.collection("zachHouseholds").doc(ownerUid).get();
@@ -245,7 +269,7 @@ export async function runRound(deps: RoundDeps, ownerUid: string, trigger: "sche
   const roundId = randomUUID();
   const respondents: Record<string, unknown> = {};
   for (const [uid, r] of Object.entries(built.byRespondent)) {
-    respondents[uid] = { groups: r.groups.map(({ key, vendor, count, total, txnIds }) => ({ key, vendor, count, total, txnIds })), sentAt: null, remindedAt: null };
+    respondents[uid] = { groups: r.groups.map(({ key, vendor, count, total, guess, txnIds }) => ({ key, vendor, count, total, guess, txnIds })), sentAt: null, remindedAt: null };
   }
   await deps.db.collection("zachRounds").doc(roundId).set({
     ownerUid,
@@ -257,7 +281,8 @@ export async function runRound(deps: RoundDeps, ownerUid: string, trigger: "sche
   });
   for (const [uid, r] of Object.entries(built.byRespondent)) {
     try {
-      await deps.send(roundEmail(r.email, r.groups, false));
+      const replyTo = await replyAddressFor(deps, ownerUid, uid, r.email, roundId, r.groups);
+      await deps.send(roundEmail(r.email, r.groups, false, replyTo));
       await deps.db.collection("zachRounds").doc(roundId).update({ [`respondents.${uid}.sentAt`]: now });
     } catch (err) {
       console.error("[zachRounds] send failed", { ownerUid, roundId, error: err instanceof Error ? err.message.slice(0, 160) : "unknown" });
@@ -286,7 +311,9 @@ export async function sendDueReminders(deps: RoundDeps): Promise<number> {
       }
       if (open.length === 0) continue;
       try {
-        await deps.send(roundEmail(member.email, open.map((g) => ({ ...g, from: "", to: "", guess: null })), true));
+        const groups = open.map((g) => ({ ...g, from: "", to: "", guess: g.guess ?? null }));
+        const replyTo = await replyAddressFor(deps, round.ownerUid, uid, member.email, roundDoc.id, groups);
+        await deps.send(roundEmail(member.email, groups, true, replyTo));
         await roundDoc.ref.update({ [`respondents.${uid}.remindedAt`]: now });
         sent++;
       } catch (err) {

@@ -16,13 +16,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { requireFreshMfa } from "../middleware/auth";
-import { loadZachConfig, worstCaseCost } from "../zach/zachConfig";
+import { loadZachConfig, worstCaseCost, ZachConfig } from "../zach/zachConfig";
 import { checkDailyCounter, releaseReservation, reserveBudget, settleCategorizationUsage } from "../zach/zachUsage";
 
 export const RECEIPTS_PER_DAY = 50;
 export const MAX_RECEIPT_BYTES = 5 * 1024 * 1024;
 
-type ImageMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+export type ImageMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
 export interface ReceiptResult {
   merchant: string;
@@ -119,50 +119,65 @@ export const extractReceiptData = onCall(
       throw new HttpsError("invalid-argument", "Zach can read JPEG, PNG, GIF or WebP photos. Please try a different format.");
     }
 
-    let reservation;
-    try {
-      // ~1,600 image tokens for a large photo plus the prompt, as characters.
-      reservation = await reserveBudget(db, now, cfg, worstCaseCost({ ...cfg.models.fast, maxOutputTokens: 300 }, 6000 + RECEIPT_PROMPT.length));
-    } catch {
-      return EMPTY; // monthly limit reached: fill in by hand
-    }
-
-    let inputTokens = 0;
-    let outputTokens = 0;
-    try {
-      const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 45_000 });
-      const res = await client.messages.create({
-        model: cfg.models.fast.id,
-        max_tokens: 300,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: mime, data: buffer.toString("base64") } },
-              { type: "text", text: RECEIPT_PROMPT },
-            ],
-          },
-        ],
-        output_config: {
-          effort: "low",
-          format: { type: "json_schema", schema: RECEIPT_SCHEMA as unknown as Record<string, unknown> },
-        },
-      });
-      const u = res.usage;
-      inputTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-      outputTokens = u.output_tokens ?? 0;
-      const text = res.content.find((b) => b.type === "text");
-      if (res.stop_reason === "refusal" || !text || text.type !== "text") return EMPTY;
-      return cleanReceipt(JSON.parse(text.text), now.toISOString().slice(0, 10));
-    } catch (err) {
-      console.error("[extractReceiptData] read failed:", err instanceof Error ? err.message.slice(0, 200) : "unknown");
-      return EMPTY;
-    } finally {
-      if (inputTokens || outputTokens) {
-        await settleCategorizationUsage(db, now, cfg, reservation, inputTokens, outputTokens, "receipt").catch(() => undefined);
-      } else {
-        await releaseReservation(db, reservation, true).catch(() => undefined);
-      }
-    }
+    return readReceiptImage(db, cfg, now, apiKey, buffer, mime);
   }
 );
+
+/**
+ * Read one receipt image with the fast model. Reserves worst-case cost against
+ * the monthly limit and settles after. Returns EMPTY on any failure.
+ */
+export async function readReceiptImage(
+  db: admin.firestore.Firestore,
+  cfg: ZachConfig,
+  now: Date,
+  apiKey: string,
+  buffer: Buffer,
+  mime: ImageMime
+): Promise<ReceiptResult> {
+  let reservation;
+  try {
+    // ~1,600 image tokens for a large photo plus the prompt, as characters.
+    reservation = await reserveBudget(db, now, cfg, worstCaseCost({ ...cfg.models.fast, maxOutputTokens: 300 }, 6000 + RECEIPT_PROMPT.length));
+  } catch {
+    return EMPTY; // monthly limit reached: fill in by hand
+  }
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  try {
+    const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 45_000 });
+    const res = await client.messages.create({
+      model: cfg.models.fast.id,
+      max_tokens: 300,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mime, data: buffer.toString("base64") } },
+            { type: "text", text: RECEIPT_PROMPT },
+          ],
+        },
+      ],
+      output_config: {
+        effort: "low",
+        format: { type: "json_schema", schema: RECEIPT_SCHEMA as unknown as Record<string, unknown> },
+      },
+    });
+    const u = res.usage;
+    inputTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+    outputTokens = u.output_tokens ?? 0;
+    const text = res.content.find((b) => b.type === "text");
+    if (res.stop_reason === "refusal" || !text || text.type !== "text") return EMPTY;
+    return cleanReceipt(JSON.parse(text.text), now.toISOString().slice(0, 10));
+  } catch (err) {
+    console.error("[extractReceiptData] read failed:", err instanceof Error ? err.message.slice(0, 200) : "unknown");
+    return EMPTY;
+  } finally {
+    if (inputTokens || outputTokens) {
+      await settleCategorizationUsage(db, now, cfg, reservation, inputTokens, outputTokens, "receipt").catch(() => undefined);
+    } else {
+      await releaseReservation(db, reservation, true).catch(() => undefined);
+    }
+  }
+}

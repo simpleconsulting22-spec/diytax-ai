@@ -311,7 +311,7 @@ export async function settleCategorizationUsage(
   r: BudgetReservation,
   inputTokens: number,
   outputTokens: number,
-  kind: "categorize" | "receipt" = "categorize"
+  kind: "categorize" | "receipt" | "reply" = "categorize"
 ): Promise<number> {
   const { day } = periodKeys(now);
   const cost = costUsd(cfg.models.fast, inputTokens, outputTokens);
@@ -337,7 +337,7 @@ export async function settleCategorizationUsage(
 export async function checkDailyCounter(
   db: admin.firestore.Firestore,
   uid: string,
-  field: "suggestCount" | "receiptCount",
+  field: "suggestCount" | "receiptCount" | "replyCount",
   max: number,
   now: Date,
   message: string

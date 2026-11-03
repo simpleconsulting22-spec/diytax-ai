@@ -42,6 +42,8 @@ export interface EmailMessage {
   html: string;
   /** Optional plain-text alternative. */
   text?: string;
+  /** Optional Reply-To address. */
+  replyTo?: string;
 }
 
 export interface EmailSendResult {
@@ -248,6 +250,7 @@ class ResendProvider implements EmailProvider {
           subject: message.subject,
           html: message.html,
           ...(message.text ? { text: message.text } : {}),
+          ...(message.replyTo ? { reply_to: message.replyTo } : {}),
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
