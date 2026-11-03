@@ -1,10 +1,14 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
-import { requireAuth } from "../middleware/auth";
+// Modular FieldValue: the namespace form breaks under the Functions emulator
+// (see getTaxForecast.ts).
+import { FieldValue } from "firebase-admin/firestore";
+import { requireFreshMfa } from "../middleware/auth";
+import { appendHistory, snapshotFields } from "./decisionPolicy";
 import { extractVendorName } from "../services/vendorExtraction";
 
 export const updateTransactionCategory = onCall({ cors: true, invoker: "public" }, async (request) => {
-  const uid = await requireAuth(request);
+  const uid = requireFreshMfa(request);
 
   const data = request.data as {
     transactionId?: string;
@@ -14,6 +18,8 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
     entityId?: string;
     entityType?: string;
     entityName?: string;
+    /** Only when true is a vendor rule created or updated ("Always do this"). */
+    createRule?: boolean;
   };
 
   if (!data.transactionId || !data.category) {
@@ -37,13 +43,25 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
   }
 
   // ── 1. Update the transaction ──────────────────────────────────────────────
+  // A person's choice is Sure, and the previous values are kept in history so
+  // the change can be undone.
+  const before = snapshotFields(txn);
+  const after = {
+    category:    data.category,
+    taxCategory: data.taxCategory ?? before.taxCategory,
+    taxSchedule: data.taxSchedule ?? before.taxSchedule,
+    status:      "categorized",
+  };
   const txnUpdate: Record<string, unknown> = {
     category:                  data.category,
     categorizationSource:      "user_rule",
     categorizationExplanation: `Manually set to "${data.category}" by user`,
     isUserModified:            true,
     status:                    "categorized",
-    updatedAt:                 admin.firestore.FieldValue.serverTimestamp(),
+    zachTier:                  "sure",
+    riskFlags:                 [],
+    history:                   appendHistory(txn.history, { at: Date.now(), by: uid, source: "user", before, after }),
+    updatedAt:                 FieldValue.serverTimestamp(),
   };
   if (data.taxCategory)  txnUpdate.taxCategory  = data.taxCategory;
   if (data.taxSchedule)  txnUpdate.taxSchedule  = data.taxSchedule;
@@ -64,7 +82,10 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
     (txn.merchantName as string | undefined) ||
     "";
 
-  if (!vendorName) return { updated: true };
+  // A single edit changes this transaction only. A vendor rule is written
+  // only when the user explicitly asked for it ("Always do this"), so one odd
+  // purchase can't silently reclassify every future charge from the vendor.
+  if (data.createRule !== true || !vendorName) return { updated: true, ruleSaved: false };
 
   // ── 3. Upsert categoryRule (learning loop) ─────────────────────────────────
   // Check for an existing rule keyed to this vendor for this user.
@@ -80,7 +101,7 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
     vendorName,
     category:   data.category,
     confidence: 1.0,
-    updatedAt:  admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt:  FieldValue.serverTimestamp(),
   };
   if (data.taxCategory)  rulePayload.taxCategory  = data.taxCategory  ?? (txn.taxCategory  ?? "");
   if (data.taxSchedule)  rulePayload.taxSchedule  = data.taxSchedule  ?? (txn.taxSchedule  ?? "");
@@ -92,15 +113,15 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
   if (!rulesSnap.empty) {
     await rulesSnap.docs[0].ref.update({
       ...rulePayload,
-      usageCount: admin.firestore.FieldValue.increment(1),
+      usageCount: FieldValue.increment(1),
     });
   } else {
     await db.collection("categoryRules").add({
       ...rulePayload,
       usageCount:  1,
-      createdAt:   admin.firestore.FieldValue.serverTimestamp(),
+      createdAt:   FieldValue.serverTimestamp(),
     });
   }
 
-  return { updated: true };
+  return { updated: true, ruleSaved: true };
 });

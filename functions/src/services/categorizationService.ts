@@ -108,10 +108,18 @@ const KEYWORD_RULES: KeywordRule[] = [
     taxSchedule: "Schedule C",
   },
   {
-    keywords: ["netflix", "spotify", "adobe", "microsoft", "google workspace", "dropbox", "notion", "slack", "zoom", "figma", "shopify", "quickbooks"],
+    // Business software only. Consumer streaming used to be in this list,
+    // which booked every Netflix/Spotify charge to Schedule C.
+    keywords: ["adobe", "microsoft", "google workspace", "dropbox", "notion", "slack", "zoom", "figma", "shopify", "quickbooks"],
     category: "Software & Subscriptions",
     taxCategory: "Business Expense",
     taxSchedule: "Schedule C",
+  },
+  {
+    keywords: ["netflix", "spotify", "hulu", "disney plus", "disney+", "hbo max", "max.com", "peacock", "paramount+", "youtube premium", "youtubepremium", "apple music", "sirius"],
+    category: "Personal Subscriptions",
+    taxCategory: "Personal Subscriptions",
+    taxSchedule: "Personal",
   },
   {
     keywords: ["shell", "chevron", "exxon", "mobil", "bp ", "sunoco", "speedway", "circle k", "gas station"],

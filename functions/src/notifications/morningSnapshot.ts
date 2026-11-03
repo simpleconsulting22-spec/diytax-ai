@@ -34,7 +34,7 @@ export const morningSnapshot = onSchedule(
   async () => {
     const db  = admin.firestore();
     const now = new Date();
-    const year = now.getFullYear().toString();
+    const year = now.getFullYear(); // transactions store taxYear as a number
     const deadline = nextDeadline(now);
 
     const profilesSnap = await db

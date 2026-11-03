@@ -1,5 +1,8 @@
 import { onCall } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+// Modular FieldValue: the namespace form breaks under the Functions emulator
+// (see getTaxForecast.ts).
+import { FieldValue } from "firebase-admin/firestore";
 import { resolveEffectiveOwner } from "../middleware/auth";
 import {
   categorizeTransactionsBatch,
@@ -8,6 +11,7 @@ import {
   TransactionInput,
   CategorizationResult,
 } from "../services/categorizationService";
+import { appendHistory, changed, decide, snapshotFields } from "./decisionPolicy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,7 +38,7 @@ interface TxnDoc {
   entityType?: string;
 }
 
-async function applyResultToDoc(
+export async function applyResultToDoc(
   docId: string,
   txn: TxnDoc,
   result: CategorizationResult,
@@ -55,18 +59,40 @@ async function applyResultToDoc(
   // If the user already set a category (isUserModified), keep it — only fill entity.
   const keepExistingCategory = txn.isUserModified === true && !!txn.category;
 
-  const newStatus = isAITransfer
-    ? "transfer"
-    : result.confidence >= 0.8 ? "categorized" : "needs_review";
+  // One shared decision rule (decisionPolicy.ts): user rules are Sure, keyword
+  // and confident AI are Likely, risky or uncertain items are Ask.
+  const decision = decide(result, {
+    amount: txn.amount,
+    description: txn.description,
+    normalizedDescription: txn.normalizedDescription,
+  });
+  const newStatus = isAITransfer ? "transfer" : decision.status;
+
+  const before = snapshotFields(txn as unknown as Record<string, unknown>);
+  const after = keepExistingCategory
+    ? before
+    : { category: result.category ?? "", taxCategory: result.taxCategory ?? "", taxSchedule: result.taxSchedule ?? "", status: newStatus };
 
   const update: Record<string, unknown> = {
+    ...(!keepExistingCategory && !isAITransfer ? { zachTier: decision.tier, riskFlags: decision.riskFlags } : {}),
+    ...(changed(before, after)
+      ? {
+          history: appendHistory((txn as unknown as Record<string, unknown>).history, {
+            at: Date.now(),
+            by: callerUid,
+            source: `auto:${result.source}`,
+            before,
+            after,
+          }),
+        }
+      : {}),
     categorizationConfidence:  result.confidence,
     categorizationSource:      result.source,
     categorizationExplanation: result.categorizationExplanation,
-    categorizedAt:             admin.firestore.FieldValue.serverTimestamp(),
+    categorizedAt:             FieldValue.serverTimestamp(),
     updatedBy:                 callerUid,
     updatedByRole:             callerRole,
-    updatedAt:                 admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt:                 FieldValue.serverTimestamp(),
     ...(result.source === "ai" ? { aiSuggested: true, aiSource: "ai" } : {}),
     ...(isAITransfer ? { type: "transfer" } : {}),
     // Only overwrite category if user hasn't already explicitly set one

@@ -12,7 +12,7 @@ import {
   buildDocId,
 } from "./transactionPipeline";
 import { runClassificationPipelineForUser } from "../plaid/applyClassificationPipeline";
-import { categorizeTransactionLogic } from "../categorization/categorizeTransaction";
+import { categorizeSpecificTransactions } from "../categorization/categorizeBatch";
 
 export interface IngestReport {
   total:        number;
@@ -131,6 +131,7 @@ export async function ingestTransactionsCore(
   // Track hashes we've persisted in THIS batch so a CSV with intra-file dupes
   // skips the second occurrence (unless that occurrence is force-imported).
   const writtenInBatch = new Set<string>();
+  const toCategorize: string[] = [];
 
   // 7. Save each transaction with atomic create()
   for (const n of filtered) {
@@ -206,16 +207,9 @@ export async function ingestTransactionsCore(
       report.imported++;
       writtenInBatch.add(n.dedupeHash);
 
-      // Categorize newly-imported docs (rules + AI fallback). Skipped for
-      // transfer/refund types — those don't go through expense categorization.
-      // Best-effort: a categorization failure must not abort the ingest.
-      if (finalType === "income" || finalType === "expense") {
-        try {
-          await categorizeTransactionLogic(uid, docId, n.description, n.description, n.amount);
-        } catch (e) {
-          console.warn(`[INGEST] categorize failed ${docId}: ${e instanceof Error ? e.message : e}`);
-        }
-      }
+      // Queue for categorization after the cross-account pipeline (step 9),
+      // so transfer pairing runs first. Transfers/refunds are not categorized.
+      if (finalType === "income" || finalType === "expense") toCategorize.push(docId);
     } catch (err) {
       const code = (err as { code?: number }).code;
       if (code === 6 /* ALREADY_EXISTS */) {
@@ -238,6 +232,20 @@ export async function ingestTransactionsCore(
     await runClassificationPipelineForUser(uid);
   } catch (e) {
     console.error("[INGEST] post-ingest classification pipeline error:", e instanceof Error ? e.message : e);
+  }
+
+  // 10. Categorize the new income/expense rows in ONE pass through the shared
+  //     categorizer (user rules → keyword rules → batched AI) and the shared
+  //     decision policy. This replaces a legacy per-row OpenAI call that
+  //     ignored the user's rules, offered only business categories, and
+  //     auto-confirmed anything above 0.8. Best-effort: a categorization
+  //     failure must not abort the ingest; rows stay "needs_review".
+  if (toCategorize.length > 0) {
+    try {
+      await categorizeSpecificTransactions(uid, toCategorize, uid, "system");
+    } catch (e) {
+      console.warn(`[INGEST] categorize failed for ${toCategorize.length} rows: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   console.log(`[INGEST] uid=${uid} source=${req.source} acct=${req.accountId} ${JSON.stringify(report)}`);
