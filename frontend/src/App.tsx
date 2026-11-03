@@ -39,6 +39,7 @@ import AIParserPage from "./modules/parser/AIParserPage";
 import PWAInstallBanner from "./components/PWAInstallBanner";
 import ZachAssistant from "./modules/zach/ZachAssistant";
 import AdminZachPage from "./modules/zach/AdminZachPage";
+import ZachRoundsSettingsPage from "./modules/zach/ZachRoundsSettingsPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, refreshMfaClaim, role } = useAuth();
@@ -273,6 +274,14 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <AIParserPage />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/settings/zach"
+        element={
+          <AuthGuard>
+            <ZachRoundsSettingsPage />
           </AuthGuard>
         }
       />

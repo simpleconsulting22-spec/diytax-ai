@@ -3,12 +3,16 @@ import * as admin from "firebase-admin";
 // Modular FieldValue: the namespace form breaks under the Functions emulator
 // (see getTaxForecast.ts).
 import { FieldValue } from "firebase-admin/firestore";
-import { requireFreshMfa } from "../middleware/auth";
+import { requireFreshMfa, resolveEffectiveOwner } from "../middleware/auth";
 import { appendHistory, snapshotFields } from "./decisionPolicy";
 import { extractVendorName } from "../services/vendorExtraction";
 
 export const updateTransactionCategory = onCall({ cors: true, invoker: "public" }, async (request) => {
-  const uid = requireFreshMfa(request);
+  requireFreshMfa(request);
+  // Household members answer for the owner's transactions: owner, spouse, and
+  // accountant (whose category edits the rules already permit). Rules belong
+  // to the owner. `uid` below is the household owner; `callerUid` is who acted.
+  const { callerUid, effectiveOwnerUid: uid } = await resolveEffectiveOwner(request);
 
   const data = request.data as {
     transactionId?: string;
@@ -60,7 +64,8 @@ export const updateTransactionCategory = onCall({ cors: true, invoker: "public" 
     status:                    "categorized",
     zachTier:                  "sure",
     reviewTriggers:            [],
-    history:                   appendHistory(txn.history, { at: Date.now(), by: uid, source: "user", before, after }),
+    history:                   appendHistory(txn.history, { at: Date.now(), by: callerUid, source: "user", before, after }),
+    updatedBy:                 callerUid,
     updatedAt:                 FieldValue.serverTimestamp(),
   };
   if (data.taxCategory)  txnUpdate.taxCategory  = data.taxCategory;

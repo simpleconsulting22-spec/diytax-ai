@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Sparkles, ChevronDown, ChevronUp } from "lucide-react";
 import { apiClient } from "../../../services/apiClient";
 import { CATEGORY_GROUPS, getMapping } from "../../../shared/taxMap";
@@ -58,6 +59,17 @@ export default function ZachQuestionsPanel({
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [remember, setRemember] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState<{ key: string; category: string } | null>(null);
+  // Opened from a round email (?zach=mine): show the questions Zach sent this person first.
+  const [params, setParams] = useSearchParams();
+  const mineMode = params.get("zach") === "mine";
+  const [mine, setMine] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!mineMode) return;
+    apiClient
+      .call<{ keys: string[] }>("getMyZachRound")
+      .then((r) => setMine(new Set(r.keys)))
+      .catch(() => setMine(new Set()));
+  }, [mineMode]);
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>();
@@ -81,8 +93,9 @@ export default function ZachQuestionsPanel({
       if (t.date > g.to) g.to = t.date;
       map.set(key, g);
     }
-    return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [transactions, hidden]);
+    const all = [...map.values()].sort((a, b) => b.total - a.total);
+    return mineMode && mine ? all.filter((g) => mine.has(g.key)) : all;
+  }, [transactions, hidden, mineMode, mine]);
 
   const round = groups.slice(0, ROUND_SIZE);
   if (groups.length === 0) return null;
@@ -164,8 +177,17 @@ export default function ZachQuestionsPanel({
 
       {open && (
         <div style={{ padding: "0 18px 14px" }}>
+          {mineMode && (
+            <div style={{ fontSize: "12.5px", color: "#1e40af", backgroundColor: "#eff6ff", borderRadius: "8px", padding: "6px 10px", marginBottom: "8px" }}>
+              Showing the questions Zach emailed you.{" "}
+              <button onClick={() => { params.delete("zach"); setParams(params); }} style={{ background: "none", border: "none", color: "#1d4ed8", textDecoration: "underline", cursor: "pointer", padding: 0 }}>
+                Show everything
+              </button>
+            </div>
+          )}
           <p style={{ fontSize: "12px", color: "#6b7280", margin: "0 0 10px" }}>
-            Answers apply to these transactions only, unless you tick "Always do this". Every answer can be undone from the table below.
+            Answers apply to these transactions only, unless you tick "Always do this". Every answer can be undone from the table below.{" "}
+            <Link to="/settings/zach" style={{ color: "#2563eb" }}>Email rounds</Link>
           </p>
           {error && <div role="alert" style={{ fontSize: "13px", color: "#b91c1c", marginBottom: "8px" }}>{error}</div>}
           {round.map((g) => {
