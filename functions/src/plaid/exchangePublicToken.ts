@@ -6,7 +6,7 @@ import { fetchTransactionsForAccount } from "./fetchTransactions";
 import { toPlaidApiError } from "./plaidErrors";
 
 export const exchangePublicToken = onCall(
-  { secrets: ["PLAID_SECRET"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: ["PLAID_SECRET", "ANTHROPIC_API_KEY"], cors: true, invoker: "public", timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
   const uid = await requireAuth(request);
 

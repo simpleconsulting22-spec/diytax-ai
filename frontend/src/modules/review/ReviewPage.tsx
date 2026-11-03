@@ -6,6 +6,7 @@ import ReviewTable from "./components/ReviewTable";
 import { TAX_CATEGORIES } from "./components/CategoryDropdown";
 import { detectClassificationMismatch } from "../../shared/taxMap";
 import { useReviewTransactions, truncateForPrompt } from "./hooks/useReviewTransactions";
+import ZachQuestionsPanel from "./components/ZachQuestionsPanel";
 import AppNav from "../../components/AppNav";
 import { normalizeCategoryName } from "../../utils/normalizeCategory";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -192,6 +193,7 @@ function BulkCategoryPicker({ categoryPool, onSelect, onCustomCategoryAdded }: B
 
 export default function ReviewPage() {
   const { user } = useAuth();
+  const zachUserId = user?.uid ?? "";
   const navigate = useNavigate();
 
   const [statusFilter, setStatusFilter] = useState<"needs_review" | "categorized">("needs_review");
@@ -216,6 +218,7 @@ export default function ReviewPage() {
     acceptCategoryPrompt,
     dismissCategoryPrompt,
     reload,
+    handleUndo,
   } = useReviewTransactions(statusFilter);
 
   const { transactions, entities, customCategories, loading, error, selectedIds, updating, pendingCategoryPrompt } = state;
@@ -1005,6 +1008,11 @@ export default function ReviewPage() {
           </div>
         )}
 
+        {/* Zach's questions — Needs-review rows grouped by merchant, one round at a time */}
+        {!loading && statusFilter === "needs_review" && zachUserId && (
+          <ZachQuestionsPanel transactions={state.transactions} userId={zachUserId} onAnswered={reload} />
+        )}
+
         {/* Table card */}
         <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 8px rgba(0,0,0,0.07)" }}>
           {loading ? (
@@ -1025,6 +1033,7 @@ export default function ReviewPage() {
               onEntityChange={handleEntityChange}
               onTypeChange={handleTypeChange}
               onConfirm={handleConfirm}
+              onUndo={handleUndo}
               onCustomCategoryAdded={handleCustomCategoryAdded}
               pendingCategoryPrompt={pendingCategoryPrompt}
               onAcceptCategoryPrompt={acceptCategoryPrompt}

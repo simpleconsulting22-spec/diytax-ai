@@ -33,6 +33,24 @@ export async function undoCategoryChangeCore(
     const last = history[history.length - 1];
     if (!last) return { undone: false, remaining: 0 };
 
+    // Reverse only the intended operation: if the row no longer matches what
+    // that change produced (something else changed it since), refuse rather
+    // than overwrite the later, unrelated change.
+    const s = (v: unknown) => (typeof v === "string" ? v : "");
+    const current = { category: s(t.category), taxCategory: s(t.taxCategory), taxSchedule: s(t.taxSchedule), status: s(t.status) };
+    const a = last.after;
+    if (
+      current.category !== a.category ||
+      current.taxCategory !== a.taxCategory ||
+      current.taxSchedule !== a.taxSchedule ||
+      current.status !== a.status
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This transaction has changed since that edit, so it can't be undone automatically. Set the category directly instead."
+      );
+    }
+
     const restored = last.before;
     tx.update(ref, {
       category: restored.category,

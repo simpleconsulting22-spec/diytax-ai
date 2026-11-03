@@ -96,3 +96,28 @@ describe("ingest uses the shared categorizer and decision policy", () => {
     expect(acme.history).toHaveLength(1);
   });
 });
+
+describe("undo reverses only the intended operation", () => {
+  it("refuses when the row changed after the recorded edit", async () => {
+    await seedTxn("m0_t5");
+    await callFunction("updateTransactionCategory", { transactionId: "m0_t5", category: "Groceries", taxSchedule: "Personal" }, token);
+    // A later change made outside the recorded history (e.g. an import fix).
+    await db().collection("transactions").doc("m0_t5").update({ category: "Dining & Restaurants" });
+    await expect(undoCategoryChangeCore(db(), OWNER.uid, OWNER.uid, "m0_t5")).rejects.toThrow(/changed since/);
+    const t = (await db().collection("transactions").doc("m0_t5").get()).data()!;
+    expect(t.category).toBe("Dining & Restaurants");
+    expect(t.history).toHaveLength(1);
+  });
+
+  it("undoes two edits one at a time, newest first", async () => {
+    await seedTxn("m0_t6");
+    await callFunction("updateTransactionCategory", { transactionId: "m0_t6", category: "Groceries", taxSchedule: "Personal" }, token);
+    await callFunction("updateTransactionCategory", { transactionId: "m0_t6", category: "Office Supplies", taxSchedule: "Schedule C" }, token);
+    await undoCategoryChangeCore(db(), OWNER.uid, OWNER.uid, "m0_t6");
+    let t = (await db().collection("transactions").doc("m0_t6").get()).data()!;
+    expect(t).toMatchObject({ category: "Groceries", taxSchedule: "Personal", status: "categorized", isUserModified: true });
+    await undoCategoryChangeCore(db(), OWNER.uid, OWNER.uid, "m0_t6");
+    t = (await db().collection("transactions").doc("m0_t6").get()).data()!;
+    expect(t).toMatchObject({ category: "", status: "needs_review", isUserModified: false });
+  });
+});
