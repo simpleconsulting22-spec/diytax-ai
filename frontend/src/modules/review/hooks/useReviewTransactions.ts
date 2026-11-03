@@ -393,19 +393,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         updatedAt:     serverTimestamp(),
       });
 
-      // Upsert a learned rule so AI uses this entity assignment for the same vendor.
+      // No silent vendor rule: a single edit changes this transaction only.
+      // The apply-to-similar prompt below asks before remembering it.
       const txn = state.transactions.find((t) => t.id === id);
-      if (txn) {
-        const vendorName = extractVendor(txn);
-        await upsertVendorRule(effectiveOwnerUid, vendorName, {
-          category:    txn.category    ?? "",
-          taxCategory: txn.taxCategory ?? "",
-          taxSchedule: txn.taxSchedule ?? "",
-          entityId:    entityId        ?? null,
-          entityName:  entityName      ?? null,
-          entityType:  entityType      ?? null,
-        });
-      }
 
       // Surface the apply-to-similar prompt if there are matching same-vendor
       // rows whose entity assignment differs. Bundle reflects the row's NEW
@@ -427,7 +417,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
               entityType,
             },
           );
-          if (affectedRowIds.length >= 1) {
+          if (affectedRowIds.length >= 0) { // always offer "remember for future"
             pendingCategoryPrompt = {
               editedRowId:    id,
               triggeredBy:    "entity",
@@ -503,7 +493,7 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
             entityType: txn.entityType,
           },
         );
-        if (affectedRowIds.length >= 1) {
+        if (affectedRowIds.length >= 0) { // always offer "remember for future"
           pendingCategoryPrompt = {
             editedRowId:    id,
             triggeredBy:    "category",
@@ -733,25 +723,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
 
       // Upsert a categoryRule for each unique vendor (no duplicates).
       // Only include non-transfer rows — a vendor rule learned from a
-      // transfer would mis-classify future non-transfer rows for that vendor.
-      const selectedTxns = state.transactions.filter(
-        (t) => writableIds.includes(t.id) && t.type !== "transfer"
-      );
-      const seen = new Set<string>();
-      for (const txn of selectedTxns) {
-        const vendorName = extractVendor(txn);
-        if (vendorName && !seen.has(vendorName)) {
-          seen.add(vendorName);
-          await upsertVendorRule(effectiveOwnerUid, vendorName, {
-            category,
-            taxCategory: txn.taxCategory ?? "",
-            taxSchedule: txn.taxSchedule ?? "",
-            entityId:    txn.entityId   ?? null,
-            entityName:  txn.entityName ?? null,
-            entityType:  txn.entityType ?? null,
-          });
-        }
-      }
+      // Bulk edits change the selected transactions only; no vendor rule is
+      // written behind the user's back. Rules come from the explicit
+      // "Apply to all and remember" prompt.
 
       setState((prev) => ({
         ...prev,
@@ -799,23 +773,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         await batch.commit();
       }
 
-      // Upsert a rule per unique vendor (no duplicates)
-      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
-      const seen = new Set<string>();
-      for (const txn of selectedTxns) {
-        const vendorName = extractVendor(txn);
-        if (vendorName && !seen.has(vendorName)) {
-          seen.add(vendorName);
-          await upsertVendorRule(effectiveOwnerUid, vendorName, {
-            category:    txn.category    ?? "",
-            taxCategory: txn.taxCategory ?? "",
-            taxSchedule: txn.taxSchedule ?? "",
-            entityId:    entityId        ?? null,
-            entityName:  entityName      ?? null,
-            entityType:  entityType      ?? null,
-          });
-        }
-      }
+      // Bulk edits change the selected transactions only; no vendor rule is
+      // written behind the user's back. Rules come from the explicit
+      // "Apply to all and remember" prompt.
 
       setState((prev) => ({
         ...prev,
@@ -1051,23 +1011,9 @@ export function useReviewTransactions(statusFilter: "needs_review" | "categorize
         await batch.commit();
       }
 
-      // Upsert rules for unique vendors in this group
-      const selectedTxns = state.transactions.filter((t) => ids.includes(t.id));
-      const seen = new Set<string>();
-      for (const txn of selectedTxns) {
-        const vendorName = extractVendor(txn);
-        if (vendorName && !seen.has(vendorName)) {
-          seen.add(vendorName);
-          await upsertVendorRule(effectiveOwnerUid, vendorName, {
-            category,
-            taxCategory: txn.taxCategory ?? "",
-            taxSchedule: txn.taxSchedule ?? "",
-            entityId:    entityId   ?? null,
-            entityName:  entityName ?? null,
-            entityType:  entityType ?? null,
-          });
-        }
-      }
+      // Bulk edits change the selected transactions only; no vendor rule is
+      // written behind the user's back. Rules come from the explicit
+      // "Apply to all and remember" prompt.
 
       setState((prev) => ({
         ...prev,

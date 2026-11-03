@@ -660,7 +660,9 @@ export default function ReviewTable({
                     }}>
                       <div style={{ flex: "1 1 280px" }}>
                         <div style={{ fontWeight: 700, marginBottom: "2px" }}>
-                          Apply this to similar transactions?
+                          {pendingCategoryPrompt.affectedRowIds.length > 0
+                            ? "Apply this to similar transactions?"
+                            : "Use this for future transactions from this vendor?"}
                         </div>
                         <div style={{ color: "#92400e" }}>
                           You updated &ldquo;<strong>{truncateForPrompt(pendingCategoryPrompt.description)}</strong>&rdquo;.
@@ -670,8 +672,9 @@ export default function ReviewTable({
                             : pendingCategoryPrompt.category
                             ? "this category"
                             : "this assignment"}{" "}
-                          to {pendingCategoryPrompt.affectedRowIds.length} similar transaction
-                          {pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""}?
+                          {pendingCategoryPrompt.affectedRowIds.length > 0
+                            ? <>to {pendingCategoryPrompt.affectedRowIds.length} similar transaction{pendingCategoryPrompt.affectedRowIds.length !== 1 ? "s" : ""} and future ones from this vendor?</>
+                            : <>to future transactions from this vendor?</>}
                         </div>
                         <div style={{
                           marginTop: "3px",
@@ -679,7 +682,7 @@ export default function ReviewTable({
                           color: "#a16207",
                           fontStyle: "italic",
                         }}>
-                          Applies category, tax treatment, and Assign To.
+                          Applies category, tax treatment, and Assign To, and saves a rule you can remove under Settings → Categories. &ldquo;Just this one&rdquo; changes only this transaction.
                         </div>
                       </div>
                       <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
@@ -697,7 +700,7 @@ export default function ReviewTable({
                             whiteSpace: "nowrap",
                           }}
                         >
-                          Apply to all
+                          {pendingCategoryPrompt.affectedRowIds.length > 0 ? "Apply to all + remember" : "Always do this"}
                         </button>
                         <button
                           onClick={() => onDismissCategoryPrompt?.()}

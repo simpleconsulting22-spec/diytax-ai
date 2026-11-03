@@ -7,7 +7,7 @@ export const uncategorizedAlert = onSchedule(
   { schedule: "0 10 * * 0", timeZone: "America/New_York" },
   async () => {
     const db   = admin.firestore();
-    const year = new Date().getFullYear().toString();
+    const year = new Date().getFullYear(); // transactions store taxYear as a number
 
     const profilesSnap = await db
       .collection("userProfiles")

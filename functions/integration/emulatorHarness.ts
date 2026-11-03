@@ -46,7 +46,11 @@ export const auth = () => adminApp().auth();
  * so the Functions emulator performs genuine token verification and the
  * `request.auth.uid` the function sees is the real thing.
  */
-export async function createUserWithIdToken(uid: string, email: string): Promise<string> {
+export async function createUserWithIdToken(
+  uid: string,
+  email: string,
+  claims?: Record<string, unknown>
+): Promise<string> {
   try {
     await auth().deleteUser(uid);
   } catch {
@@ -54,7 +58,9 @@ export async function createUserWithIdToken(uid: string, email: string): Promise
   }
   await auth().createUser({ uid, email, password: "synthetic-password-123" });
 
-  const customToken = await auth().createCustomToken(uid);
+  // Optional developer claims (e.g. a fresh mfaVerifiedAt) ride on the custom
+  // token and appear in the minted ID token, as real custom claims would.
+  const customToken = await auth().createCustomToken(uid, claims);
 
   const res = await fetch(
     `http://${AUTH_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=fake-api-key`,

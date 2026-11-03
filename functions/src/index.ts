@@ -41,6 +41,9 @@ export * from "./admin/wipeBankData";
 export * from "./admin/cleanupTransferCategorization";
 export * from "./admin/cleanupEntityDuplicates";
 
+// Undo the last category change on a transaction
+export { undoCategoryChange } from "./categorization/undoCategoryChange";
+
 // Zach, the tax assistant
 export { askZach, getZachFindings } from "./zach/askZach";
 export { getZachAdminSummary, setZachConfig } from "./zach/zachAdmin";
