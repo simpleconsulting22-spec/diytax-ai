@@ -398,3 +398,83 @@ describe("admin-only collections", () => {
     await assertFails(setDoc(doc(db, "recurringItems", "rec-1"), { uid: OWNER }));
   });
 });
+
+// ─── Shared-access fields on users/{uid} ─────────────────────────────────────
+//
+// ownerUid/role (shared user's doc) and sharedUids/sharedRoles/sharedAccess
+// (owner's doc) are the access grant itself. Only acceptInvite (admin SDK) may
+// write them. When the doc was fully client-writable, a stranger could point
+// ownerUid at a victim and resolveEffectiveOwner would act on the victim's
+// data, or list a victim in their own sharedUids to read the victim's receipts.
+
+describe("users doc shared-access fields", () => {
+  it("a stranger cannot point their own doc at a victim's household", async () => {
+    await seed("users", STRANGER, { email: STRANGER_EMAIL });
+    const db = asUser(STRANGER, STRANGER_EMAIL);
+    await assertFails(
+      setDoc(doc(db, "users", STRANGER), { ownerUid: OWNER, role: "spouse" }, { merge: true })
+    );
+    await assertFails(setDoc(doc(db, "users", STRANGER), { role: "spouse" }, { merge: true }));
+  });
+
+  it("a brand-new user cannot create their doc with an ownerUid", async () => {
+    const db = asUser(STRANGER, STRANGER_EMAIL);
+    await assertFails(
+      setDoc(doc(db, "users", STRANGER), { email: STRANGER_EMAIL, ownerUid: OWNER })
+    );
+  });
+
+  it("a user cannot grant themselves access by writing sharedUids or sharedRoles", async () => {
+    await seed("users", STRANGER, { email: STRANGER_EMAIL });
+    const db = asUser(STRANGER, STRANGER_EMAIL);
+    await assertFails(setDoc(doc(db, "users", STRANGER), { sharedUids: [OWNER] }, { merge: true }));
+    await assertFails(
+      setDoc(doc(db, "users", STRANGER), { sharedRoles: { [OWNER]: "spouse" } }, { merge: true })
+    );
+    await assertFails(
+      setDoc(doc(db, "users", STRANGER), { sharedAccess: [{ uid: OWNER }] }, { merge: true })
+    );
+  });
+
+  it("an owner cannot add someone to their household without an invite", async () => {
+    const db = asUser(OWNER, OWNER_EMAIL);
+    await assertFails(
+      setDoc(doc(db, "users", OWNER), { sharedUids: [SPOUSE, ACCOUNTANT, STRANGER] }, { merge: true })
+    );
+  });
+
+  it("a shared user cannot upgrade their own role", async () => {
+    await seed("users", ACCOUNTANT, { ownerUid: OWNER, role: "accountant" });
+    const db = asUser(ACCOUNTANT, ACCOUNTANT_EMAIL);
+    await assertFails(setDoc(doc(db, "users", ACCOUNTANT), { role: "spouse" }, { merge: true }));
+  });
+
+  it("users still create and update their own ordinary fields", async () => {
+    // Mirrors LoginPage.ensureUserDoc, onboarding, FCM token and custom categories.
+    const db = asUser(STRANGER, STRANGER_EMAIL);
+    await assertSucceeds(
+      setDoc(doc(db, "users", STRANGER), {
+        uid: STRANGER,
+        email: STRANGER_EMAIL,
+        mfaEnabled: true,
+        onboardingComplete: false,
+      })
+    );
+    await assertSucceeds(
+      setDoc(doc(db, "users", STRANGER), { onboardingComplete: true, fcmToken: "t" }, { merge: true })
+    );
+  });
+
+  it("a shared user can still update ordinary fields on a doc that has ownerUid", async () => {
+    await seed("users", SPOUSE, { ownerUid: OWNER, role: "spouse", onboardingComplete: false });
+    const db = asUser(SPOUSE, SPOUSE_EMAIL);
+    await assertSucceeds(
+      setDoc(doc(db, "users", SPOUSE), { onboardingComplete: true }, { merge: true })
+    );
+  });
+
+  it("an owner can still update ordinary fields on a doc that has sharedUids", async () => {
+    const db = asUser(OWNER, OWNER_EMAIL);
+    await assertSucceeds(setDoc(doc(db, "users", OWNER), { fcmToken: "t" }, { merge: true }));
+  });
+});

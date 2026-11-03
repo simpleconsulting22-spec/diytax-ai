@@ -12,11 +12,18 @@ service firebase.storage {
       // Uploader can read and write their own folder
       allow read, write: if request.auth != null && request.auth.uid == userId;
 
-      // Account owner can read receipts their shared users uploaded
+      // Account owner can read receipts their shared users uploaded.
+      // Both sides of the link must agree: the reader's doc lists the uploader
+      // in sharedUids AND the uploader's doc names the reader as ownerUid.
+      // firestore.rules blocks client writes to both fields (only acceptInvite
+      // sets them), so neither can be forged by the reader alone.
       allow read: if request.auth != null
         && firestore.get(
              /databases/(default)/documents/users/$(request.auth.uid)
-           ).data.sharedUids.hasAny([userId]);
+           ).data.get('sharedUids', []).hasAny([userId])
+        && firestore.get(
+             /databases/(default)/documents/users/$(userId)
+           ).data.get('ownerUid', '') == request.auth.uid;
     }
 
     // ── Everything else is denied ──────────────────────────────────────────────

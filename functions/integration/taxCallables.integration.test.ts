@@ -83,7 +83,13 @@ beforeAll(async () => {
   ]);
 
   // Shared-access wiring: spouse and accountant point at the owner.
-  await db().collection("users").doc(OWNER.uid).set({ email: OWNER.email });
+  // Both sides of each link, as acceptInvite writes them: resolveEffectiveOwner
+  // honours a shared user's ownerUid only when the owner's doc confirms it.
+  await db().collection("users").doc(OWNER.uid).set({
+    email: OWNER.email,
+    sharedUids: [SPOUSE.uid, ACCOUNTANT.uid],
+    sharedRoles: { [SPOUSE.uid]: "spouse", [ACCOUNTANT.uid]: "accountant" },
+  });
   await db().collection("users").doc(SPOUSE.uid).set({ ownerUid: OWNER.uid, role: "spouse" });
   await db().collection("users").doc(ACCOUNTANT.uid).set({ ownerUid: OWNER.uid, role: "accountant" });
   await db().collection("users").doc(OTHER_OWNER.uid).set({ email: OTHER_OWNER.email });

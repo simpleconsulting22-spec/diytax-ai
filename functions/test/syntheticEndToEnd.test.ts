@@ -146,11 +146,20 @@ beforeEach(() => {
     },
   });
 
+  // Both sides of each link, as acceptInvite writes them: the owner's doc is
+  // the grant (sharedUids/sharedRoles), the shared user's doc is the pointer.
+  // The stranger forges a pointer at the owner that the owner never granted.
   store.users = [
-    { id: OWNER, data: {} },
+    {
+      id: OWNER,
+      data: {
+        sharedUids: [SPOUSE, ACCOUNTANT],
+        sharedRoles: { [SPOUSE]: "spouse", [ACCOUNTANT]: "accountant" },
+      },
+    },
     { id: SPOUSE, data: { ownerUid: OWNER, role: "spouse" } },
     { id: ACCOUNTANT, data: { ownerUid: OWNER, role: "accountant" } },
-    { id: STRANGER, data: {} },
+    { id: STRANGER, data: { ownerUid: OWNER, role: "spouse" } },
   ];
   store.taxSessions = [{ id: `${OWNER}_${YEAR}`, data: { answers: { hasSelfEmployment: true } } }];
   for (const k of Object.keys(written)) delete written[k];
@@ -179,7 +188,8 @@ describe("access control", () => {
 
   it("never leaks one owner's transactions to an unrelated user", async () => {
     const r = await (generateTaxSummary as any)(callAs(STRANGER));
-    // The stranger sees only their own single 999,999 row.
+    // The stranger's doc carries a forged ownerUid pointing at OWNER, which
+    // the owner never granted. They still see only their own 999,999 row.
     expect(r.totalIncome).toBe(999_999);
     expect(r.scheduleCNet).toBe(999_999);
     expect(r.transactionCount).toBe(1);

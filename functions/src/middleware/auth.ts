@@ -34,10 +34,20 @@ export interface EffectiveOwnerResult {
   role: "owner" | "spouse" | "accountant";
 }
 
+const SHARED_ROLES = new Set(["spouse", "accountant"]);
+
 /**
  * Resolves the effective owner UID for shared-access scenarios.
+ *
  * Shared users (spouse/accountant) have `ownerUid` written to their
- * users/{uid} doc when they accept an invite.
+ * users/{uid} doc when they accept an invite. That field is only a pointer:
+ * the grant itself lives on the OWNER's doc (`sharedUids` + `sharedRoles`),
+ * written by acceptInvite. Access is honoured only when the owner's doc
+ * confirms the caller, and the role is taken from the owner's doc — never
+ * from the caller's own doc, which the caller could once write freely.
+ *
+ * Anything that doesn't verify falls back to the caller's own data, so a
+ * forged or stale pointer yields no access to anyone else's records.
  */
 export async function resolveEffectiveOwner(
   request: CallableRequest
@@ -47,12 +57,24 @@ export async function resolveEffectiveOwner(
 
   try {
     const userDoc = await db.collection("users").doc(callerUid).get();
-    if (userDoc.exists) {
-      const data = userDoc.data()!;
-      if (typeof data.ownerUid === "string" && data.ownerUid) {
-        const role = (data.role as "spouse" | "accountant") ?? "spouse";
-        return { callerUid, effectiveOwnerUid: data.ownerUid, role };
+    const ownerUid = userDoc.exists ? userDoc.data()?.ownerUid : undefined;
+    if (typeof ownerUid === "string" && ownerUid && ownerUid !== callerUid) {
+      const ownerDoc = await db.collection("users").doc(ownerUid).get();
+      const owner = ownerDoc.exists ? ownerDoc.data() : undefined;
+      const sharedUids: unknown = owner?.sharedUids;
+      const role: unknown = owner?.sharedRoles?.[callerUid];
+      if (
+        Array.isArray(sharedUids) &&
+        sharedUids.includes(callerUid) &&
+        typeof role === "string" &&
+        SHARED_ROLES.has(role)
+      ) {
+        return { callerUid, effectiveOwnerUid: ownerUid, role: role as "spouse" | "accountant" };
       }
+      console.warn(
+        `[resolveEffectiveOwner] Unverified ownerUid on caller ${callerUid}: ` +
+          `owner ${ownerUid} does not list the caller — using caller's own data.`
+      );
     }
   } catch (err) {
     console.warn("[resolveEffectiveOwner] Failed to look up user doc:", err);

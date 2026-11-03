@@ -95,12 +95,28 @@ service cloud.firestore {
     }
 
     // ── Users ──────────────────────────────────────────────────────────────────
-    // Each user can only read/write their own doc.
-    // Cloud Functions (admin SDK) write sharedAccess/sharedUids/sharedRoles
-    // and ownerUid/role when invites are accepted — no client rule needed.
+    // Each user can only read/write their own doc — except the shared-access
+    // fields below, which only Cloud Functions (admin SDK, acceptInvite) write.
+    //
+    // These fields ARE the access grant: sharedUids/sharedRoles on an owner's
+    // doc admit other users to that owner's data (isSharedUser, sharedRole,
+    // storage.rules), and ownerUid/role on a shared user's doc tell the client
+    // and resolveEffectiveOwner whose data to act on. When the whole doc was
+    // client-writable, any signed-in user could add themselves to a victim's
+    // household by writing ownerUid, or list a victim in their own sharedUids
+    // to read the victim's receipts. Blocking client writes to every one of
+    // them closes both paths.
+    function sharedAccessKeys() {
+      return ['ownerUid', 'role', 'sharedUids', 'sharedRoles', 'sharedAccess', 'linkedAt'];
+    }
 
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+          && !request.resource.data.keys().hasAny(sharedAccessKeys());
+      allow update: if request.auth != null && request.auth.uid == uid
+          && !request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(sharedAccessKeys());
     }
 
     // ── Transactions ──────────────────────────────────────────────────────────
