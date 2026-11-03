@@ -22,6 +22,30 @@ export async function requireAuth(request: CallableRequest): Promise<string> {
   return requireUid(request);
 }
 
+/** Same window the Firestore rules use in hasFreshMfa(). */
+export const MFA_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The uid, provided the ID token carries a fresh `mfaVerifiedAt` claim.
+ *
+ * Callables run with the Admin SDK, so the MFA requirement that firestore.rules
+ * enforces never reaches them on its own. A token minted before the 6-digit
+ * code was entered (or a stolen one) would otherwise reach data the rules
+ * deny. Mirrors hasFreshMfa() in firestore.rules.
+ */
+export function requireFreshMfa(request: CallableRequest, now: number = Date.now()): string {
+  const uid = requireUid(request);
+  const verifiedAt = (request.auth?.token as Record<string, unknown> | undefined)?.mfaVerifiedAt;
+  if (
+    typeof verifiedAt !== "number" ||
+    now - verifiedAt >= MFA_FRESHNESS_MS ||
+    verifiedAt > now + 60_000
+  ) {
+    throw new HttpsError("permission-denied", "Please verify your sign-in code again.");
+  }
+  return uid;
+}
+
 export interface EffectiveOwnerResult {
   /** The uid of the actual logged-in user (used for updatedBy audit fields). */
   callerUid: string;

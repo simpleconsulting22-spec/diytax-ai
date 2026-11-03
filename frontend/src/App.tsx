@@ -37,6 +37,8 @@ import SpendingForecastPage from "./modules/forecast/SpendingForecastPage";
 import TaxEstimatePage from "./modules/forecast/TaxEstimatePage";
 import AIParserPage from "./modules/parser/AIParserPage";
 import PWAInstallBanner from "./components/PWAInstallBanner";
+import ZachAssistant from "./modules/zach/ZachAssistant";
+import AdminZachPage from "./modules/zach/AdminZachPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, userDoc, loading, mfaVerified, refreshMfaClaim, role } = useAuth();
@@ -274,6 +276,14 @@ function AppRoutes() {
           </AuthGuard>
         }
       />
+      <Route
+        path="/admin/zach"
+        element={
+          <AuthGuard>
+            <AdminZachPage />
+          </AuthGuard>
+        }
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
@@ -286,6 +296,7 @@ export default function App() {
         <TaxYearProvider>
           <AppRoutes />
           <QuickCaptureFAB />
+          <ZachAssistant />
           <PWAInstallBanner />
         </TaxYearProvider>
       </AuthProvider>

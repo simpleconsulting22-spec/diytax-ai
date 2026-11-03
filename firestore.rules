@@ -350,5 +350,20 @@ service cloud.firestore {
     match /mail/{doc} {
       allow read, write: if false;
     }
+
+    // Zach usage counters and cost caps. Written by askZach (Admin SDK) only.
+    match /zachUsage/{doc} {
+      allow read, write: if false;
+    }
+
+    // Per-conversation counts and cost (no conversation text). Server only.
+    match /zachConversations/{doc} {
+      allow read, write: if false;
+    }
+
+    // Zach settings (limits, models). Changed only through setZachConfig.
+    match /config/{doc=**} {
+      allow read, write: if false;
+    }
   }
 }

@@ -40,3 +40,7 @@ export * from "./forecast/getTaxForecast";
 export * from "./admin/wipeBankData";
 export * from "./admin/cleanupTransferCategorization";
 export * from "./admin/cleanupEntityDuplicates";
+
+// Zach, the tax assistant
+export { askZach, getZachFindings } from "./zach/askZach";
+export { getZachAdminSummary, setZachConfig } from "./zach/zachAdmin";
